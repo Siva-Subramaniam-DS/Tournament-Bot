@@ -243,15 +243,6 @@ ROLE_IDS = GuildDictProxy(DEFAULT_ROLE_IDS, "role_ids")
 # Bot Owner ID for special permissions
 BOT_OWNER_ID = 1251442077561131059
 
-# SheetDB API endpoint
-def get_sheetdb_api_url(context=None) -> str:
-    return get_guild_config(context).get("sheetdb_api_url", "")
-
-SHEETDB_API_URL = DynamicString(lambda: get_sheetdb_api_url())
-
-# Default brand colour (deep navy blue)
-BRAND_COLOR = 0x1E3A5F
-
 # Legacy loads for global scope variables
 class DynamicString:
     def __init__(self, func):
@@ -274,6 +265,15 @@ class DynamicString:
         return hash(str(self))
     def __getattr__(self, name):
         return getattr(str(self), name)
+
+# SheetDB API endpoint
+def get_sheetdb_api_url(context=None) -> str:
+    return get_guild_config(context).get("sheetdb_api_url", "")
+
+SHEETDB_API_URL = DynamicString(lambda: get_sheetdb_api_url())
+
+# Default brand colour (deep navy blue)
+BRAND_COLOR = 0x1E3A5F
 
 ORGANIZATION_NAME = DynamicString(lambda: get_org_name())
 TOURNAMENT_SYSTEM_NAME = DynamicString(lambda: get_system_name())
