@@ -32,7 +32,7 @@ Officiates events, synchronises schedules with Challonge brackets, records score
 | Language | Python 3.10+ |
 | Primary Database | **Supabase** (PostgreSQL) |
 | Local Fallback | JSON flat-files (`guild_configs.json`, `tournaments.json`, `scheduled_events.json`) |
-| APIs Integrated | Challonge API, SheetDB API (Google Sheets) |
+| APIs Integrated | Challonge API, Google Sheets (CSV lookup) |
 | Image Engine | `Pillow (PIL)` with custom Font scaling & overlay engine |
 | Accent Color | Navy Blue (`#1E3A5F`) |
 
@@ -53,7 +53,7 @@ graph TD
     B -->|Fetch/Upsert Config Fallback| D[(Local JSON Files)]
     
     B -->|Autocomplete / Update Match| E[Challonge REST API]
-    B -->|Post Logs / Retrieve Players| F[SheetDB / Google Sheets]
+    B -->|Retrieve Captains / Players| F[Google Sheets CSV]
     B -->|Render Poster / Scale Fonts| G[Pillow Image Engine]
     
     B -->|Alerts & Reminders| H[Discord Guild Channels]
@@ -64,7 +64,7 @@ graph TD
 1. **Discord Command Listener (`main.py`):** Coordinates interactions, slash commands, views, and button clicks. Resolves context safety using task-local `ContextVar` parameters (`current_guild_id`) to load the correct server config.
 2. **Supabase Client (`supabase-py`):** Acts as the primary backend database. Handles configurations (`GuildConfig` table) and tournament setups (`Tournaments` table).
 3. **Local Persistence Engine:** Flat JSON files automatically cache database records locally, guaranteeing the bot boots even if Supabase is offline.
-4. **SheetDB Integration:** Pushes tournament logs, results, staff stats, and assignments to Google Sheets in the background via asynchronous threads (`asyncio.to_thread`) to avoid blocking Discord interactions.
+4. **Google Sheets Roster Integration:** Fetches captain mappings and player/team registration details dynamically from Google Sheets using unauthenticated CSV exports, keeping Discord commands fast and responsive.
 5. **Challonge Integration:** Officiates bracket scores directly. Fetches open matches dynamically for command autocompletion and pushes match outcomes to the bracket.
 6. **Poster Generator (`Pillow`):** Loads randomly selected background templates, resolves customized fonts (DS-Digital, Square One, Capture It), scales text sizes dynamically to fit names without clipping, and renders the match details.
 
@@ -116,26 +116,35 @@ The bot operates on five main tables in Supabase:
   - `loser_score` (Integer): Final score of the loser.
 
 ### 👑 Admin Commands
-- `/settings set` — Configures the bot channels and role IDs.
-- `/settings edit` — Updates organization branding, sheets, and SheetDB api links.
-- `/settings show` — Shows active server credentials.
-- `/settings clean` — Resets server configurations to defaults.
-- `/tournament add` — Configures a tournament.
-- `/tournament edit` — Edits tournament settings or sets states (`pending`, `active`, `completed`).
-- `/tournament list` — Shows all tournaments configured for this guild.
+- `/settings add` — Set server-wide role mappings and branding parameters (Organization name, Sheet links, Bot name).
+- `/settings edit` — Modify server-wide role mappings and branding parameters.
+- `/settings show` — Displays a clean embed detailing all active server roles and configurations.
+- `/settings clean` — Resets all configuration data, deletes guild database tables, and wipes local cache files.
+- `/tournament add` — Registers a tournament configuration (name, challonge key, bracket link, sheet link, channels, categories, auto room setting).
+- `/tournament edit` — Modifies an existing tournament config (bracket link, sheet link, channels, open/closed ticket categories, state: `pending`, `active`, `completed`).
+- `/tournament delete` — Deletes tournament from database and local cache.
+- `/tournament info` — Displays detailed channels, roles, and status of a tournament.
+- `/tournament list` — Lists all tournaments registered for the server.
+- `/auto_room run` — Manually triggers the automatic match room ticket creation sweep.
+- `/auto_room stop` — Suspends the automatic match room loop for a tournament.
+- `/auto_room toggle` — Toggles the automatic match room loop status.
+- `/clear category` — Deletes all open/closed ticket channels in a specified category (Organizer only).
+- `/clear cache` — Cleared Challonge bracket and sheet caches.
+- `/registration` — Publish a Google Form registration embed with a direct button.
+- `/publish-rules` — Write and publish tournament rules directly to guidelines.
+- `/test_channels` — Run diagnostic check on bot permissions in configured channels.
+- `/staff-update` — Manually update staff stats/points on the leaderboard.
 
 ---
 
 ## 🎮 Player Information System
 
 The `/player_information` command searches your Google Sheet. Setup requires columns matching your format:
-- **1 vs 1 Columns:** `Player Discord ID` | `Player Game Name` | `Player Game ID` | `Player Title`
+- **1 vs 1 Columns:** `Player Discord ID` | `Player Game Name` | `Player Game ID` | `Player Title` (Supports flexible match names like `Discord`, `UID`, `ID`, `IGN`).
 - **Team Columns (2v2 - 5v5):** `Team Name` | `Captain Discord ID` | `Captain Game Name` | `Captain Game ID` | `Captain Title` | `Player 2 Discord ID` ... `Player 5 Title`
 
-To configure:
-```
-/config_player_info link:<google_sheet_url> format:<1 vs 1 | 2 vs 2 | ... | 5 vs 5>
-```
+To configure links and formats:
+Use `/settings add` or `/settings edit` with parameters `player_info_link` and `player_info_format`.
 
 ---
 
