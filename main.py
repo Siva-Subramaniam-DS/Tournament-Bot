@@ -21,9 +21,25 @@ import requests
 import tempfile
 import firebase_admin
 from firebase_admin import credentials, firestore
+import supabase
+from supabase import create_client, Client
 
 # Load environment variables
 load_dotenv()
+
+# Supabase Setup
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+supabase_client: Optional[Client] = None
+
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        print("Supabase client initialized successfully.")
+    except Exception as e:
+        print(f"Supabase client initialization failed: {e}")
+else:
+    print("Supabase URL or Key not found in environment. Supabase logging is disabled.")
 
 # Firebase Setup
 USE_FIREBASE = False
@@ -174,10 +190,12 @@ def save_guild_config(guild_id: int, config: dict):
         except Exception as e:
             print(f"Error saving config to guild_configs.json: {e}")
             
-    # Sync config to SheetDB in the background
+    # Sync config to SheetDB and Supabase in the background
     try:
         loop = asyncio.get_running_loop()
         loop.create_task(save_guild_config_to_sheetdb(guild_id, config))
+        if supabase_client:
+            loop.create_task(save_guild_config_to_supabase(guild_id, config))
     except RuntimeError:
         pass
 
@@ -572,6 +590,14 @@ import io
 
 def _sync_sheetdb_post(sheet_name: str, row_data: dict):
     """Synchronous POST to SheetDB. Call via asyncio.to_thread."""
+    # Write to Supabase if client is configured
+    if supabase_client:
+        try:
+            supabase_client.table(sheet_name).insert(row_data).execute()
+            print(f"[Supabase] ✅ Row added to '{sheet_name}'")
+        except Exception as e:
+            print(f"[Supabase] ❌ Exception posting to '{sheet_name}': {e}")
+
     try:
         url_base = str(SHEETDB_API_URL)
         if not url_base or not url_base.startswith("http"):
@@ -598,6 +624,98 @@ def _sync_sheetdb_post(sheet_name: str, row_data: dict):
 async def sheetdb_post(sheet_name: str, row_data: dict):
     """Async wrapper — runs SheetDB POST in a thread so the event loop stays free."""
     await asyncio.to_thread(_sync_sheetdb_post, sheet_name, row_data)
+
+
+# ===========================================================================================
+# SUPABASE INTEGRATION HELPER FUNCTIONS
+# ===========================================================================================
+
+def _sync_save_guild_config_to_supabase(guild_id: int, cfg: dict):
+    if not supabase_client:
+        return False
+    try:
+        row = {
+            "Guild_ID": str(guild_id),
+            "Admin_Role_ID": str(cfg.get('role_ids', {}).get('head_organizer') or ""),
+            "Staff_Role_ID": str(cfg.get('role_ids', {}).get('helper_team') or ""),
+            "Challonge_Role_ID": str(cfg.get('role_ids', {}).get('challonge_role') or ""),
+            "Judge_Role_ID": str(cfg.get('role_ids', {}).get('judge') or ""),
+            "Recorder_Role_ID": str(cfg.get('role_ids', {}).get('recorder') or ""),
+            "Challonge_Logs_Channel_ID": str(cfg.get('channel_ids', {}).get('challonge_logs') or ""),
+            "Transcript_Logs_Channel_ID": str(cfg.get('channel_ids', {}).get('transcript_logs') or ""),
+            "Closed_Category_ID": str(cfg.get('channel_ids', {}).get('closed_tickets_category') or ""),
+            "Schedule_Channel_ID": str(cfg.get('channel_ids', {}).get('take_schedule') or ""),
+            "Results_Channel_ID": str(cfg.get('channel_ids', {}).get('results') or ""),
+            "channel_bracket": str(cfg.get('channel_ids', {}).get('bracket') or ""),
+            "Bot_Logs_Channel_ID": str(cfg.get('channel_ids', {}).get('bot_logs') or ""),
+            "Thumbnail_Channel_ID": str(cfg.get('channel_ids', {}).get('thumbnail') or ""),
+            "Updated_At": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        supabase_client.table("GuildConfig").upsert(row).execute()
+        print(f"[Supabase] ✅ GuildConfig updated/created for guild {guild_id}")
+        return True
+    except Exception as e:
+        print(f"[Supabase] ❌ Error syncing config to Supabase: {e}")
+        return False
+
+async def save_guild_config_to_supabase(guild_id: int, cfg: dict):
+    if supabase_client:
+        await asyncio.to_thread(_sync_save_guild_config_to_supabase, guild_id, cfg)
+
+def _sync_save_tournament_to_supabase(guild_id: int, tournament_id: str, t_data: dict):
+    if not supabase_client:
+        return False
+    try:
+        row = {
+            "Guild_ID": str(guild_id),
+            "Tournament_ID": str(tournament_id),
+            "Tournament_Name": str(t_data.get('name') or ""),
+            "State": str(t_data.get('state') or "pending"),
+            "Key": str(t_data.get('key') or ""),
+            "challonge_bracket_link": str(t_data.get('challonge_bracket_link') or ""),
+            "Transcript_Channel_ID": str(t_data.get('transcript_channel_id') or ""),
+            "Closed_Ticket_Category_ID": str(t_data.get('closed_ticket_category_id') or ""),
+            "Closed_Ticket_Category_2_ID": str(t_data.get('close_ticket_category_2_id') or ""),
+            "Attendance_Channel_ID": str(t_data.get('attendance_channel_id') or ""),
+            "Rules_Channel_ID": str(t_data.get('rules_channel_id') or ""),
+            "Deadline_Channel_ID": str(t_data.get('deadline_channel_id') or ""),
+            "Result_Channel_ID": str(t_data.get('result_channel_id') or ""),
+            "Sheet_Link": str(t_data.get('sheet_link') or ""),
+            "Admin_Role_ID": str(t_data.get('admin_role_id') or ""),
+            "Helper_Role_ID": str(t_data.get('helper_role_id') or ""),
+            "Auto_Room_Creation": str(t_data.get('auto_room_creation', True)).upper(),
+            "Open_Category_1_ID": str(t_data.get('ticket_open_category_1_id') or ""),
+            "Open_Category_2_ID": str(t_data.get('ticket_open_category_2_id') or ""),
+            "Open_Category_3_ID": str(t_data.get('ticket_open_category_3_id') or ""),
+            "Open_Category_4_ID": str(t_data.get('ticket_open_category_4_id') or ""),
+            "Thumbnail_URL": str(t_data.get('thumbnail_url') or ""),
+            "Updated_At": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        supabase_client.table("Tournaments").upsert(row).execute()
+        print(f"[Supabase] ✅ Tournaments updated/created for tournament {tournament_id}")
+        return True
+    except Exception as e:
+        print(f"[Supabase] ❌ Error syncing tournament to Supabase: {e}")
+        return False
+
+async def save_tournament_to_supabase(guild_id: int, tournament_id: str, t_data: dict):
+    if supabase_client:
+        await asyncio.to_thread(_sync_save_tournament_to_supabase, guild_id, tournament_id, t_data)
+
+def _sync_delete_tournament_from_supabase(guild_id: int, tournament_id: str):
+    if not supabase_client:
+        return False
+    try:
+        supabase_client.table("Tournaments").delete().eq("Tournament_ID", tournament_id).execute()
+        print(f"[Supabase] ✅ Tournaments row deleted for tournament {tournament_id}")
+        return True
+    except Exception as e:
+        print(f"[Supabase] ❌ Error deleting tournament from Supabase: {e}")
+        return False
+
+async def delete_tournament_from_supabase(guild_id: int, tournament_id: str):
+    if supabase_client:
+        await asyncio.to_thread(_sync_delete_tournament_from_supabase, guild_id, tournament_id)
 
 
 def _sync_save_guild_config_to_sheetdb(guild_id: int, cfg: dict):
@@ -7769,11 +7887,13 @@ def save_guild_tournaments(guild_id: int, tournaments: dict):
         except Exception as e:
             print(f"Error saving tournaments to tournaments.json: {e}")
             
-    # Sync tournaments to SheetDB in the background
+    # Sync tournaments to SheetDB and Supabase in the background
     try:
         loop = asyncio.get_running_loop()
         for t_id, t_data in tournaments.items():
             loop.create_task(save_tournament_to_sheetdb(guild_id, t_id, t_data))
+            if supabase_client:
+                loop.create_task(save_tournament_to_supabase(guild_id, t_id, t_data))
     except RuntimeError:
         pass
 
@@ -8159,6 +8279,8 @@ async def tournament_delete(interaction: discord.Interaction, tournament: str):
     del tournaments[t_id_clean]
     save_guild_tournaments(interaction.guild.id, tournaments)
     asyncio.create_task(delete_tournament_from_sheetdb(interaction.guild.id, t_id_clean))
+    if supabase_client:
+        asyncio.create_task(delete_tournament_from_supabase(interaction.guild.id, t_id_clean))
     
     active_exists = False
     for other_id, other_cfg in tournaments.items():
