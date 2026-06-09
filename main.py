@@ -19,8 +19,6 @@ import json
 from pathlib import Path
 import requests
 import tempfile
-import firebase_admin
-from firebase_admin import credentials, firestore
 import supabase
 from supabase import create_client, Client
 
@@ -40,23 +38,6 @@ if SUPABASE_URL and SUPABASE_KEY:
         print(f"Supabase client initialization failed: {e}")
 else:
     print("Supabase URL or Key not found in environment. Supabase logging is disabled.")
-
-# Firebase Setup
-USE_FIREBASE = False
-try:
-    if os.path.exists("firebase_credentials.json"):
-        if not firebase_admin._apps:
-            cred = credentials.Certificate("firebase_credentials.json")
-            firebase_admin.initialize_app(cred)
-        db = firestore.client()
-        # "in firebase each bot as seperate collection so that they won't get confused"
-        BOT_DOC = db.collection("Bots").document("Valorant_Vanguard_Esports")
-        USE_FIREBASE = True
-        print("Firebase initialized successfully.")
-    else:
-        print("firebase_credentials.json not found. Falling back to local JSON files.")
-except Exception as e:
-    print(f"Firebase initialization failed (falling back to local JSON): {e}")
 
 # Default Configs — Multi-Server Configuration Defaults
 DEFAULT_CHANNEL_IDS = {
@@ -111,6 +92,7 @@ def with_guild_context(func):
 GUILD_CONFIG_CACHE = {}
 RULES_CACHE = {}
 STAFF_STATS_CACHE = {}
+CHALLONGE_MATCHES_CACHE = {}
 
 def get_default_config():
     return {
@@ -131,20 +113,52 @@ def load_guild_config(guild_id: int) -> dict:
         return GUILD_CONFIG_CACHE[guild_id_str]
         
     config = get_default_config()
-    if USE_FIREBASE:
+    loaded = False
+    
+    # Try loading from Supabase first
+    if supabase_client:
         try:
-            doc = BOT_DOC.collection("GuildConfigs").document(guild_id_str).get()
-            if doc.exists:
-                db_data = doc.to_dict()
-                for k, v in db_data.items():
-                    if isinstance(v, dict) and k in config:
-                        config[k].update(v)
-                    else:
-                        config[k] = v
-                print(f"Loaded config for guild {guild_id} from Firebase.")
+            resp = supabase_client.table("GuildConfig").select("*").eq("Guild_ID", guild_id_str).execute()
+            if resp.data and len(resp.data) > 0:
+                db_data = resp.data[0]
+                
+                # Load roles
+                config['role_ids'] = {
+                    'head_organizer': int(db_data.get('Admin_Role_ID')) if db_data.get('Admin_Role_ID') else None,
+                    'helper_team': int(db_data.get('Staff_Role_ID')) if db_data.get('Staff_Role_ID') else None,
+                    'challonge_role': int(db_data.get('Challonge_Role_ID')) if db_data.get('Challonge_Role_ID') else None,
+                    'judge': int(db_data.get('Judge_Role_ID')) if db_data.get('Judge_Role_ID') else None,
+                    'recorder': int(db_data.get('Recorder_Role_ID')) if db_data.get('Recorder_Role_ID') else None,
+                    'staff': None
+                }
+                
+                # Load channels
+                config['channel_ids'] = {
+                    'challonge_logs': int(db_data.get('Challonge_Logs_Channel_ID')) if db_data.get('Challonge_Logs_Channel_ID') else None,
+                    'transcript_logs': int(db_data.get('Transcript_Logs_Channel_ID')) if db_data.get('Transcript_Logs_Channel_ID') else None,
+                    'closed_tickets_category': int(db_data.get('Closed_Category_ID')) if db_data.get('Closed_Category_ID') else None,
+                    'take_schedule': int(db_data.get('Schedule_Channel_ID')) if db_data.get('Schedule_Channel_ID') else None,
+                    'results': int(db_data.get('Results_Channel_ID')) if db_data.get('Results_Channel_ID') else None,
+                    'bracket': int(db_data.get('channel_bracket')) if db_data.get('channel_bracket') else None,
+                    'bot_logs': int(db_data.get('Bot_Logs_Channel_ID')) if db_data.get('Bot_Logs_Channel_ID') else None,
+                    'thumbnail': int(db_data.get('Thumbnail_Channel_ID')) if db_data.get('Thumbnail_Channel_ID') else None
+                }
+                
+                # Load branding and settings
+                config['organization_name'] = db_data.get('organization_name') or "Tournament Organizer"
+                config['tournament_system_name'] = db_data.get('tournament_system_name') or "Tournament System"
+                config['google_sheet_link'] = db_data.get('google_sheet_link') or ""
+                config['current_tournament_name'] = db_data.get('current_tournament_name') or ""
+                config['player_info_link'] = db_data.get('player_info_link') or ""
+                config['player_info_format'] = db_data.get('player_info_format') or "5 vs 5"
+                config['sheetdb_api_url'] = db_data.get('sheetdb_api_url') or "https://sheetdb.io/api/v1/vlbn6vbc8vdbb"
+                
+                loaded = True
+                print(f"Loaded config for guild {guild_id} from Supabase.")
         except Exception as e:
-            print(f"Error loading config for guild {guild_id} from Firebase: {e}")
-    else:
+            print(f"Error loading config for guild {guild_id} from Supabase: {e}")
+            
+    if not loaded:
         if os.path.exists('guild_configs.json'):
             try:
                 with open('guild_configs.json', 'r', encoding='utf-8') as f:
@@ -167,28 +181,22 @@ def save_guild_config(guild_id: int, config: dict):
     guild_id_str = str(guild_id)
     GUILD_CONFIG_CACHE[guild_id_str] = config
     
-    if USE_FIREBASE:
+    # Save locally to JSON fallback
+    all_configs = {}
+    if os.path.exists('guild_configs.json'):
         try:
-            BOT_DOC.collection("GuildConfigs").document(guild_id_str).set(config)
-            print(f"Saved config for guild {guild_id} to Firebase")
+            with open('guild_configs.json', 'r', encoding='utf-8') as f:
+                all_configs = json.load(f)
         except Exception as e:
-            print(f"Error saving config for guild {guild_id} to Firebase: {e}")
-    else:
-        all_configs = {}
-        if os.path.exists('guild_configs.json'):
-            try:
-                with open('guild_configs.json', 'r', encoding='utf-8') as f:
-                    all_configs = json.load(f)
-            except Exception as e:
-                print(f"Error loading guild_configs.json for save: {e}")
-                
-        all_configs[guild_id_str] = config
-        try:
-            with open('guild_configs.json', 'w', encoding='utf-8') as f:
-                json.dump(all_configs, f, indent=4)
-            print(f"Saved config for guild {guild_id} to guild_configs.json")
-        except Exception as e:
-            print(f"Error saving config to guild_configs.json: {e}")
+            print(f"Error loading guild_configs.json for save: {e}")
+            
+    all_configs[guild_id_str] = config
+    try:
+        with open('guild_configs.json', 'w', encoding='utf-8') as f:
+            json.dump(all_configs, f, indent=4)
+        print(f"Saved config for guild {guild_id} to guild_configs.json")
+    except Exception as e:
+        print(f"Error saving config to guild_configs.json: {e}")
             
     # Sync config to SheetDB and Supabase in the background
     try:
@@ -649,6 +657,13 @@ def _sync_save_guild_config_to_supabase(guild_id: int, cfg: dict):
             "channel_bracket": str(cfg.get('channel_ids', {}).get('bracket') or ""),
             "Bot_Logs_Channel_ID": str(cfg.get('channel_ids', {}).get('bot_logs') or ""),
             "Thumbnail_Channel_ID": str(cfg.get('channel_ids', {}).get('thumbnail') or ""),
+            "organization_name": str(cfg.get('organization_name', 'Tournament Organizer')),
+            "tournament_system_name": str(cfg.get('tournament_system_name', 'Tournament System')),
+            "google_sheet_link": str(cfg.get('google_sheet_link', '')),
+            "current_tournament_name": str(cfg.get('current_tournament_name', '')),
+            "player_info_link": str(cfg.get('player_info_link', '')),
+            "player_info_format": str(cfg.get('player_info_format', '5 vs 5')),
+            "sheetdb_api_url": str(cfg.get('sheetdb_api_url', '')),
             "Updated_At": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         }
         supabase_client.table("GuildConfig").upsert(row).execute()
@@ -995,25 +1010,17 @@ def get_guild_rules(guild_id: int) -> dict:
         return RULES_CACHE[guild_id_str]
         
     rules = {}
-    if USE_FIREBASE:
+    if os.path.exists('tournament_rules.json'):
         try:
-            doc = BOT_DOC.collection("Rules").document(guild_id_str).get()
-            if doc.exists:
-                rules = doc.to_dict()
+            with open('tournament_rules.json', 'r', encoding='utf-8') as f:
+                all_rules = json.load(f)
+                if guild_id_str in all_rules:
+                    rules = all_rules[guild_id_str]
+                elif 'rules' in all_rules and not all_rules.get(guild_id_str):
+                    rules = all_rules
         except Exception as e:
-            print(f"Error loading rules for guild {guild_id} from Firebase: {e}")
-    else:
-        if os.path.exists('tournament_rules.json'):
-            try:
-                with open('tournament_rules.json', 'r', encoding='utf-8') as f:
-                    all_rules = json.load(f)
-                    if guild_id_str in all_rules:
-                        rules = all_rules[guild_id_str]
-                    elif 'rules' in all_rules and not all_rules.get(guild_id_str):
-                        rules = all_rules
-            except Exception as e:
-                print(f"Error loading tournament_rules.json: {e}")
-                
+            print(f"Error loading tournament_rules.json: {e}")
+            
     RULES_CACHE[guild_id_str] = rules
     return rules
 
@@ -1021,29 +1028,23 @@ def save_guild_rules(guild_id: int, rules: dict):
     guild_id_str = str(guild_id)
     RULES_CACHE[guild_id_str] = rules
     
-    if USE_FIREBASE:
+    all_rules = {}
+    if os.path.exists('tournament_rules.json'):
         try:
-            BOT_DOC.collection("Rules").document(guild_id_str).set(rules)
-        except Exception as e:
-            print(f"Error saving rules for guild {guild_id} to Firebase: {e}")
-    else:
+            with open('tournament_rules.json', 'r', encoding='utf-8') as f:
+                all_rules = json.load(f)
+        except Exception:
+            pass
+    
+    if 'rules' in all_rules and not any(isinstance(v, dict) and 'rules' in v for v in all_rules.values() if v):
         all_rules = {}
-        if os.path.exists('tournament_rules.json'):
-            try:
-                with open('tournament_rules.json', 'r', encoding='utf-8') as f:
-                    all_rules = json.load(f)
-            except Exception:
-                pass
         
-        if 'rules' in all_rules and not any(isinstance(v, dict) and 'rules' in v for v in all_rules.values() if v):
-            all_rules = {}
-            
-        all_rules[guild_id_str] = rules
-        try:
-            with open('tournament_rules.json', 'w', encoding='utf-8') as f:
-                json.dump(all_rules, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            print(f"Error saving rules to tournament_rules.json: {e}")
+    all_rules[guild_id_str] = rules
+    try:
+        with open('tournament_rules.json', 'w', encoding='utf-8') as f:
+            json.dump(all_rules, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"Error saving rules to tournament_rules.json: {e}")
 
 def get_guild_staff_stats(guild_id: int) -> dict:
     guild_id_str = str(guild_id)
@@ -1051,25 +1052,17 @@ def get_guild_staff_stats(guild_id: int) -> dict:
         return STAFF_STATS_CACHE[guild_id_str]
         
     stats = {}
-    if USE_FIREBASE:
+    if os.path.exists('staff_stats.json'):
         try:
-            doc = BOT_DOC.collection("StaffStats").document(guild_id_str).get()
-            if doc.exists:
-                stats = doc.to_dict()
+            with open('staff_stats.json', 'r', encoding='utf-8') as f:
+                all_stats = json.load(f)
+                if guild_id_str in all_stats:
+                    stats = all_stats[guild_id_str]
+                elif all_stats and not any(isinstance(v, dict) and any(isinstance(inner, dict) for inner in v.values()) for v in all_stats.values() if v):
+                    stats = all_stats
         except Exception as e:
-            print(f"Error loading staff stats for guild {guild_id} from Firebase: {e}")
-    else:
-        if os.path.exists('staff_stats.json'):
-            try:
-                with open('staff_stats.json', 'r', encoding='utf-8') as f:
-                    all_stats = json.load(f)
-                    if guild_id_str in all_stats:
-                        stats = all_stats[guild_id_str]
-                    elif all_stats and not any(isinstance(v, dict) and any(isinstance(inner, dict) for inner in v.values()) for v in all_stats.values() if v):
-                        stats = all_stats
-            except Exception as e:
-                print(f"Error loading staff_stats.json: {e}")
-                
+            print(f"Error loading staff_stats.json: {e}")
+            
     STAFF_STATS_CACHE[guild_id_str] = stats
     return stats
 
@@ -1077,29 +1070,23 @@ def save_guild_staff_stats(guild_id: int, stats: dict):
     guild_id_str = str(guild_id)
     STAFF_STATS_CACHE[guild_id_str] = stats
     
-    if USE_FIREBASE:
+    all_stats = {}
+    if os.path.exists('staff_stats.json'):
         try:
-            BOT_DOC.collection("StaffStats").document(guild_id_str).set(stats)
-        except Exception as e:
-            print(f"Error saving staff stats for guild {guild_id} to Firebase: {e}")
-    else:
-        all_stats = {}
-        if os.path.exists('staff_stats.json'):
-            try:
-                with open('staff_stats.json', 'r', encoding='utf-8') as f:
-                    all_stats = json.load(f)
-            except Exception:
-                pass
-                
-        if all_stats and not any(isinstance(v, dict) and any(isinstance(inner, dict) for inner in v.values()) for v in all_stats.values() if v):
-            all_stats = {}
+            with open('staff_stats.json', 'r', encoding='utf-8') as f:
+                all_stats = json.load(f)
+        except Exception:
+            pass
             
-        all_stats[guild_id_str] = stats
-        try:
-            with open('staff_stats.json', 'w', encoding='utf-8') as f:
-                json.dump(all_stats, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            print(f"Error saving staff stats: {e}")
+    if all_stats and not any(isinstance(v, dict) and any(isinstance(inner, dict) for inner in v.values()) for v in all_stats.values() if v):
+        all_stats = {}
+        
+    all_stats[guild_id_str] = stats
+    try:
+        with open('staff_stats.json', 'w', encoding='utf-8') as f:
+            json.dump(all_stats, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"Error saving staff stats to staff_stats.json: {e}")
 
 def load_rules():
     """Load rules from persistent storage on startup"""
@@ -1322,10 +1309,10 @@ COMMAND_DATA = {
             },
             {
                 "name": "/upload-score",
-                "description": "Upload match scores directly to Challonge bracket from Discord",
-                "usage": "/upload-score match_id:<id> winner_participant_id:<id> winner_score:<n> loser_score:<n>",
-                "permissions": "helper / organizer",
-                "example": "`/upload-score match_id:123456 winner_participant_id:789 winner_score:2 loser_score:1`"
+                "description": "Upload match scores directly to Challonge bracket from Discord with autocomplete",
+                "usage": "/upload-score winner:<match_and_winner> winner_score:<score> loser_score:<score>",
+                "permissions": "judge / helper / organizer",
+                "example": "`/upload-score winner:\"Match123: TeamA VS TeamB (Winner: TeamA)\" winner_score:2 loser_score:1`"
             },
             {
                 "name": "/reassign",
@@ -3223,6 +3210,21 @@ def create_event_poster(template_path: str, round_label: str, team1_captain: str
                 server_text = server_name
                 server_bbox = draw.textbbox((0, 0), server_text, font=font_title)
                 server_width = server_bbox[2] - server_bbox[0]
+                
+                # Auto-scale title font if too wide
+                temp_font = font_title
+                temp_size = title_size
+                while server_width > width * 0.9 and temp_size > 10:
+                    temp_size -= 2
+                    try:
+                        temp_font = get_font_with_fallbacks("Square One", temp_size, "bold")
+                    except Exception as fe:
+                        print(f"Error loading fallback font for title scaling: {fe}")
+                        temp_font = ImageFont.load_default()
+                    server_bbox = draw.textbbox((0, 0), server_text, font=temp_font)
+                    server_width = server_bbox[2] - server_bbox[0]
+                
+                font_title = temp_font
                 server_x = (width - server_width) // 2
                 server_y = int(height * 0.08)
                 draw_text_with_outline(server_text, server_x, server_y, font_title)
@@ -3254,6 +3256,22 @@ def create_event_poster(template_path: str, round_label: str, team1_captain: str
                 right_box = draw.textbbox((0, 0), right_name_text, font=font_vs)
                 
                 total_width = (left_box[2] - left_box[0]) + (vs_box[2] - vs_box[0]) + (right_box[2] - right_box[0])
+                
+                # Auto-scale font_vs if total width is too wide
+                temp_font_vs = font_vs
+                temp_vs_size = vs_size
+                while total_width > width * 0.95 and temp_vs_size > 10:
+                    temp_vs_size -= 2
+                    try:
+                        temp_font_vs = get_font_with_fallbacks("Capture it", temp_vs_size, "bold")
+                    except Exception:
+                        temp_font_vs = ImageFont.load_default()
+                    left_box = draw.textbbox((0, 0), left_name_text, font=temp_font_vs)
+                    vs_box = draw.textbbox((0, 0), vs_core, font=temp_font_vs)
+                    right_box = draw.textbbox((0, 0), right_name_text, font=temp_font_vs)
+                    total_width = (left_box[2] - left_box[0]) + (vs_box[2] - vs_box[0]) + (right_box[2] - right_box[0])
+                
+                font_vs = temp_font_vs
                 current_x = (width - total_width) // 2
                 vs_y = int(height * 0.55)
 
@@ -3732,38 +3750,49 @@ async def on_ready():
 
 @tree.command(name="upload-score", description="Upload match score to Challonge bracket (Judge/Organizer only)")
 @app_commands.describe(
-    match_id="Challonge Match ID (find in the bracket URL or match list)",
-    winner_participant_id="Challonge Participant ID of the winner",
-    winner_score="Winner's score (e.g. 2)",
-    loser_score="Loser's score (e.g. 1)",
-    tournament="Tournament ID — leave blank to use the active tournament"
+    winner="Select the match and the winning team from the list",
+    winner_score="Score of the winning team (e.g. 2)",
+    loser_score="Score of the losing team (e.g. 1)"
 )
 async def upload_score(
     interaction: discord.Interaction,
-    match_id: str,
-    winner_participant_id: str,
+    winner: str,
     winner_score: int,
-    loser_score: int,
-    tournament: Optional[str] = None
+    loser_score: int
 ):
-    """Upload a match score to Challonge from Discord."""
+    """Upload a match score to Challonge from Discord using autocomplete."""
     await interaction.response.defer(ephemeral=True)
 
-    # Permission check — Organizer / Helper only
-    if not has_event_create_permission(interaction):
-        await interaction.followup.send("❌ You need **Head Organizer** or **Helper Team** role to upload scores.", ephemeral=True)
+    if interaction.guild:
+        current_guild_id.set(interaction.guild.id)
+
+    # Permission check — Organizer / Helper / Judge
+    permission_level = get_user_permission_level(interaction.user.roles, interaction.user.id)
+    if permission_level not in ["judge", "organizer", "owner", "helper"]:
+        await interaction.followup.send("❌ You need **Head Organizer**, **Helper Team**, or **Judge** role to upload scores.", ephemeral=True)
+        return
+
+    # Parse selected winner option
+    try:
+        parts = winner.split(":")
+        if len(parts) < 3:
+            await interaction.followup.send("❌ Invalid selection. Please select a match from the autocomplete dropdown list.", ephemeral=True)
+            return
+        match_id = parts[0]
+        winner_participant_id = parts[1]
+        winner_name = parts[2]
+    except Exception:
+        await interaction.followup.send("❌ Error parsing the selection. Please use the autocomplete list.", ephemeral=True)
         return
 
     # Resolve bracket link and API key
     bracket_link = None
     api_key = None
 
-    if tournament:
-        tournaments = load_guild_tournaments(interaction.guild.id)
-        t_cfg = tournaments.get(tournament.strip())
-        if t_cfg:
-            bracket_link = t_cfg.get('challonge_bracket_link') or t_cfg.get('id') or get_bracket_link(interaction)
-            api_key = t_cfg.get('key') or get_bracket_api_key(interaction)
+    t_cfg = get_active_tournament_config(interaction.guild.id) if interaction.guild else None
+    if t_cfg:
+        bracket_link = t_cfg.get('challonge_bracket_link') or t_cfg.get('id') or get_bracket_link(interaction)
+        api_key = t_cfg.get('key') or get_bracket_api_key(interaction)
     
     if not bracket_link:
         bracket_link = get_bracket_link(interaction)
@@ -3787,6 +3816,8 @@ async def upload_score(
         await interaction.followup.send(f"❌ Error uploading score: `{e}`", ephemeral=True)
         return
 
+    tournament_name = t_cfg.get('name') if t_cfg else get_tournament_name(interaction) or ""
+
     if success:
         # Log to SheetDB
         asyncio.create_task(sheetdb_post("Challonge_Uploads", {
@@ -3796,20 +3827,20 @@ async def upload_score(
             "Winner_Participant_ID": winner_participant_id,
             "Winner_Score": winner_score,
             "Loser_Score": loser_score,
-            "Tournament_ID": tournament or get_tournament_name(interaction) or "",
+            "Tournament_ID": tournament_name,
             "Uploaded_By_ID": str(interaction.user.id),
             "Uploaded_By_Name": interaction.user.name,
             "Status": "Success"
         }))
         embed = discord.Embed(
             title="✅ Score Uploaded to Challonge",
-            description=f"Match **#{match_id}** has been updated successfully.",
+            description=f"Match updated successfully: **{winner_name}** won!",
             color=discord.Color.green(),
             timestamp=discord.utils.utcnow()
         )
         embed.add_field(name="🏆 Score", value=f"**{winner_score}** – {loser_score}", inline=True)
         embed.add_field(name="🆔 Match ID", value=f"`{match_id}`", inline=True)
-        embed.add_field(name="👤 Winner Participant ID", value=f"`{winner_participant_id}`", inline=True)
+        embed.add_field(name="👤 Winner Team", value=f"**{winner_name}** (`{winner_participant_id}`)", inline=True)
         embed.set_footer(text=f"Uploaded by {interaction.user.display_name}")
         await interaction.followup.send(embed=embed, ephemeral=True)
     else:
@@ -3821,12 +3852,75 @@ async def upload_score(
             "Winner_Participant_ID": winner_participant_id,
             "Winner_Score": winner_score,
             "Loser_Score": loser_score,
-            "Tournament_ID": tournament or get_tournament_name(interaction) or "",
+            "Tournament_ID": tournament_name,
             "Uploaded_By_ID": str(interaction.user.id),
             "Uploaded_By_Name": interaction.user.name,
             "Status": f"Failed: {error[:100] if error else 'Unknown'}"
         }))
         await interaction.followup.send(f"❌ Challonge rejected the score upload:\n```{error[:500] if error else 'Unknown error'}```", ephemeral=True)
+
+
+@upload_score.autocomplete('winner')
+async def upload_score_winner_autocomplete(
+    interaction: discord.Interaction,
+    current: str
+) -> list[app_commands.Choice[str]]:
+    if not interaction.guild:
+        return []
+        
+    current_guild_id.set(interaction.guild.id)
+    
+    t_cfg = get_active_tournament_config(interaction.guild.id)
+    if not t_cfg:
+        return []
+        
+    bracket_link = t_cfg.get('challonge_bracket_link') or t_cfg.get('id')
+    api_key = t_cfg.get('key')
+    
+    if not bracket_link or not api_key:
+        return []
+        
+    now = datetime.datetime.now()
+    guild_id = interaction.guild.id
+    
+    matches = []
+    cached = CHALLONGE_MATCHES_CACHE.get(guild_id)
+    if cached and (now - cached[0]).total_seconds() < 20:
+        matches = cached[1]
+    else:
+        try:
+            matches_info, err = await fetch_challonge_open_matches(bracket_link, api_key)
+            if matches_info:
+                matches = matches_info
+                CHALLONGE_MATCHES_CACHE[guild_id] = (now, matches)
+            else:
+                print(f"[Challonge Autocomplete] Error: {err}")
+        except Exception as e:
+            print(f"[Challonge Autocomplete] Exception: {e}")
+            
+    if not matches:
+        return []
+        
+    choices = []
+    current_lower = current.lower()
+    for m in matches:
+        team1 = m.get('team1') or "TBD"
+        team2 = m.get('team2') or "TBD"
+        match_id = m.get('id')
+        p1_id = m.get('player1_id')
+        p2_id = m.get('player2_id')
+        
+        opt1_name = f"{team1} VS {team2} (Winner: {team1})"
+        opt1_val = f"{match_id}:{p1_id}:{team1}"
+        if not current or current_lower in opt1_name.lower():
+            choices.append(app_commands.Choice(name=opt1_name[:100], value=opt1_val[:100]))
+            
+        opt2_name = f"{team1} VS {team2} (Winner: {team2})"
+        opt2_val = f"{match_id}:{p2_id}:{team2}"
+        if not current or current_lower in opt2_name.lower():
+            choices.append(app_commands.Choice(name=opt2_name[:100], value=opt2_val[:100]))
+            
+    return choices[:25]
 
 
 @tree.command(name="help", description="Show available commands based on your permissions")
@@ -4091,6 +4185,8 @@ async def event_create(
     team_2_name: str = None
 ):
     """Creates an event with the specified parameters"""
+    if interaction.guild:
+        current_guild_id.set(interaction.guild.id)
     
     # Defer the response to give us more time for image processing
     await interaction.response.defer(ephemeral=True)
@@ -4195,7 +4291,8 @@ async def event_create(
                 t1_poster, 
                 t2_poster, 
                 time_info['utc_time_simple'],
-                f"{date:02d}/{month:02d}/{current_year}"
+                f"{date:02d}/{month:02d}/{current_year}",
+                server_name=f"{tournament} - {ORGANIZATION_NAME}"
             )
             if poster_image:
                 # Keep poster path for later cleanup/deletion
@@ -4475,6 +4572,8 @@ async def event_result(
     ss_11: discord.Attachment = None
 ):
     """Adds results for an event"""
+    if interaction.guild:
+        current_guild_id.set(interaction.guild.id)
     
     # Defer the response immediately to avoid timeout issues
     await interaction.response.defer(ephemeral=True)
@@ -5034,6 +5133,8 @@ async def available_events(interaction: discord.Interaction):
 @tree.command(name="reassign", description="Resign from an event and notify other judges to take it")
 async def reassign_command(interaction: discord.Interaction):
     """Unassign judge from match"""
+    if interaction.guild:
+        current_guild_id.set(interaction.guild.id)
     permission_level = get_user_permission_level(interaction.user.roles, interaction.user.id)
     if permission_level not in ["judge", "organizer", "owner", "helper"]:
         await interaction.response.send_message("❌ You do not have permission to use /reassign.", ephemeral=True)
@@ -5066,6 +5167,8 @@ async def reassign_command(interaction: discord.Interaction):
             ]
         )
         async def select_event(self, select_interaction: discord.Interaction, select: discord.ui.Select):
+            if select_interaction.guild:
+                current_guild_id.set(select_interaction.guild.id)
             selected_event_id = select.values[0]
             event_data = scheduled_events.get(selected_event_id)
             if not event_data:
@@ -5173,6 +5276,8 @@ async def reassign_command(interaction: discord.Interaction):
 
 @tree.command(name="event-delete", description="Delete a scheduled event (Head Organizer/Head Helper/Helper Team only)")
 async def event_delete(interaction: discord.Interaction):
+    if interaction.guild:
+        current_guild_id.set(interaction.guild.id)
     # Check permissions - only Head Organizer, Head Helper or Helper Team can delete events
     if not has_event_create_permission(interaction):
         await interaction.response.send_message("❌ You need **Head Organizer**, **Head Helper** or **Helper Team** role to delete events.", ephemeral=True)
@@ -5214,6 +5319,8 @@ async def event_delete(interaction: discord.Interaction):
                 ]
             )
             async def select_event(self, select_interaction: discord.Interaction, select: discord.ui.Select):
+                if select_interaction.guild:
+                    current_guild_id.set(select_interaction.guild.id)
                 selected_event_id = select.values[0]
                 
                 # Get event details for confirmation
@@ -5542,6 +5649,8 @@ async def event_edit(
     team_2_name: str = None
 ):
     """Edit the event in this ticket channel"""
+    if interaction.guild:
+        current_guild_id.set(interaction.guild.id)
     
     # Defer the response to give us more time for processing
     await interaction.response.defer(ephemeral=True)
@@ -5693,7 +5802,8 @@ async def event_edit(
                     t1_poster,
                     t2_poster,
                     time_info['utc_time_simple'],
-                    f"{new_datetime.day:02d}/{new_datetime.month:02d}/{new_datetime.year}"
+                    f"{new_datetime.day:02d}/{new_datetime.month:02d}/{new_datetime.year}",
+                    server_name=f"{tournament_info} - {ORGANIZATION_NAME}"
                 )
                 if poster_image:
                     event_to_edit['poster_path'] = poster_image
@@ -6393,6 +6503,8 @@ class RulesModal(discord.ui.Modal, title='Publish Tournament Rules'):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
+        if interaction.guild:
+            current_guild_id.set(interaction.guild.id)
         channel_id = CHANNEL_IDS.get("rules", 1500279213754945596)
         channel = interaction.guild.get_channel(channel_id)
         if not channel:
@@ -6817,6 +6929,8 @@ def stop_auto_room_loop(guild_id: int):
     ]
 )
 async def config_player_info(interaction: discord.Interaction, link: str, format: app_commands.Choice[str]):
+    if interaction.guild:
+        current_guild_id.set(interaction.guild.id)
     if not has_organizer_permission(interaction):
         await interaction.response.send_message(
             "❌ Only **Bot Owner** or **Head Organizer** can configure player info.", ephemeral=True
@@ -7700,10 +7814,15 @@ async def settings_edit(
 ):
     format_val = player_info_format.value if player_info_format else None
     await update_settings_logic(
-        interaction, "edit",
-        organization_name, tournament_system_name, None, None,
-        google_sheet_link, current_tournament_name,
-        player_info_link, format_val, sheetdb_api_url
+        interaction=interaction,
+        command_name="edit",
+        organization_name=organization_name,
+        tournament_system_name=tournament_system_name,
+        google_sheet_link=google_sheet_link,
+        current_tournament_name=current_tournament_name,
+        player_info_link=player_info_link,
+        player_info_format=format_val,
+        sheetdb_api_url=sheetdb_api_url
     )
 
 
@@ -7796,6 +7915,59 @@ async def settings_show(interaction: discord.Interaction):
     await interaction.response.send_message(embeds=[embed_discord, embed_tourney], ephemeral=True)
 
 
+@settings_group.command(name="clean", description="Reset all bot configurations to defaults for this server")
+async def settings_clean(interaction: discord.Interaction):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+        
+    if not is_authorized_to_configure(interaction):
+        await interaction.response.send_message("❌ You do not have permission to clean settings. Only the **Bot Owner**, **Administrators**, or members with the **Head Organizer** role can use this.", ephemeral=True)
+        return
+        
+    await interaction.response.defer(ephemeral=True)
+    guild_id = interaction.guild.id
+    guild_id_str = str(guild_id)
+    
+    # 1. Reset configuration cache
+    default_config = get_default_config()
+    GUILD_CONFIG_CACHE[guild_id_str] = default_config
+    
+    # 2. Reset in Supabase
+    if supabase_client:
+        try:
+            supabase_client.table("GuildConfig").delete().eq("Guild_ID", guild_id_str).execute()
+            print(f"[Supabase] Config reset/deleted for guild {guild_id}")
+        except Exception as e:
+            print(f"[Supabase] Error deleting config during clean: {e}")
+            
+    # 3. Reset in local JSON file
+    all_configs = {}
+    if os.path.exists('guild_configs.json'):
+        try:
+            with open('guild_configs.json', 'r', encoding='utf-8') as f:
+                all_configs = json.load(f)
+        except Exception as e:
+            print(f"Error loading guild_configs.json for cleaning: {e}")
+            
+    if guild_id_str in all_configs:
+        del all_configs[guild_id_str]
+        try:
+            with open('guild_configs.json', 'w', encoding='utf-8') as f:
+                json.dump(all_configs, f, indent=4)
+        except Exception as e:
+            print(f"Error saving guild_configs.json during clean: {e}")
+            
+    embed = discord.Embed(
+        title="🧹 Settings Cleaned",
+        description="All bot settings (roles, channels, branding) have been reset to defaults for this server.",
+        color=discord.Color.orange(),
+        timestamp=discord.utils.utcnow()
+    )
+    embed.set_footer(text=f"Cleaned by {interaction.user.display_name}")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
 # Register settings_group
 bot.tree.add_command(settings_group)
 
@@ -7838,15 +8010,48 @@ def load_guild_tournaments(guild_id: int) -> dict:
         return TOURNAMENTS_CACHE[guild_id_str]
         
     tournaments = {}
-    if USE_FIREBASE:
+    loaded = False
+    
+    # Try loading from Supabase first
+    if supabase_client:
         try:
-            doc = BOT_DOC.collection("Tournaments").document(guild_id_str).get()
-            if doc.exists:
-                tournaments = doc.to_dict()
-                print(f"Loaded tournaments for guild {guild_id} from Firebase.")
+            resp = supabase_client.table("Tournaments").select("*").eq("Guild_ID", guild_id_str).execute()
+            if resp.data:
+                for row in resp.data:
+                    t_id = row.get("Tournament_ID")
+                    if t_id:
+                        # Auto_Room_Creation mapping
+                        auto_room = row.get("Auto_Room_Creation", "TRUE")
+                        auto_room_val = True if str(auto_room).upper() in ("TRUE", "1") else False
+                        
+                        tournaments[t_id] = {
+                            "name": row.get("Tournament_Name") or "",
+                            "state": row.get("State") or "pending",
+                            "key": row.get("Key") or "",
+                            "challonge_bracket_link": row.get("challonge_bracket_link") or "",
+                            "transcript_channel_id": int(row.get("Transcript_Channel_ID")) if row.get("Transcript_Channel_ID") else None,
+                            "closed_ticket_category_id": int(row.get("Closed_Ticket_Category_ID")) if row.get("Closed_Ticket_Category_ID") else None,
+                            "close_ticket_category_2_id": int(row.get("Closed_Ticket_Category_2_ID")) if row.get("Closed_Ticket_Category_2_ID") else None,
+                            "attendance_channel_id": int(row.get("Attendance_Channel_ID")) if row.get("Attendance_Channel_ID") else None,
+                            "rules_channel_id": int(row.get("Rules_Channel_ID")) if row.get("Rules_Channel_ID") else None,
+                            "deadline_channel_id": int(row.get("Deadline_Channel_ID")) if row.get("Deadline_Channel_ID") else None,
+                            "result_channel_id": int(row.get("Result_Channel_ID")) if row.get("Result_Channel_ID") else None,
+                            "sheet_link": row.get("Sheet_Link") or "",
+                            "admin_role_id": int(row.get("Admin_Role_ID")) if row.get("Admin_Role_ID") else None,
+                            "helper_role_id": int(row.get("Helper_Role_ID")) if row.get("Helper_Role_ID") else None,
+                            "auto_room_creation": auto_room_val,
+                            "ticket_open_category_1_id": int(row.get("Open_Category_1_ID")) if row.get("Open_Category_1_ID") else None,
+                            "ticket_open_category_2_id": int(row.get("Open_Category_2_ID")) if row.get("Open_Category_2_ID") else None,
+                            "ticket_open_category_3_id": int(row.get("Open_Category_3_ID")) if row.get("Open_Category_3_ID") else None,
+                            "ticket_open_category_4_id": int(row.get("Open_Category_4_ID")) if row.get("Open_Category_4_ID") else None,
+                            "thumbnail_url": row.get("Thumbnail_URL") or ""
+                        }
+                loaded = True
+                print(f"Loaded tournaments for guild {guild_id} from Supabase.")
         except Exception as e:
-            print(f"Error loading tournaments for guild {guild_id} from Firebase: {e}")
-    else:
+            print(f"Error loading tournaments from Supabase: {e}")
+            
+    if not loaded:
         if os.path.exists('tournaments.json'):
             try:
                 with open('tournaments.json', 'r', encoding='utf-8') as f:
@@ -7864,28 +8069,22 @@ def save_guild_tournaments(guild_id: int, tournaments: dict):
     guild_id_str = str(guild_id)
     TOURNAMENTS_CACHE[guild_id_str] = tournaments
     
-    if USE_FIREBASE:
+    # Save locally to JSON fallback
+    all_tournaments = {}
+    if os.path.exists('tournaments.json'):
         try:
-            BOT_DOC.collection("Tournaments").document(guild_id_str).set(tournaments)
-            print(f"Saved tournaments for guild {guild_id} to Firebase")
+            with open('tournaments.json', 'r', encoding='utf-8') as f:
+                all_tournaments = json.load(f)
         except Exception as e:
-            print(f"Error saving tournaments for guild {guild_id} to Firebase: {e}")
-    else:
-        all_tournaments = {}
-        if os.path.exists('tournaments.json'):
-            try:
-                with open('tournaments.json', 'r', encoding='utf-8') as f:
-                    all_tournaments = json.load(f)
-            except Exception as e:
-                print(f"Error loading tournaments.json for save: {e}")
-                
-        all_tournaments[guild_id_str] = tournaments
-        try:
-            with open('tournaments.json', 'w', encoding='utf-8') as f:
-                json.dump(all_tournaments, f, indent=4)
-            print(f"Saved tournaments for guild {guild_id} to tournaments.json")
-        except Exception as e:
-            print(f"Error saving tournaments to tournaments.json: {e}")
+            print(f"Error loading tournaments.json for save: {e}")
+            
+    all_tournaments[guild_id_str] = tournaments
+    try:
+        with open('tournaments.json', 'w', encoding='utf-8') as f:
+            json.dump(all_tournaments, f, indent=4)
+        print(f"Saved tournaments for guild {guild_id} to tournaments.json")
+    except Exception as e:
+        print(f"Error saving tournaments to tournaments.json: {e}")
             
     # Sync tournaments to SheetDB and Supabase in the background
     try:
