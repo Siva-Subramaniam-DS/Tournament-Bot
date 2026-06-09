@@ -48,20 +48,25 @@ DEFAULT_CHANNEL_IDS = {
     "bracket":      None,    # Bracket
     "deadlines":    None,    # Deadlines
     "staff_attendance": None, # Attendance
-    "take_schedule": None,   # Schedule
+    "take_schedule": None,   # Schedule Channel
     "results":      None,    # Result
     "category_1":   None,    # Category 1
     "category_2":   None,    # Category 2
-    "closed_tickets_category": None  # Closed Tickets
+    "closed_tickets_category": None,  # Closed Tickets
+    "challonge_logs": None,  # Challonge Logs Channel
+    "transcript_logs": None, # Transcript Logs Channel
+    "bot_logs":     None,    # Bot Logs Channel
+    "thumbnail":    None     # Thumbnail Channel
 }
 
 DEFAULT_ROLE_IDS = {
-    "head_organizer": None,  # Org
-    "helper_team":    None,  # Helper
+    "head_organizer": None,  # Admin Role
+    "helper_team":    None,  # Staff Role
     "head_helper":    None,  # Helper
-    "judge":          None,  # Judge
-    "recorder":       None,  # Recorder
-    "staff":          None   # Staff (fallback)
+    "judge":          None,  # Judge Role
+    "recorder":       None,  # Recorder Role
+    "staff":          None,  # Staff (fallback)
+    "challonge_role": None   # Challonge Role
 }
 
 # ContextVar to hold current guild ID
@@ -97,13 +102,11 @@ def get_default_config():
         'role_ids': DEFAULT_ROLE_IDS.copy(),
         'organization_name': "Tournament Organizer",
         'tournament_system_name': "Tournament System",
-        'bracket_link': "",
-        'bracket_api_key': "",
         'google_sheet_link': "",
         'current_tournament_name': "",
         'player_info_link': "",
         'player_info_format': "5 vs 5",
-        'sheetdb_api_url': ""
+        'sheetdb_api_url': "https://sheetdb.io/api/v1/vlbn6vbc8vdbb"
     }
 
 def load_guild_config(guild_id: int) -> dict:
@@ -170,6 +173,13 @@ def save_guild_config(guild_id: int, config: dict):
             print(f"Saved config for guild {guild_id} to guild_configs.json")
         except Exception as e:
             print(f"Error saving config to guild_configs.json: {e}")
+            
+    # Sync config to SheetDB in the background
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(save_guild_config_to_sheetdb(guild_id, config))
+    except RuntimeError:
+        pass
 
 def get_guild_config(context=None) -> dict:
     if context is None:
@@ -216,23 +226,31 @@ class GuildDictProxy(dict):
             return cfg.get(self.config_key, self.default_dict)
         return self.default_dict
 
+    def _coerce(self, val):
+        if val is not None and self.config_key in ("role_ids", "channel_ids"):
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                pass
+        return val
+
     def __getitem__(self, key):
-        return self._get_current_dict().get(key, self.default_dict.get(key))
+        return self._coerce(self._get_current_dict().get(key, self.default_dict.get(key)))
 
     def get(self, key, default=None):
-        return self._get_current_dict().get(key, self.default_dict.get(key, default))
+        return self._coerce(self._get_current_dict().get(key, self.default_dict.get(key, default)))
 
     def __contains__(self, key):
         return key in self._get_current_dict() or key in self.default_dict
 
     def items(self):
-        return self._get_current_dict().items()
+        return [(k, self._coerce(v)) for k, v in self._get_current_dict().items()]
 
     def keys(self):
         return self._get_current_dict().keys()
 
     def values(self):
-        return self._get_current_dict().values()
+        return [self._coerce(v) for v in self._get_current_dict().values()]
 
     def update(self, other):
         self.default_dict.update(other)
@@ -268,7 +286,8 @@ class DynamicString:
 
 # SheetDB API endpoint
 def get_sheetdb_api_url(context=None) -> str:
-    return get_guild_config(context).get("sheetdb_api_url", "")
+    url = get_guild_config(context).get("sheetdb_api_url", "")
+    return url if url else "https://sheetdb.io/api/v1/vlbn6vbc8vdbb"
 
 SHEETDB_API_URL = DynamicString(lambda: get_sheetdb_api_url())
 
@@ -291,10 +310,38 @@ def get_system_name(context=None) -> str:
     return get_guild_config(context).get("tournament_system_name", "Tournament System")
 
 def get_bracket_link(context=None) -> str:
-    return get_guild_config(context).get("bracket_link", "")
+    g_id = None
+    if context and hasattr(context, "guild") and context.guild:
+        g_id = context.guild.id
+    elif isinstance(context, discord.Guild):
+        g_id = context.id
+    elif isinstance(context, int):
+        g_id = context
+    else:
+        g_id = current_guild_id.get()
+        
+    if g_id:
+        t_cfg = get_active_tournament_config(g_id)
+        if t_cfg:
+            return t_cfg.get("challonge_bracket_link") or t_cfg.get("id") or ""
+    return ""
 
 def get_bracket_api_key(context=None) -> str:
-    return get_guild_config(context).get("bracket_api_key", "")
+    g_id = None
+    if context and hasattr(context, "guild") and context.guild:
+        g_id = context.guild.id
+    elif isinstance(context, discord.Guild):
+        g_id = context.id
+    elif isinstance(context, int):
+        g_id = context
+    else:
+        g_id = current_guild_id.get()
+        
+    if g_id:
+        t_cfg = get_active_tournament_config(g_id)
+        if t_cfg and t_cfg.get("key"):
+            return t_cfg.get("key")
+    return ""
 
 def get_google_sheet_link(context=None) -> str:
     return get_guild_config(context).get("google_sheet_link", "")
@@ -347,6 +394,8 @@ import sys
 if sys.platform == "win32":
     import asyncio
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -549,6 +598,148 @@ def _sync_sheetdb_post(sheet_name: str, row_data: dict):
 async def sheetdb_post(sheet_name: str, row_data: dict):
     """Async wrapper — runs SheetDB POST in a thread so the event loop stays free."""
     await asyncio.to_thread(_sync_sheetdb_post, sheet_name, row_data)
+
+
+def _sync_save_guild_config_to_sheetdb(guild_id: int, cfg: dict):
+    try:
+        url_base = str(SHEETDB_API_URL)
+        if not url_base or not url_base.startswith("http"):
+            print("[SheetDB] ⚠️ Skipped updating GuildConfig sheet - SheetDB API URL is not set.")
+            return False
+            
+        search_url = f"{url_base}/search?Guild_ID={guild_id}&sheet=GuildConfig"
+        headers = {"Accept": "application/json", "Content-Type": "application/json"}
+        resp = requests.get(search_url, headers=headers, timeout=10)
+        
+        row = {
+            "Guild_ID": str(guild_id),
+            "Admin_Role_ID": str(cfg.get('role_ids', {}).get('head_organizer') or ""),
+            "Staff_Role_ID": str(cfg.get('role_ids', {}).get('helper_team') or ""),
+            "Challonge_Role_ID": str(cfg.get('role_ids', {}).get('challonge_role') or ""),
+            "Judge_Role_ID": str(cfg.get('role_ids', {}).get('judge') or ""),
+            "Recorder_Role_ID": str(cfg.get('role_ids', {}).get('recorder') or ""),
+            "Challonge_Logs_Channel_ID": str(cfg.get('channel_ids', {}).get('challonge_logs') or ""),
+            "Transcript_Logs_Channel_ID": str(cfg.get('channel_ids', {}).get('transcript_logs') or ""),
+            "Closed_Category_ID": str(cfg.get('channel_ids', {}).get('closed_tickets_category') or ""),
+            "Schedule_Channel_ID": str(cfg.get('channel_ids', {}).get('take_schedule') or ""),
+            "Results_Channel_ID": str(cfg.get('channel_ids', {}).get('results') or ""),
+            "channel_bracket": str(cfg.get('channel_ids', {}).get('bracket') or ""),
+            "Bot_Logs_Channel_ID": str(cfg.get('channel_ids', {}).get('bot_logs') or ""),
+            "Thumbnail_Channel_ID": str(cfg.get('channel_ids', {}).get('thumbnail') or ""),
+            "Updated_At": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        
+        exists = False
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data, list) and len(data) > 0:
+                exists = True
+                
+        if exists:
+            update_url = f"{url_base}/Guild_ID/{guild_id}?sheet=GuildConfig"
+            patch_resp = requests.patch(update_url, json={"data": row}, headers=headers, timeout=10)
+            if patch_resp.status_code == 200:
+                print(f"[SheetDB] ✅ GuildConfig updated for guild {guild_id}")
+                return True
+            else:
+                print(f"[SheetDB] ❌ Failed to update GuildConfig ({patch_resp.status_code}): {patch_resp.text}")
+        else:
+            post_url = f"{url_base}?sheet=GuildConfig"
+            post_resp = requests.post(post_url, json={"data": [row]}, headers=headers, timeout=10)
+            if post_resp.status_code in (200, 201):
+                print(f"[SheetDB] ✅ GuildConfig created for guild {guild_id}")
+                return True
+            else:
+                print(f"[SheetDB] ❌ Failed to create GuildConfig ({post_resp.status_code}): {post_resp.text}")
+    except Exception as e:
+        print(f"[SheetDB] ❌ Error syncing config to SheetDB: {e}")
+    return False
+
+async def save_guild_config_to_sheetdb(guild_id: int, cfg: dict):
+    await asyncio.to_thread(_sync_save_guild_config_to_sheetdb, guild_id, cfg)
+
+def _sync_save_tournament_to_sheetdb(guild_id: int, tournament_id: str, t_data: dict):
+    try:
+        url_base = str(SHEETDB_API_URL)
+        if not url_base or not url_base.startswith("http"):
+            print("[SheetDB] ⚠️ Skipped updating Tournaments sheet - SheetDB API URL is not set.")
+            return False
+            
+        search_url = f"{url_base}/search?Guild_ID={guild_id}&Tournament_ID={tournament_id}&sheet=Tournaments"
+        headers = {"Accept": "application/json", "Content-Type": "application/json"}
+        resp = requests.get(search_url, headers=headers, timeout=10)
+        
+        row = {
+            "Guild_ID": str(guild_id),
+            "Tournament_ID": str(tournament_id),
+            "Tournament_Name": str(t_data.get('name') or ""),
+            "State": str(t_data.get('state') or "pending"),
+            "Key": str(t_data.get('key') or ""),
+            "challonge_bracket_link": str(t_data.get('challonge_bracket_link') or ""),
+            "Transcript_Channel_ID": str(t_data.get('transcript_channel_id') or ""),
+            "Closed_Ticket_Category_ID": str(t_data.get('closed_ticket_category_id') or ""),
+            "Closed_Ticket_Category_2_ID": str(t_data.get('close_ticket_category_2_id') or ""),
+            "Attendance_Channel_ID": str(t_data.get('attendance_channel_id') or ""),
+            "Rules_Channel_ID": str(t_data.get('rules_channel_id') or ""),
+            "Deadline_Channel_ID": str(t_data.get('deadline_channel_id') or ""),
+            "Result_Channel_ID": str(t_data.get('result_channel_id') or ""),
+            "Sheet_Link": str(t_data.get('sheet_link') or ""),
+            "Admin_Role_ID": str(t_data.get('admin_role_id') or ""),
+            "Helper_Role_ID": str(t_data.get('helper_role_id') or ""),
+            "Auto_Room_Creation": str(t_data.get('auto_room_creation', True)).upper(),
+            "Open_Category_1_ID": str(t_data.get('ticket_open_category_1_id') or ""),
+            "Open_Category_2_ID": str(t_data.get('ticket_open_category_2_id') or ""),
+            "Open_Category_3_ID": str(t_data.get('ticket_open_category_3_id') or ""),
+            "Open_Category_4_ID": str(t_data.get('ticket_open_category_4_id') or ""),
+            "Thumbnail_URL": str(t_data.get('thumbnail_url') or ""),
+            "Updated_At": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        
+        exists = False
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data, list) and len(data) > 0:
+                exists = True
+                
+        if exists:
+            update_url = f"{url_base}/Tournament_ID/{tournament_id}?sheet=Tournaments"
+            patch_resp = requests.patch(update_url, json={"data": row}, headers=headers, timeout=10)
+            if patch_resp.status_code == 200:
+                print(f"[SheetDB] ✅ Tournaments sheet updated for tournament {tournament_id}")
+                return True
+            else:
+                print(f"[SheetDB] ❌ Failed to update Tournaments sheet ({patch_resp.status_code}): {patch_resp.text}")
+        else:
+            post_url = f"{url_base}?sheet=Tournaments"
+            post_resp = requests.post(post_url, json={"data": [row]}, headers=headers, timeout=10)
+            if post_resp.status_code in (200, 201):
+                print(f"[SheetDB] ✅ Tournaments sheet row created for tournament {tournament_id}")
+                return True
+            else:
+                print(f"[SheetDB] ❌ Failed to create Tournaments sheet row ({post_resp.status_code}): {post_resp.text}")
+    except Exception as e:
+        print(f"[SheetDB] ❌ Error syncing tournament to SheetDB: {e}")
+    return False
+
+async def save_tournament_to_sheetdb(guild_id: int, tournament_id: str, t_data: dict):
+    await asyncio.to_thread(_sync_save_tournament_to_sheetdb, guild_id, tournament_id, t_data)
+
+def _sync_delete_tournament_from_sheetdb(guild_id: int, tournament_id: str):
+    try:
+        url_base = str(SHEETDB_API_URL)
+        if not url_base or not url_base.startswith("http"):
+            return False
+        delete_url = f"{url_base}/Tournament_ID/{tournament_id}?sheet=Tournaments"
+        resp = requests.delete(delete_url, timeout=10)
+        if resp.status_code == 200:
+            print(f"[SheetDB] ✅ Tournaments sheet row deleted for tournament {tournament_id}")
+            return True
+    except Exception as e:
+        print(f"[SheetDB] ❌ Error deleting tournament from SheetDB: {e}")
+    return False
+
+async def delete_tournament_from_sheetdb(guild_id: int, tournament_id: str):
+    await asyncio.to_thread(_sync_delete_tournament_from_sheetdb, guild_id, tournament_id)
 
 
 def extract_challonge_id(link: str) -> str:
@@ -828,8 +1019,12 @@ def load_staff_stats():
         print(f"Error loading staff stats: {e}")
 
 def save_staff_stats():
-    # Legacy wrapper - no-op since GuildStatsProxy saves automatically on setitem
-    return True
+    """Save staff statistics for the current guild"""
+    g_id = current_guild_id.get()
+    if g_id:
+        save_guild_staff_stats(g_id, get_guild_staff_stats(g_id))
+        return True
+    return False
 
 def reset_staff_stats():
     """Reset all staff statistics for the current guild"""
@@ -873,6 +1068,18 @@ def update_staff_stats(user: discord.Member, role_type: str):
     stats[user_id]["last_active"] = datetime.datetime.utcnow().isoformat()
     
     save_guild_staff_stats(g_id, stats)
+
+    # Log to SheetDB
+    asyncio.create_task(sheetdb_post("StaffStats", {
+        "Guild_ID": str(g_id) if g_id else "",
+        "Timestamp": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        "User_ID": user_id,
+        "Name": user.display_name,
+        "Role_Updated": role_type,
+        "Judge_Count": stats[user_id].get("judge_count", 0),
+        "Recorder_Count": stats[user_id].get("recorder_count", 0),
+        "Total_Count": stats[user_id].get("total_count", 0)
+    }))
 
 def save_rules():
     # Legacy wrapper - no-op since GuildRulesProxy saves automatically on setitem
@@ -972,7 +1179,7 @@ COMMAND_DATA = {
     },
     "judge": {
         "title": "👨‍⚖️ Judge Commands",
-        "description": "Match officiating and scheduling commands",
+        "description": "Match officiating, scheduling, and score upload commands",
         "commands": [
             {
                 "name": "Take Schedule Button",
@@ -991,9 +1198,16 @@ COMMAND_DATA = {
             {
                 "name": "/event-result",
                 "description": "Record official match outcome (supports disqualification & 0:0 uploads)",
-                "usage": "/event-result winner_score:<score> loser_score:<score> tournament:<name> round:<round> [winner:<@user>] [loser:<@user>] [disqualified:<Winner/Loser/Both>] [winner_team_name:<text>] [loser_team_name:<text>] [group:<name>] [remarks:<text>] [screenshots:<1-11>]",
+                "usage": "/event-result winner_score:<score> loser_score:<score> tournament:<name> round:<round> [winner:<@user>] [loser:<@user>] [disqualified:<Winner/Loser/Both>] [winner_team_name:<text>] [loser_team_name:<text>] [group:<A-J>] [remarks:<text>] [ss_1 - ss_11: screenshots]",
                 "permissions": "judge / organizer",
-                "example": "`/event-result winner_score:2 loser_score:1 tournament:Frigate S1 round:R1 winner:@Cap1 loser:@Cap2` or `/event-result winner_score:0 loser_score:0 tournament:Frigate S1 round:R1 winner_team_name:Alpha loser_team_name:Bravo disqualified:Both`"
+                "example": "`/event-result winner_score:2 loser_score:1 tournament:Frigate S1 round:R1 winner:@Cap1 loser:@Cap2`"
+            },
+            {
+                "name": "/upload-score",
+                "description": "Upload match scores directly to Challonge bracket from Discord",
+                "usage": "/upload-score match_id:<id> winner_participant_id:<id> winner_score:<n> loser_score:<n>",
+                "permissions": "helper / organizer",
+                "example": "`/upload-score match_id:123456 winner_participant_id:789 winner_score:2 loser_score:1`"
             },
             {
                 "name": "/reassign",
@@ -1011,16 +1225,16 @@ COMMAND_DATA = {
             {
                 "name": "/event-create",
                 "description": "Schedule a new match with group support",
-                "usage": "/event-create team_1_captain:<@user> team_2_captain:<@user> hour:<0-23> minute:<0-59> date:<1-31> month:<1-12> round:<round> tournament:<name> [group:<A-J/Winner/Loser>]",
+                "usage": "/event-create team_1_captain:<@user> team_2_captain:<@user> hour:<0-23> minute:<0-59> date:<1-31> month:<1-12> round:<round> tournament:<name> [group:<A-J/Winner/Loser>] [team_1_name:<text>] [team_2_name:<text>]",
                 "permissions": "helper / organizer",
-                "example": "`/event-create team_1_captain:@Cap1 team_2_captain:@Cap2 hour:18 minute:0 date:28 month:5 round:Qualifier tournament:TFT S1`"
+                "example": "`/event-create team_1_captain:@Cap1 team_2_captain:@Cap2 hour:18 minute:0 date:28 month:5 round:R1 tournament:VCT S1`"
             },
             {
                 "name": "/event-edit",
-                "description": "Edit details (captains, schedule, round, etc.) of an active match channel",
-                "usage": "/event-edit",
+                "description": "Edit details of the active match in the current ticket channel",
+                "usage": "/event-edit [team_1_captain:<@user>] [team_2_captain:<@user>] [hour:<0-23>] [minute:<0-59>] [date:<1-31>] [month:<1-12>] [round:<round>] [tournament:<name>] [group:<A-J>] [team_1_name:<text>] [team_2_name:<text>]",
                 "permissions": "helper / organizer",
-                "example": "Run `/event-edit` inside the match ticket channel"
+                "example": "Run `/event-edit round:R2 hour:20` inside the match ticket channel"
             },
             {
                 "name": "/event-delete",
@@ -1039,9 +1253,9 @@ COMMAND_DATA = {
             {
                 "name": "/add_captain",
                 "description": "Add two captains to a match channel and automatically rename it",
-                "usage": "/add_captain round:<round> captain1:<@user> captain2:<@user> [bracket:<name>] [team_1:<name>] [team_2:<name>]",
+                "usage": "/add_captain round:<round> captain1:<@user> captain2:<@user> [team_1:<name>] [team_2:<name>]",
                 "permissions": "helper / organizer",
-                "example": "`/add_captain round:Qualifier captain1:@Cap1 captain2:@Cap2 team_1:Alpha team_2:Bravo`"
+                "example": "`/add_captain round:R1 captain1:@Cap1 captain2:@Cap2 team_1:Alpha team_2:Bravo`"
             },
             {
                 "name": "/general_tie_breaker",
@@ -1057,11 +1271,53 @@ COMMAND_DATA = {
         "description": "Owner and Head Organizer system configurations",
         "commands": [
             {
-                "name": "/config_player_info",
-                "description": "Link the Google Sheet and match format for players",
-                "usage": "/config_player_info link:<url> format:<format>",
+                "name": "/settings set",
+                "description": "Set roles (Admin, Challonge, Judge, Recorder) and channels (Logs, Schedule, Results, Thumbnail)",
+                "usage": "/settings set [head_organizer:<role>] [challonge_role:<role>] [judge:<role>] [recorder:<role>] [challonge_logs:<channel>] [transcript_logs:<channel>] [results:<channel>] [thumbnail:<channel>] [take_schedule:<channel>] [bot_logs:<channel>] [closed_tickets_category:<category>]",
                 "permissions": "organizer / owner",
-                "example": "`/config_player_info link:https://docs.google.com/spreadsheets/d/123/edit format:3 vs 3`"
+                "example": "`/settings set head_organizer:@TournamentOps judge:@GFL-Tour-Judge`"
+            },
+            {
+                "name": "/settings edit",
+                "description": "Set tournament branding and links (org name, sheets, SheetDB)",
+                "usage": "/settings edit [organization_name:<text>] [sheetdb_api_url:<url>] [google_sheet_link:<url>] [current_tournament_name:<text>] [player_info_link:<url>] [player_info_format:<format>]",
+                "permissions": "organizer / owner",
+                "example": "`/settings edit organization_name:\"Task Force Trident\"`"
+            },
+            {
+                "name": "/settings show",
+                "description": "Display current bot settings, roles, channels, and tournament branding/links",
+                "usage": "/settings show",
+                "permissions": "organizer / owner",
+                "example": "`/settings show`"
+            },
+            {
+                "name": "/tournament add",
+                "description": "Register a tournament configuration (channels, roles, state)",
+                "usage": "/tournament add name:<name> id:<id> [challonge_api_key:<key>] [challonge_bracket_link:<url>] [captains_sheet_link:<url>] [thumbnail_url:<url>] [admin_role:<role>] [helper_role:<role>] [attendance_channel:<ch>] [transcript_channel:<ch>] [rules_channel:<ch>] [deadline_channel:<ch>] [result_channel:<ch>] [auto_room_creation:<true/false>]",
+                "permissions": "organizer / owner",
+                "example": "`/tournament add name:\"VCT S1\" id:VCT_S1 challonge_api_key:abc123`"
+            },
+            {
+                "name": "/tournament edit",
+                "description": "Edit an existing tournament configuration or change its state",
+                "usage": "/tournament edit tournament:<id> [state:<pending/active/completed>] [challonge_api_key:<key>] [challonge_bracket_link:<url>] [captains_sheet_link:<url>] [thumbnail_url:<url>] [...other roles/channels]",
+                "permissions": "organizer / owner",
+                "example": "`/tournament edit tournament:VCT_S1 state:active challonge_bracket_link:https://challonge.com/vct_s1`"
+            },
+            {
+                "name": "/tournament list",
+                "description": "Display all tournament configurations for this server",
+                "usage": "/tournament list",
+                "permissions": "organizer / owner",
+                "example": "`/tournament list`"
+            },
+            {
+                "name": "/tournament info",
+                "description": "Get detailed configuration for a specific tournament",
+                "usage": "/tournament info tournament:<id>",
+                "permissions": "organizer / owner",
+                "example": "`/tournament info tournament:VCT_S1`"
             },
             {
                 "name": "/registration",
@@ -1304,11 +1560,26 @@ class HelpView(discord.ui.View):
 
 def has_organizer_permission(interaction):
     """Check if user has organizer permissions for rule management"""
-    if interaction.guild:
-        current_guild_id.set(interaction.guild.id)
-    cfg = get_guild_config(interaction.guild)
+    if interaction.user.id == BOT_OWNER_ID:
+        return True
+    if interaction.guild and interaction.user.guild_permissions.administrator:
+        return True
+    if not interaction.guild:
+        return False
+    
+    cfg = get_guild_config(interaction.guild.id)
     role_ids = cfg.get("role_ids", DEFAULT_ROLE_IDS)
-    head_organizer_role = discord.utils.get(interaction.user.roles, id=role_ids.get("head_organizer"))
+    
+    raw_id = role_ids.get("head_organizer")
+    try:
+        role_id = int(raw_id) if raw_id is not None else None
+    except (ValueError, TypeError):
+        role_id = None
+        
+    if not role_id:
+        return False
+        
+    head_organizer_role = discord.utils.get(interaction.user.roles, id=role_id)
     return head_organizer_role is not None
 
 # Embed field utility functions for safe Discord.py embed manipulation
@@ -1443,6 +1714,15 @@ class StaffConfirmationView(discord.ui.View):
         self.judge_member = ev.get('judge')
         self.recorder_member = ev.get('recorder')
         
+        # Check if within 10 mins
+        dt = ev.get('datetime')
+        is_too_late = False
+        if dt:
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=pytz.UTC)
+            now = datetime.datetime.now(pytz.UTC)
+            is_too_late = (dt - now).total_seconds() < 600
+        
         # Add Judge button if a judge is assigned
         if self.judge_member:
             is_confirmed = ev.get('judge_confirmed', False)
@@ -1451,6 +1731,9 @@ class StaffConfirmationView(discord.ui.View):
             
             btn = discord.ui.Button(label=btn_label, style=btn_style, custom_id=f"confirm_judge_{self.event_id}")
             btn.callback = self.confirm_judge_callback
+            if is_too_late and not is_confirmed:
+                btn.disabled = True
+                btn.label = "❌ Too Late to Confirm"
             self.add_item(btn)
             
         # Add Recorder button if a recorder is assigned
@@ -1461,6 +1744,9 @@ class StaffConfirmationView(discord.ui.View):
             
             btn = discord.ui.Button(label=btn_label, style=btn_style, custom_id=f"confirm_recorder_{self.event_id}")
             btn.callback = self.confirm_recorder_callback
+            if is_too_late and not is_confirmed:
+                btn.disabled = True
+                btn.label = "❌ Too Late to Confirm"
             self.add_item(btn)
 
     @with_guild_context
@@ -1476,6 +1762,15 @@ class StaffConfirmationView(discord.ui.View):
             await interaction.response.send_message("❌ You are not the assigned judge for this event.", ephemeral=True)
             return
             
+        dt = ev.get('datetime')
+        if dt:
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=pytz.UTC)
+            now = datetime.datetime.now(pytz.UTC)
+            if (dt - now).total_seconds() < 600:
+                await interaction.response.send_message("❌ Too late to confirm presence. Staff replacement is now required.", ephemeral=True)
+                return
+                
         ev['judge_confirmed'] = True
         save_scheduled_events()
         self.update_buttons()
@@ -1506,6 +1801,15 @@ class StaffConfirmationView(discord.ui.View):
             await interaction.response.send_message("❌ You are not the assigned recorder for this event.", ephemeral=True)
             return
             
+        dt = ev.get('datetime')
+        if dt:
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=pytz.UTC)
+            now = datetime.datetime.now(pytz.UTC)
+            if (dt - now).total_seconds() < 600:
+                await interaction.response.send_message("❌ Too late to confirm presence. Staff replacement is now required.", ephemeral=True)
+                return
+                
         ev['recorder_confirmed'] = True
         save_scheduled_events()
         self.update_buttons()
@@ -1556,10 +1860,17 @@ class StaffReplacementView(discord.ui.View):
 
     @with_guild_context
     async def replace_judge_callback(self, interaction: discord.Interaction):
+        is_admin = interaction.guild and interaction.user.guild_permissions.administrator
+        is_owner = interaction.user.id == BOT_OWNER_ID
         head_organizer_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_organizer"])
+        head_helper_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_helper"])
+        helper_team_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["helper_team"])
         judge_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["judge"])
-        if not (head_organizer_role or judge_role):
-            await interaction.response.send_message("❌ You need **Head Organizer** or **Judge** role to replace the judge.", ephemeral=True)
+        recorder_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["recorder"])
+        staff_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["staff"])
+        has_allowed_role = any([head_organizer_role, head_helper_role, helper_team_role, judge_role, recorder_role, staff_role])
+        if not (has_allowed_role or is_admin or is_owner):
+            await interaction.response.send_message("❌ You do not have the required role to replace the judge.", ephemeral=True)
             return
             
         ev = scheduled_events.get(self.event_id)
@@ -1572,14 +1883,17 @@ class StaffReplacementView(discord.ui.View):
         ev['judge_replaced'] = True
         save_scheduled_events()
         
-        try:
-            await interaction.channel.set_permissions(
-                interaction.user,
-                read_messages=True, send_messages=True, view_channel=True,
-                embed_links=True, attach_files=True, read_message_history=True
-            )
-        except Exception as e:
-            print(f"Error updating channel permissions for replacement judge: {e}")
+        ch_id = ev.get('channel_id')
+        event_ch = interaction.guild.get_channel(ch_id) if ch_id else None
+        if event_ch:
+            try:
+                await event_ch.set_permissions(
+                    interaction.user,
+                    read_messages=True, send_messages=True, view_channel=True,
+                    embed_links=True, attach_files=True, read_message_history=True
+                )
+            except Exception as e:
+                print(f"Error updating channel permissions for replacement judge: {e}")
             
         self.update_buttons()
         
@@ -1594,7 +1908,7 @@ class StaffReplacementView(discord.ui.View):
                     if sched_msg:
                         sched_embed = sched_msg.embeds[0]
                         update_judge_field(sched_embed, interaction.user)
-                        sched_view = TakeScheduleButton(self.event_id, ev.get('team1_captain'), ev.get('team2_captain'), interaction.channel)
+                        sched_view = TakeScheduleButton(self.event_id, ev.get('team1_captain'), ev.get('team2_captain'), event_ch)
                         await sched_msg.edit(embed=sched_embed, view=sched_view)
         except Exception as e:
             print(f"Error updating schedule message after replacement: {e}")
@@ -1605,15 +1919,22 @@ class StaffReplacementView(discord.ui.View):
         
         await interaction.response.edit_message(embed=embed, view=self)
         await interaction.followup.send(f"✅ You have successfully replaced the judge for this match!", ephemeral=True)
-        await interaction.channel.send(f"⚖️ {interaction.user.mention} is now the assigned Judge for this match.")
+        if event_ch:
+            await event_ch.send(f"⚖️ {interaction.user.mention} is now the assigned Judge for this match.")
 
     @with_guild_context
     async def replace_recorder_callback(self, interaction: discord.Interaction):
+        is_admin = interaction.guild and interaction.user.guild_permissions.administrator
+        is_owner = interaction.user.id == BOT_OWNER_ID
         head_organizer_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_organizer"])
-        recorder_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["recorder"])
+        head_helper_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_helper"])
+        helper_team_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["helper_team"])
         judge_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["judge"])
-        if not (head_organizer_role or recorder_role or judge_role):
-            await interaction.response.send_message("❌ You need **Head Organizer**, **Judge**, or **Recorder** role to replace the recorder.", ephemeral=True)
+        recorder_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["recorder"])
+        staff_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["staff"])
+        has_allowed_role = any([head_organizer_role, head_helper_role, helper_team_role, judge_role, recorder_role, staff_role])
+        if not (has_allowed_role or is_admin or is_owner):
+            await interaction.response.send_message("❌ You do not have the required role to replace the recorder.", ephemeral=True)
             return
             
         ev = scheduled_events.get(self.event_id)
@@ -1626,14 +1947,17 @@ class StaffReplacementView(discord.ui.View):
         ev['recorder_replaced'] = True
         save_scheduled_events()
         
-        try:
-            await interaction.channel.set_permissions(
-                interaction.user,
-                read_messages=True, send_messages=True, view_channel=True,
-                embed_links=True, attach_files=True, read_message_history=True
-            )
-        except Exception as e:
-            print(f"Error updating channel permissions for replacement recorder: {e}")
+        ch_id = ev.get('channel_id')
+        event_ch = interaction.guild.get_channel(ch_id) if ch_id else None
+        if event_ch:
+            try:
+                await event_ch.set_permissions(
+                    interaction.user,
+                    read_messages=True, send_messages=True, view_channel=True,
+                    embed_links=True, attach_files=True, read_message_history=True
+                )
+            except Exception as e:
+                print(f"Error updating channel permissions for replacement recorder: {e}")
             
         self.update_buttons()
         
@@ -1649,7 +1973,7 @@ class StaffReplacementView(discord.ui.View):
                         sched_embed = sched_msg.embeds[0]
                         remove_field_by_name(sched_embed, "🎥 Recorder")
                         sched_embed.add_field(name="🎥 Recorder", value=interaction.user.mention, inline=True)
-                        sched_view = TakeScheduleButton(self.event_id, ev.get('team1_captain'), ev.get('team2_captain'), interaction.channel)
+                        sched_view = TakeScheduleButton(self.event_id, ev.get('team1_captain'), ev.get('team2_captain'), event_ch)
                         await sched_msg.edit(embed=sched_embed, view=sched_view)
         except Exception as e:
             print(f"Error updating schedule message after recorder replacement: {e}")
@@ -1660,7 +1984,8 @@ class StaffReplacementView(discord.ui.View):
         
         await interaction.response.edit_message(embed=embed, view=self)
         await interaction.followup.send(f"✅ You have successfully replaced the recorder for this match!", ephemeral=True)
-        await interaction.channel.send(f"🎥 {interaction.user.mention} is now the assigned Recorder for this match.")
+        if event_ch:
+            await event_ch.send(f"🎥 {interaction.user.mention} is now the assigned Recorder for this match.")
 
 
 async def run_staff_presence_check(event_id: str, event_channel: discord.TextChannel, match_time: datetime.datetime, minutes_before: int = 10):
@@ -1742,10 +2067,33 @@ async def run_staff_presence_check(event_id: str, event_channel: discord.TextCha
             
     view = StaffReplacementView(event_id, judge_needs_replacement, recorder_needs_replacement)
     
-    if file:
-        await event_channel.send(content=f"{pings_str} 🚨 **URGENT STAFF REPLACEMENT NEEDED!**", embed=embed, file=file, view=view)
-    else:
-        await event_channel.send(content=f"{pings_str} 🚨 **URGENT STAFF REPLACEMENT NEEDED!**", embed=embed, view=view)
+    # Send replacement request to schedule channel (active tournament first, then global fallback)
+    _sched_ch_staff = None
+    try:
+        _guild_id_staff = ev.get('guild_id')
+        if _guild_id_staff:
+            _t_cfg_staff = get_active_tournament_config(_guild_id_staff)
+            if _t_cfg_staff and _t_cfg_staff.get('schedule_channel_id'):
+                _sched_ch_staff = guild.get_channel(int(_t_cfg_staff['schedule_channel_id']))
+    except Exception as _e_staff:
+        print(f"Error resolving tournament schedule channel for staff check: {_e_staff}")
+    if not _sched_ch_staff:
+        _sched_ch_staff = guild.get_channel(CHANNEL_IDS.get("take_schedule"))
+    schedule_channel = _sched_ch_staff
+    if schedule_channel:
+        try:
+            if file:
+                await schedule_channel.send(content=f"{pings_str} 🚨 **URGENT STAFF REPLACEMENT NEEDED!**", embed=embed, file=file, view=view)
+            else:
+                await schedule_channel.send(content=f"{pings_str} 🚨 **URGENT STAFF REPLACEMENT NEEDED!**", embed=embed, view=view)
+        except Exception as e:
+            print(f"Failed to send replacement alert to schedule channel: {e}")
+            
+    # Notify event channel
+    try:
+        await event_channel.send("🚨 **URGENT:** Staff presence was not confirmed. Staff replacement request has been posted to the schedule channel.")
+    except Exception as e:
+        print(f"Failed to send warning to ticket channel: {e}")
 
 
 async def run_two_minute_staff_check(event_id: str, event_channel: discord.TextChannel, match_time: datetime.datetime):
@@ -1815,10 +2163,17 @@ class TakeScheduleButton(discord.ui.View):
             await interaction.response.send_message("⏳ Another judge is currently taking this schedule. Please wait.", ephemeral=True)
             return
 
+        is_admin = interaction.guild and interaction.user.guild_permissions.administrator
+        is_owner = interaction.user.id == BOT_OWNER_ID
         head_organizer_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_organizer"])
+        head_helper_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_helper"])
+        helper_team_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["helper_team"])
         judge_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["judge"])
-        if not (head_organizer_role or judge_role):
-            await interaction.response.send_message("❌ You need **Head Organizer** or **Judge** role to take this schedule.", ephemeral=True)
+        recorder_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["recorder"])
+        staff_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["staff"])
+        has_allowed_role = any([head_organizer_role, head_helper_role, helper_team_role, judge_role, recorder_role, staff_role])
+        if not (has_allowed_role or is_owner or is_admin):
+            await interaction.response.send_message("❌ You do not have the required role to take this schedule.", ephemeral=True)
             return
 
         if self.judge:
@@ -1858,6 +2213,7 @@ class TakeScheduleButton(discord.ui.View):
             # Log judge assignment to SheetDB
             ev = scheduled_events.get(self.event_id, {})
             asyncio.create_task(sheetdb_post("JudgeAssignments", {
+                "Guild_ID":       str(interaction.guild.id) if interaction.guild else "",
                 "Timestamp":      datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
                 "Event_ID":       self.event_id,
                 "Judge_ID":       str(interaction.user.id),
@@ -1890,11 +2246,17 @@ class TakeScheduleButton(discord.ui.View):
             await interaction.response.send_message("❌ This event has already started. Buttons are now disabled.", ephemeral=True)
             return
 
+        is_admin = interaction.guild and interaction.user.guild_permissions.administrator
+        is_owner = interaction.user.id == BOT_OWNER_ID
         head_organizer_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_organizer"])
-        recorder_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["recorder"])
+        head_helper_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_helper"])
+        helper_team_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["helper_team"])
         judge_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["judge"])
-        if not (head_organizer_role or recorder_role or judge_role):
-            await interaction.response.send_message("❌ You need **Head Organizer**, **Judge**, or **Recorder** role to record.", ephemeral=True)
+        recorder_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["recorder"])
+        staff_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["staff"])
+        has_allowed_role = any([head_organizer_role, head_helper_role, helper_team_role, judge_role, recorder_role, staff_role])
+        if not (has_allowed_role or is_owner or is_admin):
+            await interaction.response.send_message("❌ You do not have the required role to record.", ephemeral=True)
             return
 
         await interaction.response.defer(ephemeral=True)
@@ -1948,6 +2310,7 @@ class TakeScheduleButton(discord.ui.View):
         # Log recorder to SheetDB
         ev = scheduled_events.get(self.event_id, {})
         asyncio.create_task(sheetdb_post("JudgeAssignments", {
+            "Guild_ID":    str(interaction.guild.id) if interaction.guild else "",
             "Timestamp":   datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
             "Event_ID":    self.event_id,
             "Judge_ID":    str(interaction.user.id),
@@ -2227,7 +2590,8 @@ async def send_ten_minute_reminder(event_id: str, team1_captain: discord.Member,
             color=discord.Color.orange(),
             timestamp=discord.utils.utcnow()
         )
-        embed.add_field(name="🕒 Match Time", value=f"<t:{int(match_time.timestamp())}:F>", inline=False)
+        _mt_utc = match_time if match_time.tzinfo else match_time.replace(tzinfo=datetime.timezone.utc)
+        embed.add_field(name="🕒 Match Time", value=f"<t:{int(_mt_utc.timestamp())}:F>", inline=False)
         embed.add_field(name="👥 Team Captains", value=f"<@{t1_id}> vs <@{t2_id}>", inline=False)
         if j_id:
             embed.add_field(name="👨‍⚖️ Judge", value=f"<@{j_id}>", inline=True)
@@ -2883,25 +3247,70 @@ def calculate_time_difference(event_datetime: datetime.datetime, user_timezone: 
 
 def has_event_create_permission(interaction):
     """Check if user has permission to create events (Head Organizer, Head Helper or Helper Team)"""
-    if interaction.guild:
-        current_guild_id.set(interaction.guild.id)
-    cfg = get_guild_config(interaction.guild)
+    if interaction.user.id == BOT_OWNER_ID:
+        return True
+    if interaction.guild and interaction.user.guild_permissions.administrator:
+        return True
+    if not interaction.guild:
+        return False
+        
+    cfg = get_guild_config(interaction.guild.id)
     role_ids = cfg.get("role_ids", DEFAULT_ROLE_IDS)
-    head_organizer_role = discord.utils.get(interaction.user.roles, id=role_ids.get("head_organizer"))
-    head_helper_role = discord.utils.get(interaction.user.roles, id=role_ids.get("head_helper"))
-    helper_team_role = discord.utils.get(interaction.user.roles, id=role_ids.get("helper_team"))
-    return head_organizer_role is not None or head_helper_role is not None or helper_team_role is not None
+    
+    def safe_get(key):
+        val = role_ids.get(key)
+        try:
+            return int(val) if val is not None else None
+        except:
+            return None
+            
+    head_organizer_id = safe_get("head_organizer")
+    head_helper_id = safe_get("head_helper")
+    helper_team_id = safe_get("helper_team")
+    
+    user_role_ids = [r.id for r in interaction.user.roles] if hasattr(interaction.user, "roles") else []
+    
+    return (
+        (head_organizer_id and head_organizer_id in user_role_ids) or
+        (head_helper_id and head_helper_id in user_role_ids) or
+        (helper_team_id and helper_team_id in user_role_ids)
+    )
 
 def has_event_result_permission(interaction):
-    if interaction.guild:
-        current_guild_id.set(interaction.guild.id)
-    cfg = get_guild_config(interaction.guild)
+    if interaction.user.id == BOT_OWNER_ID:
+        return True
+    if interaction.guild and interaction.user.guild_permissions.administrator:
+        return True
+    if not interaction.guild:
+        return False
+        
+    cfg = get_guild_config(interaction.guild.id)
     role_ids = cfg.get("role_ids", DEFAULT_ROLE_IDS)
-    head_organizer_role = discord.utils.get(interaction.user.roles, id=role_ids.get("head_organizer"))
-    head_helper_role = discord.utils.get(interaction.user.roles, id=role_ids.get("head_helper"))
-    helper_team_role = discord.utils.get(interaction.user.roles, id=role_ids.get("helper_team"))
-    judge_role = discord.utils.get(interaction.user.roles, id=role_ids.get("judge"))
-    return head_organizer_role is not None or head_helper_role is not None or helper_team_role is not None or judge_role is not None
+    
+    def safe_get(key):
+        val = role_ids.get(key)
+        try:
+            return int(val) if val is not None else None
+        except:
+            return None
+            
+    head_organizer_id = safe_get("head_organizer")
+    head_helper_id = safe_get("head_helper")
+    helper_team_id = safe_get("helper_team")
+    judge_id = safe_get("judge")
+    recorder_id = safe_get("recorder")
+    staff_id = safe_get("staff")
+    
+    user_role_ids = [r.id for r in interaction.user.roles] if hasattr(interaction.user, "roles") else []
+    
+    return (
+        (head_organizer_id and head_organizer_id in user_role_ids) or
+        (head_helper_id and head_helper_id in user_role_ids) or
+        (helper_team_id and helper_team_id in user_role_ids) or
+        (judge_id and judge_id in user_role_ids) or
+        (recorder_id and recorder_id in user_role_ids) or
+        (staff_id and staff_id in user_role_ids)
+    )
 
 @bot.event
 async def on_message(message):
@@ -2924,19 +3333,27 @@ async def on_message(message):
     # Extract command from message
     command = message.content.lower().strip()
     
-    # Handle ticket status commands (?sh, ?dq, ?dd, ?ho, $close) - modify channel name prefix
-    if command in ['?sh', '?dq', '?dd', '?ho', '$close']:
+    # Handle ticket status commands (?sh, ?dq, ?dd, ?ho, $close, $delete) - modify channel name prefix
+    if command in ['?sh', '?dq', '?dd', '?ho', '$close', '$delete']:
         # Check permissions for ticket management commands
         is_owner = message.author.id == BOT_OWNER_ID
         is_admin = message.author.guild_permissions.administrator if hasattr(message.author, 'guild_permissions') else False
         has_role = False
         
         if hasattr(message.author, 'roles'):
-            head_org = discord.utils.get(message.author.roles, id=ROLE_IDS.get("head_organizer"))
-            head_helper = discord.utils.get(message.author.roles, id=ROLE_IDS.get("head_helper"))
-            helper_team = discord.utils.get(message.author.roles, id=ROLE_IDS.get("helper_team"))
-            judge = discord.utils.get(message.author.roles, id=ROLE_IDS.get("judge"))
-            has_role = bool(head_org or head_helper or helper_team or judge)
+            head_org_id = ROLE_IDS.get("head_organizer")
+            head_helper_id = ROLE_IDS.get("head_helper")
+            helper_team_id = ROLE_IDS.get("helper_team")
+            judge_id_val = ROLE_IDS.get("judge")
+            recorder_id_val = ROLE_IDS.get("recorder")
+            staff_id_val = ROLE_IDS.get("staff")
+            head_org = discord.utils.get(message.author.roles, id=head_org_id) if head_org_id else None
+            head_helper = discord.utils.get(message.author.roles, id=head_helper_id) if head_helper_id else None
+            helper_team = discord.utils.get(message.author.roles, id=helper_team_id) if helper_team_id else None
+            judge = discord.utils.get(message.author.roles, id=judge_id_val) if judge_id_val else None
+            recorder = discord.utils.get(message.author.roles, id=recorder_id_val) if recorder_id_val else None
+            staff = discord.utils.get(message.author.roles, id=staff_id_val) if staff_id_val else None
+            has_role = bool(head_org or head_helper or helper_team or judge or recorder or staff)
             
         if not (is_owner or is_admin or has_role):
             # No permission, quietly delete message and return
@@ -2973,8 +3390,18 @@ async def on_message(message):
                 transcript_file_local = discord.File(io.BytesIO(transcript_content.encode('utf-8')), filename=f"transcript_{message.channel.name}.txt")
                 await message.channel.send(f"📄 Transcript of this ticket:", file=transcript_file_local)
                 
-                # Also send to transcript record channel
-                transcript_channel = message.guild.get_channel(CHANNEL_IDS.get("results", 1500279846704513074))
+                # Also send to transcript record channel (active tournament's transcript_channel_id first, then fallback)
+                transcript_channel = None
+                try:
+                    t_cfg_close = get_active_tournament_config(message.guild.id)
+                    if t_cfg_close:
+                        trans_ch_id = t_cfg_close.get('transcript_channel_id')
+                        if trans_ch_id:
+                            transcript_channel = message.guild.get_channel(int(trans_ch_id))
+                except Exception as _tc_err:
+                    print(f"Error resolving tournament transcript channel: {_tc_err}")
+                if not transcript_channel:
+                    transcript_channel = message.guild.get_channel(CHANNEL_IDS.get("results", 1500279846704513074))
                 if transcript_channel:
                     transcript_file_record = discord.File(io.BytesIO(transcript_content.encode('utf-8')), filename=f"transcript_{message.channel.name}.txt")
                     await transcript_channel.send(f"📋 Transcript for closed ticket `{message.channel.name}` (closed by {message.author.display_name}):", file=transcript_file_record)
@@ -3162,7 +3589,13 @@ async def on_ready():
         save_scheduled_events()
     except Exception as e:
         print(f"Startup cleanup sweep error: {e}")
-    
+    # Start auto-room background loops for all guilds the bot is in
+    for guild in bot.guilds:
+        try:
+            start_auto_room_loop(guild.id)
+        except Exception as e:
+            print(f"Error starting auto-room loop for guild {guild.id} on startup: {e}")
+
     # Sync commands with timeout handling
     try:
         print("🔄 Syncing slash commands...")
@@ -3177,6 +3610,105 @@ async def on_ready():
     
     print("🎯 Bot is ready to receive commands!")
 
+
+
+@tree.command(name="upload-score", description="Upload match score to Challonge bracket (Judge/Organizer only)")
+@app_commands.describe(
+    match_id="Challonge Match ID (find in the bracket URL or match list)",
+    winner_participant_id="Challonge Participant ID of the winner",
+    winner_score="Winner's score (e.g. 2)",
+    loser_score="Loser's score (e.g. 1)",
+    tournament="Tournament ID — leave blank to use the active tournament"
+)
+async def upload_score(
+    interaction: discord.Interaction,
+    match_id: str,
+    winner_participant_id: str,
+    winner_score: int,
+    loser_score: int,
+    tournament: Optional[str] = None
+):
+    """Upload a match score to Challonge from Discord."""
+    await interaction.response.defer(ephemeral=True)
+
+    # Permission check — Organizer / Helper only
+    if not has_event_create_permission(interaction):
+        await interaction.followup.send("❌ You need **Head Organizer** or **Helper Team** role to upload scores.", ephemeral=True)
+        return
+
+    # Resolve bracket link and API key
+    bracket_link = None
+    api_key = None
+
+    if tournament:
+        tournaments = load_guild_tournaments(interaction.guild.id)
+        t_cfg = tournaments.get(tournament.strip())
+        if t_cfg:
+            bracket_link = t_cfg.get('challonge_bracket_link') or t_cfg.get('id') or get_bracket_link(interaction)
+            api_key = t_cfg.get('key') or get_bracket_api_key(interaction)
+    
+    if not bracket_link:
+        bracket_link = get_bracket_link(interaction)
+    if not api_key:
+        api_key = get_bracket_api_key(interaction)
+
+    if not bracket_link or not bracket_link.startswith("http"):
+        await interaction.followup.send("❌ No bracket link configured. Set one in the tournament configuration.", ephemeral=True)
+        return
+    if not api_key:
+        await interaction.followup.send("❌ No Challonge API key configured. Set one in the tournament configuration.", ephemeral=True)
+        return
+
+    scores_csv = f"{winner_score}-{loser_score}"
+
+    try:
+        success, error = await update_challonge_match(
+            bracket_link, api_key, match_id, winner_participant_id, scores_csv
+        )
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error uploading score: `{e}`", ephemeral=True)
+        return
+
+    if success:
+        # Log to SheetDB
+        asyncio.create_task(sheetdb_post("Challonge_Uploads", {
+            "Guild_ID": str(interaction.guild.id) if interaction.guild else "",
+            "Timestamp": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+            "Match_ID": match_id,
+            "Winner_Participant_ID": winner_participant_id,
+            "Winner_Score": winner_score,
+            "Loser_Score": loser_score,
+            "Tournament_ID": tournament or get_tournament_name(interaction) or "",
+            "Uploaded_By_ID": str(interaction.user.id),
+            "Uploaded_By_Name": interaction.user.name,
+            "Status": "Success"
+        }))
+        embed = discord.Embed(
+            title="✅ Score Uploaded to Challonge",
+            description=f"Match **#{match_id}** has been updated successfully.",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow()
+        )
+        embed.add_field(name="🏆 Score", value=f"**{winner_score}** – {loser_score}", inline=True)
+        embed.add_field(name="🆔 Match ID", value=f"`{match_id}`", inline=True)
+        embed.add_field(name="👤 Winner Participant ID", value=f"`{winner_participant_id}`", inline=True)
+        embed.set_footer(text=f"Uploaded by {interaction.user.display_name}")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    else:
+        # Log to SheetDB
+        asyncio.create_task(sheetdb_post("Challonge_Uploads", {
+            "Guild_ID": str(interaction.guild.id) if interaction.guild else "",
+            "Timestamp": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+            "Match_ID": match_id,
+            "Winner_Participant_ID": winner_participant_id,
+            "Winner_Score": winner_score,
+            "Loser_Score": loser_score,
+            "Tournament_ID": tournament or get_tournament_name(interaction) or "",
+            "Uploaded_By_ID": str(interaction.user.id),
+            "Uploaded_By_Name": interaction.user.name,
+            "Status": f"Failed: {error[:100] if error else 'Unknown'}"
+        }))
+        await interaction.followup.send(f"❌ Challonge rejected the score upload:\n```{error[:500] if error else 'Unknown error'}```", ephemeral=True)
 
 
 @tree.command(name="help", description="Show available commands based on your permissions")
@@ -3280,8 +3812,9 @@ async def staff_leaderboard(interaction: discord.Interaction):
 
         # Show reset button only to organiser / bot owner
         is_owner = interaction.user.id == BOT_OWNER_ID
+        is_admin = interaction.guild and interaction.user.guild_permissions.administrator
         head_organizer_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_organizer"])
-        view = JudgeLeaderboardView(show_reset=bool(head_organizer_role or is_owner))
+        view = JudgeLeaderboardView(show_reset=bool(head_organizer_role or is_owner or is_admin))
 
         await interaction.response.send_message(embed=embed, view=view)
 
@@ -3509,6 +4042,7 @@ async def event_create(
 
     # Log to SheetDB — Events sheet
     asyncio.create_task(sheetdb_post("Events", {
+        "Guild_ID":          str(interaction.guild.id) if interaction.guild else "",
         "Timestamp":         datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
         "Event_ID":          event_id,
         "Tournament":        tournament,
@@ -3648,12 +4182,18 @@ async def event_create(
         timestamp=discord.utils.utcnow()
     )
     if team_1_captain and hasattr(team_1_captain, 'display_avatar'):
-        embed.set_thumbnail(url=team_1_captain.display_avatar.url)
+        # Use tournament thumbnail if available, otherwise fall back to captain avatar
+        _t_cfg_schedule = get_active_tournament_config(interaction.guild_id)
+        _thumb_url = _t_cfg_schedule.get('thumbnail_url') if _t_cfg_schedule else None
+        if _thumb_url:
+            embed.set_thumbnail(url=_thumb_url)
+        else:
+            embed.set_thumbnail(url=team_1_captain.display_avatar.url)
 
     
     # Tournament and Time Information
-    # Create Discord timestamp for automatic timezone conversion
-    timestamp = int(event_datetime.timestamp())
+    # Create Discord timestamp for automatic timezone conversion (UTC-aware)
+    timestamp = int(event_datetime.replace(tzinfo=datetime.timezone.utc).timestamp())
     # Build event details text
     event_details = f"**Tournament:** {tournament}\n"
     event_details += f"**UTC Time:** {time_info['utc_time']}\n"
@@ -3885,7 +4425,20 @@ async def event_result(
         color=discord.Color.gold(),
         timestamp=discord.utils.utcnow()
     )
-    
+
+    # Add thumbnail from active tournament config or fallback to bot logo
+    use_fallback_logo = False
+    try:
+        _t_cfg_result = get_active_tournament_config(interaction.guild.id)
+        _thumb_url_result = _t_cfg_result.get('thumbnail_url') if _t_cfg_result else None
+        if _thumb_url_result:
+            embed.set_thumbnail(url=_thumb_url_result)
+        elif os.path.exists("tournament_bot_logo.png"):
+            embed.set_thumbnail(url="attachment://tournament_bot_logo.png")
+            use_fallback_logo = True
+    except Exception:
+        pass
+
     # Captains Section
     captains_text = f"**Captains**\n"
     captains_text += f"▪ Team1 Captain: {w_display_mention}" + (f" `@{winner.name}`" if winner else "") + "\n"
@@ -3933,6 +4486,19 @@ async def event_result(
     files_to_send = []
     screenshot_names = []
     
+    # Add fallback logo file if needed for embed thumbnail
+    if use_fallback_logo:
+        try:
+            with open("tournament_bot_logo.png", "rb") as logo_file:
+                logo_data = logo_file.read()
+                file_obj = discord.File(
+                    fp=io.BytesIO(logo_data),
+                    filename="tournament_bot_logo.png"
+                )
+                files_to_send.append(file_obj)
+        except Exception as e:
+            print(f"Error reading tournament_bot_logo.png for embed thumbnail: {e}")
+    
     for i, screenshot in enumerate(screenshots, 1):
         if screenshot:
             # Create a file object for each screenshot
@@ -3957,6 +4523,7 @@ async def event_result(
     
     # Log to SheetDB — Results sheet
     asyncio.create_task(sheetdb_post("Results", {
+        "Guild_ID":       str(interaction.guild.id) if interaction.guild else "",
         "Timestamp":      datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
         "Tournament":     tournament,
         "Round":          round,
@@ -4266,14 +4833,17 @@ async def time(interaction: discord.Interaction):
 async def available_events(interaction: discord.Interaction):
     """Show all scheduled events that do not currently have a judge assigned."""
     try:
-        # Allow Head Organizer, Head Helper, Helper Team, and Judges to view
+        is_owner = interaction.user.id == BOT_OWNER_ID if interaction.user else False
+        is_admin = interaction.guild and interaction.user.guild_permissions.administrator if (interaction.user and interaction.guild) else False
         head_organizer_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_organizer"]) if interaction.user else None
         head_helper_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_helper"]) if interaction.user else None
         helper_team_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["helper_team"]) if interaction.user else None
         judge_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["judge"]) if interaction.user else None
+        recorder_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["recorder"]) if interaction.user else None
+        staff_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["staff"]) if interaction.user else None
 
-        if not (head_organizer_role or head_helper_role or helper_team_role or judge_role):
-            await interaction.response.send_message("❌ You need Organizer or Judge role to view unassigned events.", ephemeral=True)
+        if not (head_organizer_role or head_helper_role or helper_team_role or judge_role or recorder_role or staff_role or is_owner or is_admin):
+            await interaction.response.send_message("❌ You need Organizer, Helper, Judge, or Staff role to view unassigned events.", ephemeral=True)
             return
 
         # Build list of unassigned events
@@ -4404,6 +4974,7 @@ async def reassign_command(interaction: discord.Interaction):
 
             # Log to SheetDB
             asyncio.create_task(sheetdb_post("JudgeAssignments", {
+                "Guild_ID":    str(interaction.guild.id) if interaction.guild else "",
                 "Timestamp":   datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
                 "Event_ID":    selected_event_id,
                 "Judge_ID":    str(old_judge.id),
@@ -4485,11 +5056,7 @@ async def reassign_command(interaction: discord.Interaction):
 @tree.command(name="event-delete", description="Delete a scheduled event (Head Organizer/Head Helper/Helper Team only)")
 async def event_delete(interaction: discord.Interaction):
     # Check permissions - only Head Organizer, Head Helper or Helper Team can delete events
-    head_organizer_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_organizer"])
-    head_helper_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_helper"])
-    helper_team_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["helper_team"])
-    
-    if not (head_organizer_role or head_helper_role or helper_team_role):
+    if not has_event_create_permission(interaction):
         await interaction.response.send_message("❌ You need **Head Organizer**, **Head Helper** or **Helper Team** role to delete events.", ephemeral=True)
         return
     
@@ -4498,6 +5065,19 @@ async def event_delete(interaction: discord.Interaction):
         if not scheduled_events:
             await interaction.response.send_message(f"❌ No scheduled events found to delete.\n\n**Debug Info:**\n• Scheduled events count: {len(scheduled_events)}\n• Events in memory: {list(scheduled_events.keys()) if scheduled_events else 'None'}", ephemeral=True)
             return
+        
+        def _safe_captain_label(cap, team_name=None):
+            """Safely get a display name from a captain value (may be Member, int, or None)."""
+            if team_name:
+                return team_name
+            if cap is None:
+                return "Unknown"
+            if isinstance(cap, discord.Member):
+                return cap.display_name or cap.name
+            if isinstance(cap, int) or (isinstance(cap, str) and str(cap).isdigit()):
+                member = interaction.guild.get_member(int(cap)) if interaction.guild else None
+                return member.display_name if member else f"User#{cap}"
+            return str(cap)
         
         # Create dropdown with event names
         class EventDeleteView(View):
@@ -4508,7 +5088,7 @@ async def event_delete(interaction: discord.Interaction):
                 placeholder="Select an event to delete...",
                 options=[
                     discord.SelectOption(
-                        label=f"{event_data.get('team1_captain').name if event_data.get('team1_captain') else 'Unknown'} VS {event_data.get('team2_captain').name if event_data.get('team2_captain') else 'Unknown'}",
+                        label=f"{_safe_captain_label(event_data.get('team1_captain'), event_data.get('team1_name'))} VS {_safe_captain_label(event_data.get('team2_captain'), event_data.get('team2_name'))}",
                         description=f"{event_data.get('round', 'Unknown Round')} - {event_data.get('date_str', 'No date')} at {event_data.get('time_str', 'No time')}",
                         value=event_id
                     )
@@ -4541,8 +5121,10 @@ async def event_delete(interaction: discord.Interaction):
                 
                 # Remove judge assignment if exists
                 if 'judge' in event_data and event_data['judge']:
-                    judge_id = event_data['judge'].id
-                    remove_judge_assignment(judge_id, selected_event_id)
+                    judge_raw = event_data['judge']
+                    judge_id = getattr(judge_raw, 'id', int(judge_raw) if isinstance(judge_raw, (int, str)) else None)
+                    if judge_id:
+                        remove_judge_assignment(judge_id, selected_event_id)
                 
                 # Delete the original schedule message if it exists
                 deleted_message = False
@@ -4645,10 +5227,7 @@ async def event_delete(interaction: discord.Interaction):
 ])
 async def staff_update(interaction: discord.Interaction, staff_member: discord.Member, role: app_commands.Choice[str], action: app_commands.Choice[str], amount: int):
     """Update staff statistics for a specific user"""
-    org_role_keys = ['head_organizer', 'deputy_server_head', 'Tournament_organizer', 'Tournament_supervision']
-    org_role_ids = [ROLE_IDS.get(k) for k in org_role_keys if ROLE_IDS.get(k)]
-    has_permission = any((r.id in org_role_ids for r in interaction.user.roles)) if hasattr(interaction.user, 'roles') else False
-    if not has_permission:
+    if not has_organizer_permission(interaction):
         await interaction.response.send_message('❌ You need **Head Organizer** role to update staff statistics.', ephemeral=True)
         return
 
@@ -4676,6 +5255,18 @@ async def staff_update(interaction: discord.Interaction, staff_member: discord.M
     staff_stats[uid][role_key] = new_count
     staff_stats[uid]['last_activity'] = datetime.datetime.utcnow().isoformat()
     save_staff_stats()
+
+    # Log manual update to SheetDB
+    asyncio.create_task(sheetdb_post("StaffStats", {
+        "Guild_ID": str(interaction.guild.id) if interaction.guild else "",
+        "Timestamp": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        "User_ID": uid,
+        "Name": staff_member.display_name,
+        "Role_Updated": f"{role.value} ({action.value} {amount})",
+        "Judge_Count": staff_stats[uid].get("judge_count", 0),
+        "Recorder_Count": staff_stats[uid].get("recorder_count", 0),
+        "Total_Count": staff_stats[uid].get("judge_count", 0) + staff_stats[uid].get("recorder_count", 0)
+    }))
 
     await interaction.response.send_message(f"✅ Successfully updated **{staff_member.display_name}**'s {role.name} count from {current_count} to **{new_count}**.", ephemeral=False)
 
@@ -5090,9 +5681,15 @@ async def event_edit(
             timestamp=discord.utils.utcnow()
         )
         if isinstance(t1_cap_member, discord.Member) and hasattr(t1_cap_member, 'display_avatar'):
-            schedule_embed.set_thumbnail(url=t1_cap_member.display_avatar.url)
+            # Use tournament thumbnail if available, otherwise fall back to captain avatar
+            _t_cfg_edit = get_active_tournament_config(interaction.guild.id)
+            _thumb_url_edit = _t_cfg_edit.get('thumbnail_url') if _t_cfg_edit else None
+            if _thumb_url_edit:
+                schedule_embed.set_thumbnail(url=_thumb_url_edit)
+            else:
+                schedule_embed.set_thumbnail(url=t1_cap_member.display_avatar.url)
 
-        timestamp_val = int(new_datetime.timestamp())
+        timestamp_val = int(new_datetime.replace(tzinfo=datetime.timezone.utc).timestamp())
         event_details_text = f"**Tournament:** {tournament_info}\n"
         event_details_text += f"**UTC Time:** {time_info['utc_time']}\n"
         event_details_text += f"**Local Time:** <t:{timestamp_val}:F> (<t:{timestamp_val}:R>)\n"
@@ -5137,9 +5734,15 @@ async def event_edit(
             except Exception as e:
                 print(f"Could not delete old schedule message: {e}")
                 
-        # Send new message
+        # Send new message (use active tournament schedule channel first, then global fallback)
         try:
-            schedule_channel = interaction.guild.get_channel(CHANNEL_IDS["take_schedule"])
+            _sched_ch_edit = None
+            _t_cfg_sched_edit = get_active_tournament_config(interaction.guild.id)
+            if _t_cfg_sched_edit and _t_cfg_sched_edit.get('schedule_channel_id'):
+                _sched_ch_edit = interaction.guild.get_channel(int(_t_cfg_sched_edit['schedule_channel_id']))
+            if not _sched_ch_edit:
+                _sched_ch_edit = interaction.guild.get_channel(CHANNEL_IDS.get("take_schedule"))
+            schedule_channel = _sched_ch_edit
             if schedule_channel:
                 judge_ping = f"<@&{ROLE_IDS['judge']}>"
                 if poster_image:
@@ -5170,49 +5773,42 @@ async def event_edit(
         except Exception as e:
             print(f"Error renaming ticket channel: {e}")
 
-        # Create public embed for updated event in the ticket channel
+        # Create public embed matching event_create format
+        timestamp_val = int(new_datetime.replace(tzinfo=datetime.timezone.utc).timestamp())
         embed = discord.Embed(
-            title="📝 Event Updated",
-            description=f"**Event has been updated by {interaction.user.mention}**",
-            color=discord.Color.orange(),
+            title="Schedule",
+            description=f"🗓️ {t1_disp} VS {t2_disp}",
+            color=discord.Color.blue(),
             timestamp=discord.utils.utcnow()
         )
-        if isinstance(t1_cap_member, discord.Member) and hasattr(t1_cap_member, 'display_avatar'):
+        # Thumbnail: tournament config > captain avatar
+        _t_cfg_edit2 = get_active_tournament_config(interaction.guild.id)
+        _thumb_url_edit2 = _t_cfg_edit2.get('thumbnail_url') if _t_cfg_edit2 else None
+        if _thumb_url_edit2:
+            embed.set_thumbnail(url=_thumb_url_edit2)
+        elif t1_cap_member and isinstance(t1_cap_member, discord.Member):
             embed.set_thumbnail(url=t1_cap_member.display_avatar.url)
 
-        
-        # Event Details Section
-        val_text = f"**Team 1 Name:** {event_to_edit.get('team1_name', 'N/A')}\n"
-        val_text += f"**Team 1 Captain:** {t1_mention} `@{t1_name}`\n"
-        val_text += f"**Team 2 Name:** {event_to_edit.get('team2_name', 'N/A')}\n"
-        val_text += f"**Team 2 Captain:** {t2_mention} `@{t2_name}`\n"
-        val_text += f"**UTC Time:** {time_info_display}\n"
-        val_text += f"**Local Time:** <t:{int(new_datetime.timestamp())}:F> (<t:{int(new_datetime.timestamp())}:R>)\n"
-        val_text += f"**Round:** {round_info}\n"
-        val_text += f"**Tournament:** {tournament_info}\n"
-        val_text += f"**Channel:** {interaction.channel.mention}"
-        
-        embed.add_field(
-            name="📋 Updated Event Details", 
-            value=val_text,
-            inline=False
-        )
-        
+        # Event Details
+        event_details = f"**Tournament:** {tournament_info}\n"
+        event_details += f"**UTC Time:** {time_info_display}\n"
+        event_details += f"**Local Time:** <t:{timestamp_val}:F> (<t:{timestamp_val}:R>)\n"
+        event_details += f"**Round:** {round_info}\n"
         if group_info:
-            embed.add_field(
-                name="🏆 Group Assignment",
-                value=f"**Group:** {group_info}",
-                inline=False
-            )
-        
-        # Add spacing
+            event_details += f"**Group:** {group_info}\n"
+        event_details += f"**Channel:** {interaction.channel.mention}"
+
+        embed.add_field(name="📋 Event Details", value=event_details, inline=False)
         embed.add_field(name="\u200b", value="\u200b", inline=False)
-        
-        # Captains Section
-        embed.add_field(name="", value=captains_text, inline=False)
-        embed.set_footer(text=f"Event Updated • {ORGANIZATION_NAME}")
-        
-        # Post the updated event publicly in the channel with poster
+
+        # Captains
+        embed.add_field(name="👑 Team Captains", value=captains_text, inline=False)
+        embed.add_field(name="\u200b", value="\u200b", inline=False)
+
+        embed.add_field(name="✏️ Updated By", value=interaction.user.mention, inline=False)
+        embed.set_footer(text=f"Powered by • {ORGANIZATION_NAME}")
+
+        # Post with poster if available
         if poster_image:
             try:
                 with open(poster_image, 'rb') as f:
@@ -5224,6 +5820,7 @@ async def event_edit(
                 await interaction.channel.send(embed=embed)
         else:
             await interaction.channel.send(embed=embed)
+
         
         # Send private confirmation to the user who edited
         await interaction.followup.send("✅ Event updated successfully, ticket channel renamed, and posted in the channel!", ephemeral=True)
@@ -5391,16 +5988,8 @@ async def add_captain(
 ):
     """Add two captains to a tournament match and rename the channel with tournament rules."""
     try:
-        # Check permissions - only Head Helper, Helper Team, Head Organizer, or Bot Owner can add captains
-        head_helper_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_helper"])
-        helper_team_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["helper_team"])
-        head_organizer_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_organizer"])
-        
-        # Check if user is bot owner
-        is_bot_owner = interaction.user.id == BOT_OWNER_ID
-        
-        if not any([head_helper_role, helper_team_role, head_organizer_role, is_bot_owner]):
-            await interaction.response.send_message("❌ You don't have permission to use this command. Only Head Helper, Helper Team, Head Organizer, or Bot Owner can add captains.", ephemeral=True)
+        if not has_event_create_permission(interaction):
+            await interaction.response.send_message("❌ You don't have permission to use this command. Only Head Helper, Helper Team, Head Organizer, or Bot Owner/Admin can add captains.", ephemeral=True)
             return
         
         # Validate round parameter
@@ -5460,16 +6049,16 @@ async def add_captain(
         
         # Send tournament rules message — dynamic branded
         rules_embed = discord.Embed(
-            title=f"⚓ {ORGANIZATION_NAME} — Match Setup",
+            title=f"⚓ {get_system_name(interaction)} | {get_tournament_name(interaction)} — Match Setup",
             description="Welcome to your match channel. Use this channel for all tournament discussions.",
             color=discord.Color(BRAND_COLOR)
         )
         rules_embed.add_field(
             name="📋 Tournament Information",
             value=(
-                f"• 🏆 [Live Bracket]({LINK_BRACKET}) — View current standings\n"
-                f"• ⏰ [Match Deadlines]({LINK_DEADLINE}) — Schedule & timings\n"
-                f"• 📜 [Tournament Rules]({LINK_RULES}) — Read before playing"
+                f"• 🏆 [Live Bracket]({get_link_bracket(interaction)}) — View current standings\n"
+                f"• ⏰ [Match Deadlines]({get_link_deadline(interaction)}) — Schedule & timings\n"
+                f"• 📜 [Tournament Rules]({get_link_rules(interaction)}) — Read before playing"
             ),
             inline=False
         )
@@ -5495,7 +6084,7 @@ async def add_captain(
         )
         rules_embed.set_footer(text=f"{ORGANIZATION_NAME} | Setup by {interaction.user.name} • {datetime.datetime.now().strftime('%d-%m-%Y %H:%M')}")
         try:
-            logo_candidates = ["TFT Logo.png", "logo.png"]
+            logo_candidates = ["tournament_bot_logo.png", "logo.png"]
             logo_sent = False
             for logo_path in logo_candidates:
                 try:
@@ -5575,12 +6164,7 @@ async def maps(interaction: discord.Interaction, count: int):
 async def test_channels(interaction: discord.Interaction):
     """Test channel access for debugging"""
     
-    # Check permissions
-    user_roles = [role.id for role in interaction.user.roles]
-    is_owner = interaction.user.id == BOT_OWNER_ID
-    is_organizer = ROLE_IDS["head_organizer"] in user_roles
-    
-    if not (is_owner or is_organizer):
+    if not has_organizer_permission(interaction):
         await interaction.response.send_message(
             "❌ You need to be **Bot Owner** or **Head Organizer** to use this command.",
             ephemeral=True
@@ -5825,44 +6409,120 @@ async def registration_command(interaction: discord.Interaction):
     await interaction.response.send_modal(RegistrationModal())
 
 
-async def auto_create_open_tickets(guild: discord.Guild, user: discord.Member):
-    # Automatic background ticket creation for open matches
-    if not (BRACKET_LINK and BRACKET_API_KEY and GOOGLE_SHEET_LINK):
-        return
+# Automatic background ticket creation for open matches based on active tournament configuration
+auto_room_loops = {}
 
-    matches, err = await fetch_challonge_open_matches(BRACKET_LINK, BRACKET_API_KEY)
-    if err or not matches:
-        return
+async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: dict, on_progress=None) -> tuple[int, str]:
+    import time
+    last_edit = 0
+    
+    async def report(percent: int, text: str, force: bool = False):
+        nonlocal last_edit
+        if not on_progress:
+            return
+        now = time.time()
+        if force or (now - last_edit >= 1.5):
+            await on_progress(percent, text)
+            last_edit = now
 
-    captains_dict, is_1v1, err2 = await fetch_google_sheet_captains(GOOGLE_SHEET_LINK)
+    await report(0, "Fetching matches from Challonge...", force=True)
+    
+    bracket_link = t_cfg.get('challonge_bracket_link') or t_cfg.get('id')
+    api_key = t_cfg.get('key')
+    sheet_link = t_cfg.get('sheet_link')
+    
+    if not (bracket_link and api_key and sheet_link):
+        return 0, "Missing Challonge Bracket ID/Link, API Key, or Google Sheet link in tournament configuration."
+        
+    matches, err = await fetch_challonge_open_matches(bracket_link, api_key)
+    if err:
+        return 0, f"Challonge API Error: {err}"
+    if not matches:
+        return 0, ""
+        
+    await report(15, f"Fetched {len(matches)} matches. Fetching captain info from Google Sheet...", force=True)
+    
+    captains_dict, is_1v1, err2 = await fetch_google_sheet_captains(sheet_link)
     if err2:
-        return
-
-    cat_primary = discord.utils.get(guild.categories, id=CHANNEL_IDS.get("category_1", 1492915175836221532))
-    cat_backup = discord.utils.get(guild.categories, id=CHANNEL_IDS.get("category_2", 1492915301602430996))
-    if not cat_primary and not cat_backup:
-        return
-
-    helper_team_role = discord.utils.get(guild.roles, id=ROLE_IDS["helper_team"])
-
-    for match in matches:
+        return 0, f"Google Sheet Error: {err2}"
+        
+    await report(30, "Parsing categories and roles...", force=True)
+    
+    categories = []
+    for i in range(1, 5):
+        cat_id = t_cfg.get(f'ticket_open_category_{i}_id')
+        if cat_id:
+            try:
+                cat_id = int(cat_id)
+            except (ValueError, TypeError):
+                pass
+            cat = discord.utils.get(guild.categories, id=cat_id)
+            if cat:
+                categories.append(cat)
+                
+    if not categories:
+        return 0, "No open ticket categories configured for this tournament."
+        
+    helper_team_role = None
+    if helper_role_id := t_cfg.get('helper_role_id'):
+        try:
+            helper_role_id = int(helper_role_id)
+        except (ValueError, TypeError):
+            pass
+        helper_team_role = discord.utils.get(guild.roles, id=helper_role_id)
+    if not helper_team_role:
+        cfg = get_guild_config(guild.id)
+        if global_helper_id := cfg.get('role_ids', {}).get('helper_team'):
+            try:
+                global_helper_id = int(global_helper_id)
+            except (ValueError, TypeError):
+                pass
+            helper_team_role = discord.utils.get(guild.roles, id=global_helper_id)
+            
+    rules_link = f"https://discord.com/channels/{guild.id}/{t_cfg.get('rules_channel_id')}" if t_cfg.get('rules_channel_id') else "Not Set"
+    deadline_link = f"https://discord.com/channels/{guild.id}/{t_cfg.get('deadline_channel_id')}" if t_cfg.get('deadline_channel_id') else "Not Set"
+    bracket_display_link = bracket_link if bracket_link.startswith("http") else f"https://challonge.com/{bracket_link}"
+    
+    created_count = 0
+    total_matches = len(matches)
+    
+    for idx, match in enumerate(matches):
         team1, team2 = match['team1'], match['team2']
         p1_id, p2_id = match['player1_id'], match['player2_id']
         match_id, mod_round = match['id'], match['round']
-
+        
+        loop_percent = 40 + int((idx / total_matches) * 55)
+        await report(loop_percent, f"Processing match {idx+1}/{total_matches}: {team1} vs {team2}...")
+        
         c1_raw = captains_dict.get(team1, "") or captains_dict.get(team1.strip(), "")
         c2_raw = captains_dict.get(team2, "") or captains_dict.get(team2.strip(), "")
-
+        
         def extract_uid(raw: str):
             m = re.search(r'<@!?(\d+)>', raw)
             if m: return int(m.group(1))
             if raw.strip().isdigit(): return int(raw.strip())
             return None
-
+            
         uid1, uid2 = extract_uid(c1_raw), extract_uid(c2_raw)
-        captain1 = await guild.fetch_member(uid1) if uid1 else None
-        captain2 = await guild.fetch_member(uid2) if uid2 else None
-
+        
+        captain1 = None
+        if uid1:
+            captain1 = guild.get_member(uid1)
+            if not captain1:
+                try:
+                    captain1 = await guild.fetch_member(uid1)
+                except (discord.NotFound, discord.HTTPException):
+                    pass
+                    
+        captain2 = None
+        if uid2:
+            captain2 = guild.get_member(uid2)
+            if not captain2:
+                try:
+                    captain2 = await guild.fetch_member(uid2)
+                except (discord.NotFound, discord.HTTPException):
+                    pass
+        
         if is_1v1:
             n1 = (captain1.name if captain1 else re.sub(r'[^a-zA-Z0-9]', '', team1))[:12].lower()
             n2 = (captain2.name if captain2 else re.sub(r'[^a-zA-Z0-9]', '', team2))[:12].lower()
@@ -5870,58 +6530,80 @@ async def auto_create_open_tickets(guild: discord.Guild, user: discord.Member):
         else:
             safe_t1 = re.sub(r'[^a-zA-Z0-9]', '', team1).lower()[:8]
             safe_t2 = re.sub(r'[^a-zA-Z0-9]', '', team2).lower()[:8]
-            c1_sfx = captain1.name.lower()[:6] if captain1 else 'cap1'
-            c2_sfx = captain2.name.lower()[:6] if captain2 else 'cap2'
-            chan_name = f"r{mod_round}-{safe_t1}{c1_sfx}-vs-{safe_t2}{c2_sfx}"
-
+            chan_name = f"r{mod_round}-{safe_t1}-vs-{safe_t2}"
+            
         chan_name = re.sub(r'[^a-zA-Z0-9\-]', '-', chan_name)
         chan_name = re.sub(r'-+', '-', chan_name).strip('-')[:100]
         topic = f"MatchID:{match_id} | P1:{p1_id} | P2:{p2_id} | Team1:{team1} | Team2:{team2}"
-
+        
         already_exists = False
-        for c in filter(None, [cat_primary, cat_backup]):
+        for c in categories:
             if discord.utils.get(c.channels, name=chan_name):
                 already_exists = True
                 break
-        if already_exists: continue
-
-        target_category = cat_primary if cat_primary and len(cat_primary.channels) < 49 else cat_backup
-        
+        if already_exists:
+            continue
+            
+        target_category = None
+        for c in categories:
+            if len(c.channels) < 49:
+                target_category = c
+                break
+        if not target_category:
+            break
+            
         try:
             overwrites = dict(target_category.overwrites) if target_category and target_category.overwrites else {}
             if guild.default_role not in overwrites:
                 overwrites[guild.default_role] = discord.PermissionOverwrite(view_channel=False)
             else:
                 overwrites[guild.default_role].view_channel = False
-
+                
             overwrites[guild.me] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_channels=True, manage_permissions=True)
             
-            for role_key in ["head_organizer", "head_helper", "helper_team"]:
-                if r_id := ROLE_IDS.get(role_key):
+            for role_key in ["admin_role_id", "helper_role_id"]:
+                if r_id := t_cfg.get(role_key):
+                    try:
+                        r_id = int(r_id)
+                    except (ValueError, TypeError):
+                        pass
                     if staff_r := discord.utils.get(guild.roles, id=r_id):
                         overwrites[staff_r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-
-            if captain1: overwrites[captain1] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-            if captain2: overwrites[captain2] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-
+                        
+            cfg = get_guild_config(guild.id)
+            for role_key in ["head_organizer", "head_helper", "helper_team", "judge", "recorder", "staff"]:
+                if r_id := cfg.get('role_ids', {}).get(role_key):
+                    try:
+                        r_id = int(r_id)
+                    except (ValueError, TypeError):
+                        pass
+                    if staff_r := discord.utils.get(guild.roles, id=r_id):
+                        overwrites[staff_r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+                        
+            if captain1:
+                overwrites[captain1] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+            if captain2:
+                overwrites[captain2] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+                
             new_ch = await guild.create_text_channel(
                 name=chan_name,
                 category=target_category,
                 topic=topic,
                 overwrites=overwrites
             )
-
+            
+            org_name = cfg.get('organization_name', 'Tournament Organizer')
             rules_embed = discord.Embed(
-                title=f"⚓ {ORGANIZATION_NAME} — Match Setup",
+                title=f"⚓ {get_system_name(guild)} | {t_cfg.get('name')} — Match Setup",
                 description="Welcome to your match channel. Use this channel for all tournament discussions.",
                 color=discord.Color(BRAND_COLOR)
             )
             rules_embed.add_field(
                 name="📋 Tournament Information",
                 value=(
-                    f"• 🏆 [Live Bracket]({LINK_BRACKET})\n"
-                    f"• ⏰ [Deadlines]({LINK_DEADLINE})\n"
-                    f"• 📜 [Rules]({LINK_RULES})"
+                    f"• 🏆 [Live Bracket]({bracket_display_link})\n"
+                    f"• ⏰ [Deadlines]({deadline_link})\n"
+                    f"• 📜 [Rules]({rules_link})"
                 ),
                 inline=False
             )
@@ -5930,38 +6612,76 @@ async def auto_create_open_tickets(guild: discord.Guild, user: discord.Member):
                 pval = f"**Round:** R{mod_round}\n**Captain 1:** {captain1.mention if captain1 else c1_raw or team1}\n**Captain 2:** {captain2.mention if captain2 else c2_raw or team2}"
             else:
                 pval = f"**Round:** R{mod_round}\n**Team 1:** {team1} — Captain: {captain1.mention if captain1 else c1_raw or 'Not Found'}\n**Team 2:** {team2} — Captain: {captain2.mention if captain2 else c2_raw or 'Not Found'}"
-
+                
             rules_embed.add_field(name="👥 Match Participants", value=pval, inline=False)
             rules_embed.add_field(
                 name="🆘 Need Help?",
                 value=f"Ping {helper_team_role.mention if helper_team_role else '@Helper Team'} for assistance. ⚓",
                 inline=False
             )
-            rules_embed.set_footer(text=f"{ORGANIZATION_NAME} • Auto-Ticket")
-
+            rules_embed.set_footer(text=f"{org_name} • Auto-Ticket")
+            
             ping_content = " ".join(filter(None, [
                 captain1.mention if captain1 else (c1_raw or None),
                 captain2.mention if captain2 else (c2_raw or None),
             ])) or f"{team1} vs {team2}"
-
-            logo_candidates_at = ["TFT Logo.png", "logo.png"]
+            
+            logo_candidates_at = ["tournament_bot_logo.png", "logo.png"]
             sent_at = False
-            for lp_at in logo_candidates_at:
-                try:
-                    with open(lp_at, "rb") as lf:
-                        rules_embed.set_thumbnail(url="attachment://logo.png")
-                        await new_ch.send(content=ping_content, embed=rules_embed, file=discord.File(io.BytesIO(lf.read()), "logo.png"))
-                        sent_at = True
-                        break
-                except FileNotFoundError:
-                    continue
-                except Exception:
-                    break
+            for logo_file in logo_candidates_at:
+                if os.path.exists(logo_file):
+                    try:
+                        with open(logo_file, "rb") as lf:
+                            rules_embed.set_thumbnail(url="attachment://logo.png")
+                            await new_ch.send(content=ping_content, embed=rules_embed, file=discord.File(io.BytesIO(lf.read()), "logo.png"))
+                            sent_at = True
+                            break
+                    except Exception:
+                        pass
             if not sent_at:
                 await new_ch.send(content=ping_content, embed=rules_embed)
-
+                
+            created_count += 1
         except Exception as e:
-            print(f"[auto-ticket] Channel creation error {chan_name}: {e}")
+            print(f"Error creating auto-room channel {chan_name}: {e}")
+            
+    return created_count, ""
+
+async def auto_create_open_tickets(guild: discord.Guild, user: discord.Member):
+    t_cfg = get_active_tournament_config(guild.id)
+    if t_cfg and t_cfg.get('auto_room_creation', True):
+        await auto_create_open_tickets_for_tournament(guild, t_cfg)
+
+async def auto_room_background_loop(guild_id: int):
+    while True:
+        try:
+            await asyncio.sleep(300)
+            t_cfg = get_active_tournament_config(guild_id)
+            if not t_cfg or not t_cfg.get('auto_room_creation', True):
+                continue
+                
+            guild = bot.get_guild(guild_id)
+            if not guild:
+                continue
+                
+            await auto_create_open_tickets_for_tournament(guild, t_cfg)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            print(f"Error in auto_room_background_loop for guild {guild_id}: {e}")
+            await asyncio.sleep(60)
+
+def start_auto_room_loop(guild_id: int):
+    if guild_id in auto_room_loops:
+        return
+    task = asyncio.create_task(auto_room_background_loop(guild_id))
+    auto_room_loops[guild_id] = task
+    print(f"🚀 Started auto-room background loop for guild {guild_id}")
+
+def stop_auto_room_loop(guild_id: int):
+    if task := auto_room_loops.pop(guild_id, None):
+        task.cancel()
+        print(f"⏹️ Stopped auto-room background loop for guild {guild_id}")
 
 
 @tree.command(name="config_player_info", description="Set the Google Sheet link and format for player information (Organizer/Owner)")
@@ -5979,10 +6699,7 @@ async def auto_create_open_tickets(guild: discord.Guild, user: discord.Member):
     ]
 )
 async def config_player_info(interaction: discord.Interaction, link: str, format: app_commands.Choice[str]):
-    # Allow Bot Owner OR Head Organizer
-    is_owner = interaction.user.id == BOT_OWNER_ID
-    head_organizer_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_organizer"])
-    if not (is_owner or head_organizer_role):
+    if not has_organizer_permission(interaction):
         await interaction.response.send_message(
             "❌ Only **Bot Owner** or **Head Organizer** can configure player info.", ephemeral=True
         )
@@ -6133,7 +6850,7 @@ def create_id_card_image(user_data: dict, discord_user: discord.Member) -> io.By
         logo_size = 150
         logo_x = 50
         logo_y = 100
-        logo_path = "TFT Logo.png"
+        logo_path = "tournament_bot_logo.png"
         try:
             if os.path.exists(logo_path):
                 logo_img = Image.open(logo_path)
@@ -6154,10 +6871,12 @@ def create_id_card_image(user_data: dict, discord_user: discord.Member) -> io.By
                 )
             else:
                 draw.rectangle([(logo_x, logo_y), (logo_x + logo_size, logo_y + logo_size)], outline='#FFD700', width=3)
-                draw.text((logo_x + logo_size // 2, logo_y + logo_size // 2), "TFT", fill='#FFD700', font=heading_font, anchor='mm')
+                org_initials = "".join([w[0] for w in str(ORGANIZATION_NAME).split() if w])[:4].upper() or "LOGO"
+                draw.text((logo_x + logo_size // 2, logo_y + logo_size // 2), org_initials, fill='#FFD700', font=heading_font, anchor='mm')
         except Exception:
             draw.rectangle([(logo_x, logo_y), (logo_x + logo_size, logo_y + logo_size)], outline='#FFD700', width=3)
-            draw.text((logo_x + logo_size // 2, logo_y + logo_size // 2), "TFT", fill='#FFD700', font=heading_font, anchor='mm')
+            org_initials = "".join([w[0] for w in str(ORGANIZATION_NAME).split() if w])[:4].upper() or "LOGO"
+            draw.text((logo_x + logo_size // 2, logo_y + logo_size // 2), org_initials, fill='#FFD700', font=heading_font, anchor='mm')
         
         screenshot_size = 120
         screenshot_x = logo_x
@@ -6673,8 +7392,6 @@ async def update_settings_logic(
     command_name: str,
     organization_name: Optional[str] = None,
     tournament_system_name: Optional[str] = None,
-    bracket_link: Optional[str] = None,
-    bracket_api_key: Optional[str] = None,
     google_sheet_link: Optional[str] = None,
     current_tournament_name: Optional[str] = None,
     player_info_link: Optional[str] = None,
@@ -6698,12 +7415,6 @@ async def update_settings_logic(
     if tournament_system_name is not None:
         cfg['tournament_system_name'] = tournament_system_name
         updates.append(f"• **System Name:** {tournament_system_name}")
-    if bracket_link is not None:
-        cfg['bracket_link'] = bracket_link
-        updates.append(f"• **Bracket Link:** {bracket_link}")
-    if bracket_api_key is not None:
-        cfg['bracket_api_key'] = bracket_api_key
-        updates.append(f"• **Bracket API Key:** {mask_api_key(bracket_api_key)}")
     if google_sheet_link is not None:
         cfg['google_sheet_link'] = google_sheet_link
         updates.append(f"• **Google Sheet Link:** {google_sheet_link}")
@@ -6736,37 +7447,120 @@ async def update_settings_logic(
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@settings_group.command(name="set", description="Set tournament branding and links")
-@app_commands.choices(
-    player_info_format=[
-        app_commands.Choice(name="1 vs 1", value="1 vs 1"),
-        app_commands.Choice(name="2 vs 2", value="2 vs 2"),
-        app_commands.Choice(name="3 vs 3", value="3 vs 3"),
-        app_commands.Choice(name="4 vs 4", value="4 vs 4"),
-        app_commands.Choice(name="5 vs 5", value="5 vs 5"),
-    ]
+@settings_group.command(name="set", description="Set or update bot roles, channels, and categories for this server")
+@app_commands.describe(
+    head_organizer="Admin / Head Organizer role",
+    challonge_role="Role authorized for Challonge commands",
+    helper_team="Helper Team / Staff role",
+    head_helper="Head Helper role",
+    judge="Judge role",
+    recorder="Recorder role",
+    staff="General staff role (fallback)",
+    challonge_logs="Channel for Challonge action logs",
+    transcript_logs="Channel for match tickets transcript logs",
+    take_schedule="Channel where match schedules are posted",
+    results="Channel where match results are posted",
+    bot_logs="Channel for bot logs",
+    thumbnail="Channel where tournament thumbnails are pinned",
+    staff_attendance="Channel for staff attendance tracking",
+    closed_tickets_category="Category for closed tickets",
+    category_1="Open ticket category 1",
+    category_2="Open ticket category 2"
 )
 async def settings_set(
     interaction: discord.Interaction,
-    organization_name: Optional[str] = None,
-    tournament_system_name: Optional[str] = None,
-    bracket_link: Optional[str] = None,
-    bracket_api_key: Optional[str] = None,
-    google_sheet_link: Optional[str] = None,
-    current_tournament_name: Optional[str] = None,
-    player_info_link: Optional[str] = None,
-    player_info_format: Optional[app_commands.Choice[str]] = None,
-    sheetdb_api_url: Optional[str] = None
+    head_organizer: Optional[discord.Role] = None,
+    challonge_role: Optional[discord.Role] = None,
+    helper_team: Optional[discord.Role] = None,
+    head_helper: Optional[discord.Role] = None,
+    judge: Optional[discord.Role] = None,
+    recorder: Optional[discord.Role] = None,
+    staff: Optional[discord.Role] = None,
+    challonge_logs: Optional[discord.TextChannel] = None,
+    transcript_logs: Optional[discord.TextChannel] = None,
+    take_schedule: Optional[discord.TextChannel] = None,
+    results: Optional[discord.TextChannel] = None,
+    bot_logs: Optional[discord.TextChannel] = None,
+    thumbnail: Optional[discord.TextChannel] = None,
+    staff_attendance: Optional[discord.TextChannel] = None,
+    closed_tickets_category: Optional[discord.CategoryChannel] = None,
+    category_1: Optional[discord.CategoryChannel] = None,
+    category_2: Optional[discord.CategoryChannel] = None,
 ):
-    format_val = player_info_format.value if player_info_format else None
-    await update_settings_logic(
-        interaction, "set",
-        organization_name, tournament_system_name, bracket_link,
-        bracket_api_key, google_sheet_link, current_tournament_name,
-        player_info_link, format_val, sheetdb_api_url
-    )
+    if not interaction.guild:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
 
-@settings_group.command(name="edit", description="Edit tournament branding and links")
+    if not is_authorized_to_configure(interaction):
+        await interaction.response.send_message("❌ You do not have permission to manage config. Only the **Bot Owner**, **Administrators**, or members with the **Head Organizer** role can use this.", ephemeral=True)
+        return
+
+    cfg = get_guild_config(interaction.guild.id)
+
+    role_updates = []
+    channel_updates = []
+
+    role_mapping = {
+        'head_organizer': head_organizer,
+        'challonge_role': challonge_role,
+        'helper_team': helper_team,
+        'head_helper': head_helper,
+        'judge': judge,
+        'recorder': recorder,
+        'staff': staff
+    }
+    for key, role_obj in role_mapping.items():
+        if role_obj is not None:
+            cfg['role_ids'][key] = role_obj.id
+            role_updates.append(f"• **{key.replace('_', ' ').title()}:** {role_obj.mention}")
+
+    channel_mapping = {
+        'challonge_logs': challonge_logs,
+        'transcript_logs': transcript_logs,
+        'take_schedule': take_schedule,
+        'results': results,
+        'bot_logs': bot_logs,
+        'thumbnail': thumbnail,
+        'staff_attendance': staff_attendance,
+        'closed_tickets_category': closed_tickets_category,
+        'category_1': category_1,
+        'category_2': category_2,
+    }
+    for key, chan_obj in channel_mapping.items():
+        if chan_obj is not None:
+            cfg['channel_ids'][key] = chan_obj.id
+            channel_updates.append(f"• **{key.replace('_', ' ').title()}:** {chan_obj.mention}")
+
+    if not role_updates and not channel_updates:
+        await interaction.response.send_message("⚠️ No parameters provided. Config unchanged.", ephemeral=True)
+        return
+
+    save_guild_config(interaction.guild.id, cfg)
+
+    embed = discord.Embed(
+        title="✅ Bot Settings Updated",
+        color=discord.Color.green(),
+        timestamp=discord.utils.utcnow()
+    )
+    if role_updates:
+        embed.add_field(name="👥 Role Updates", value="\n".join(role_updates), inline=False)
+    if channel_updates:
+        embed.add_field(name="📁 Channel/Category Updates", value="\n".join(channel_updates), inline=False)
+
+    embed.set_footer(text=f"Configured by {interaction.user.display_name}")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@settings_group.command(name="edit", description="Edit tournament branding and sheet links")
+@app_commands.describe(
+    organization_name="Name of your esports organization",
+    tournament_system_name="Branding name for the tournament system",
+    google_sheet_link="Google Sheet URL for captain mappings",
+    current_tournament_name="Name of the active tournament",
+    player_info_link="Google Sheet URL for player info lookup",
+    player_info_format="Format of team rosters",
+    sheetdb_api_url="SheetDB API endpoint for logs and results"
+)
 @app_commands.choices(
     player_info_format=[
         app_commands.Choice(name="1 vs 1", value="1 vs 1"),
@@ -6780,8 +7574,6 @@ async def settings_edit(
     interaction: discord.Interaction,
     organization_name: Optional[str] = None,
     tournament_system_name: Optional[str] = None,
-    bracket_link: Optional[str] = None,
-    bracket_api_key: Optional[str] = None,
     google_sheet_link: Optional[str] = None,
     current_tournament_name: Optional[str] = None,
     player_info_link: Optional[str] = None,
@@ -6791,169 +7583,103 @@ async def settings_edit(
     format_val = player_info_format.value if player_info_format else None
     await update_settings_logic(
         interaction, "edit",
-        organization_name, tournament_system_name, bracket_link,
-        bracket_api_key, google_sheet_link, current_tournament_name,
+        organization_name, tournament_system_name, None, None,
+        google_sheet_link, current_tournament_name,
         player_info_link, format_val, sheetdb_api_url
     )
 
-@settings_group.command(name="show", description="Display the current tournament settings for this server")
+
+@settings_group.command(name="show", description="Display the current bot settings for this server")
 async def settings_show(interaction: discord.Interaction):
     if not interaction.guild:
         await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
         return
-        
-    cfg = get_guild_config(interaction.guild.id)
-    
-    embed = discord.Embed(
-        title=f"⚙️ Settings — {cfg.get('organization_name', 'Tournament Organizer')}",
-        description="Here is the current branding, API, and sheets configuration for this server.",
-        color=discord.Color(BRAND_COLOR),
-        timestamp=discord.utils.utcnow()
-    )
-    
-    embed.add_field(name="🏢 Organization Name", value=cfg.get("organization_name", "Not Set"), inline=True)
-    embed.add_field(name="🎮 System Name", value=cfg.get("tournament_system_name", "Not Set"), inline=True)
-    embed.add_field(name="🏆 Current Tournament", value=cfg.get("current_tournament_name", "Not Set") or "None", inline=True)
-    
-    embed.add_field(name="📊 Bracket Link", value=cfg.get("bracket_link", "Not Set") or "None", inline=False)
-    embed.add_field(name="🔑 Bracket API Key", value=mask_api_key(cfg.get("bracket_api_key", "")), inline=True)
-    embed.add_field(name="📋 Google Sheet Link", value=cfg.get("google_sheet_link", "Not Set") or "None", inline=False)
-    
-    embed.add_field(name="👤 Player Info Link", value=cfg.get("player_info_link", "Not Set") or "None", inline=False)
-    embed.add_field(name="👥 Player Info Format", value=cfg.get("player_info_format", "5 vs 5"), inline=True)
-    embed.add_field(name="🔗 SheetDB API URL", value=cfg.get("sheetdb_api_url", "Not Set"), inline=False)
-    
-    embed.set_footer(text=f"Server ID: {interaction.guild.id}", icon_url=interaction.guild.icon.url if interaction.guild.icon else None)
-    
-    await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# Group for Staff commands
-staff_group = app_commands.Group(name="staff", description="Staff administration and configuration")
-staff_config_group = app_commands.Group(parent=staff_group, name="config", description="Configure server roles and channels for staff")
-
-@staff_config_group.command(name="set", description="Set or update staff roles and channels for this server")
-async def staff_config_set(
-    interaction: discord.Interaction,
-    # Roles
-    head_organizer: Optional[discord.Role] = None,
-    helper_team: Optional[discord.Role] = None,
-    head_helper: Optional[discord.Role] = None,
-    judge: Optional[discord.Role] = None,
-    recorder: Optional[discord.Role] = None,
-    staff: Optional[discord.Role] = None,
-    # Channels
-    rules: Optional[discord.TextChannel] = None,
-    bracket: Optional[discord.TextChannel] = None,
-    deadlines: Optional[discord.TextChannel] = None,
-    staff_attendance: Optional[discord.TextChannel] = None,
-    take_schedule: Optional[discord.TextChannel] = None,
-    results: Optional[discord.TextChannel] = None,
-    # Categories
-    category_1: Optional[discord.CategoryChannel] = None,
-    category_2: Optional[discord.CategoryChannel] = None,
-    closed_tickets_category: Optional[discord.CategoryChannel] = None
-):
-    if not interaction.guild:
-        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
-        return
-        
-    if not is_authorized_to_configure(interaction):
-        await interaction.response.send_message("❌ You do not have permission to manage config. Only the **Bot Owner**, **Administrators**, or members with the **Head Organizer** role can use this.", ephemeral=True)
-        return
-        
-    cfg = get_guild_config(interaction.guild.id)
-    
-    role_updates = []
-    channel_updates = []
-    
-    role_mapping = {
-        'head_organizer': head_organizer,
-        'helper_team': helper_team,
-        'head_helper': head_helper,
-        'judge': judge,
-        'recorder': recorder,
-        'staff': staff
-    }
-    for key, role_obj in role_mapping.items():
-        if role_obj is not None:
-            cfg['role_ids'][key] = role_obj.id
-            role_updates.append(f"• **{key.replace('_', ' ').title()}:** {role_obj.mention}")
-            
-    channel_mapping = {
-        'rules': rules,
-        'bracket': bracket,
-        'deadlines': deadlines,
-        'staff_attendance': staff_attendance,
-        'take_schedule': take_schedule,
-        'results': results,
-        'category_1': category_1,
-        'category_2': category_2,
-        'closed_tickets_category': closed_tickets_category
-    }
-    for key, chan_obj in channel_mapping.items():
-        if chan_obj is not None:
-            cfg['channel_ids'][key] = chan_obj.id
-            channel_updates.append(f"• **{key.replace('_', ' ').title()}:** {chan_obj.mention}")
-            
-    if not role_updates and not channel_updates:
-        await interaction.response.send_message("⚠️ No parameters were provided. Config remains unchanged.", ephemeral=True)
-        return
-        
-    save_guild_config(interaction.guild.id, cfg)
-    
-    embed = discord.Embed(
-        title="⚙️ Staff Config Updated",
-        color=discord.Color.green(),
-        timestamp=discord.utils.utcnow()
-    )
-    if role_updates:
-        embed.add_field(name="👥 Role Updates", value="\n".join(role_updates), inline=False)
-    if channel_updates:
-        embed.add_field(name="📁 Channel/Category Updates", value="\n".join(channel_updates), inline=False)
-        
-    embed.set_footer(text=f"Configured by {interaction.user.display_name}")
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-@staff_config_group.command(name="view", description="View the current staff roles and channels configured for this server")
-async def staff_config_view(interaction: discord.Interaction):
-    if not interaction.guild:
-        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
-        return
-        
     cfg = get_guild_config(interaction.guild.id)
     role_ids = cfg.get("role_ids", {})
     channel_ids = cfg.get("channel_ids", {})
-    
-    embed = discord.Embed(
-        title="📋 Staff Configuration View",
-        description="Here are the configured roles and channels for this server.",
+    guild = interaction.guild
+
+    def get_role_str(key):
+        rid = role_ids.get(key)
+        if not rid:
+            return "`Not Set`"
+        role = guild.get_role(int(rid))
+        return role.mention if role else f"`ID: {rid}`"
+
+    def get_channel_str(key):
+        cid = channel_ids.get(key)
+        if not cid:
+            return "`Not Set`"
+        ch = guild.get_channel(int(cid))
+        return ch.mention if ch else f"`ID: {cid}`"
+
+    def get_setting_str(key, default="Not Set"):
+        val = cfg.get(key)
+        if not val:
+            return f"`{default}`"
+        if key in ("google_sheet_link", "player_info_link", "sheetdb_api_url"):
+            return f"[Link]({val})" if val.startswith("http") else f"`{val}`"
+        return f"`{val}`"
+
+    # Embed 1: Discord Roles & Channels
+    embed_discord = discord.Embed(
+        title="⚙️ Current Bot Settings (Roles & Channels)",
         color=discord.Color(BRAND_COLOR),
         timestamp=discord.utils.utcnow()
     )
-    
-    roles_str = ""
-    for role_key, def_id in DEFAULT_ROLE_IDS.items():
-        role_id = role_ids.get(role_key, def_id)
-        role = interaction.guild.get_role(role_id)
-        role_mention = role.mention if role else f"`ID: {role_id}` (Not Found)"
-        roles_str += f"• **{role_key.replace('_', ' ').title()}:** {role_mention}\n"
-        
-    channels_str = ""
-    for chan_key, def_id in DEFAULT_CHANNEL_IDS.items():
-        chan_id = channel_ids.get(chan_key, def_id)
-        channel = interaction.guild.get_channel(chan_id)
-        chan_mention = channel.mention if channel else f"`ID: {chan_id}` (Not Found)"
-        channels_str += f"• **{chan_key.replace('_', ' ').title()}:** {chan_mention}\n"
-        
-    embed.add_field(name="👥 Roles", value=roles_str, inline=False)
-    embed.add_field(name="📁 Channels & Categories", value=channels_str, inline=False)
-    
-    embed.set_footer(text=f"Server ID: {interaction.guild.id}")
-    await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# Register command groups
+    # Row 1 — Roles
+    embed_discord.add_field(name="👑 Admin Role",      value=get_role_str("head_organizer"), inline=True)
+    embed_discord.add_field(name="🛡️ Staff Role",      value=get_role_str("helper_team"),    inline=True)
+    embed_discord.add_field(name="🏆 Challonge Role",  value=get_role_str("challonge_role"), inline=True)
+
+    # Row 2 — More Roles
+    embed_discord.add_field(name="⚖️ Judge Role",      value=get_role_str("judge"),    inline=True)
+    embed_discord.add_field(name="🎥 Recorder Role",   value=get_role_str("recorder"), inline=True)
+    embed_discord.add_field(name="📝 Challonge Logs Channel", value=get_channel_str("challonge_logs"), inline=True)
+
+    # Row 3 — Channels
+    embed_discord.add_field(name="🗒️ Transcript Logs Channel", value=get_channel_str("transcript_logs"),       inline=True)
+    embed_discord.add_field(name="📁 Closed Channel Category", value=get_channel_str("closed_tickets_category"), inline=True)
+    embed_discord.add_field(name="📅 Schedule Channel",         value=get_channel_str("take_schedule"),          inline=True)
+
+    # Row 4 — More Channels
+    embed_discord.add_field(name="🏅 Results Channel",    value=get_channel_str("results"),   inline=True)
+    embed_discord.add_field(name="🤖 Bot Logs Channel",   value=get_channel_str("bot_logs"),  inline=True)
+    embed_discord.add_field(name="🖼️ Thumbnail Channel",  value=get_channel_str("thumbnail"), inline=True)
+
+    embed_discord.set_footer(
+        text="Use /settings set to update these configurations"
+    )
+
+    # Embed 2: Tournament Branding & External Links
+    embed_tourney = discord.Embed(
+        title="🏆 Tournament Branding & External Links",
+        color=discord.Color(BRAND_COLOR),
+        timestamp=discord.utils.utcnow()
+    )
+
+    embed_tourney.add_field(name="🏢 Organization Name", value=get_setting_str("organization_name", "TASK FORCE TRIDENT"), inline=True)
+    embed_tourney.add_field(name="⚙️ System Name", value=get_setting_str("tournament_system_name", "Tournament Organizer"), inline=True)
+    embed_tourney.add_field(name="🏆 Active Tournament", value=get_setting_str("current_tournament_name"), inline=True)
+    
+    embed_tourney.add_field(name="📊 SheetDB API URL", value=get_setting_str("sheetdb_api_url"), inline=True)
+    embed_tourney.add_field(name="🎮 Player Info Sheet", value=get_setting_str("player_info_link"), inline=True)
+    embed_tourney.add_field(name="📋 Player Info Format", value=get_setting_str("player_info_format"), inline=True)
+    
+    embed_tourney.add_field(name="📂 Captains Sheet", value=get_setting_str("google_sheet_link"), inline=True)
+
+    embed_tourney.set_footer(
+        text=f"Use /settings edit to update these configurations • {interaction.user.display_name}",
+        icon_url=interaction.user.display_avatar.url if interaction.user.display_avatar else None
+    )
+
+    await interaction.response.send_message(embeds=[embed_discord, embed_tourney], ephemeral=True)
+
+
+# Register settings_group
 bot.tree.add_command(settings_group)
-bot.tree.add_command(staff_group)
 
 
 # ===========================================================================================
@@ -6967,13 +7693,16 @@ def get_default_tournament_data():
         'name': "",
         'id': "",
         'key': "",
+        'challonge_bracket_link': "",
         'sheet_link': "",
+        'thumbnail_url': "",
         'admin_role_id': None,
         'helper_role_id': None,
         'attendance_channel_id': None,
         'transcript_channel_id': None,
         'rules_channel_id': None,
         'deadline_channel_id': None,
+        'schedule_channel_id': None,
         'closed_ticket_category_id': None,
         'close_ticket_category_2_id': None,
         'ticket_open_category_1_id': None,
@@ -7039,6 +7768,14 @@ def save_guild_tournaments(guild_id: int, tournaments: dict):
             print(f"Saved tournaments for guild {guild_id} to tournaments.json")
         except Exception as e:
             print(f"Error saving tournaments to tournaments.json: {e}")
+            
+    # Sync tournaments to SheetDB in the background
+    try:
+        loop = asyncio.get_running_loop()
+        for t_id, t_data in tournaments.items():
+            loop.create_task(save_tournament_to_sheetdb(guild_id, t_id, t_data))
+    except RuntimeError:
+        pass
 
 def get_active_tournament_config(guild_id: int) -> Optional[dict]:
     tournaments = load_guild_tournaments(guild_id)
@@ -7056,79 +7793,153 @@ def build_tournament_embed(interaction: discord.Interaction, t_data: dict, actio
         timestamp=discord.utils.utcnow()
     )
     
-    admin_role = guild.get_role(t_data['admin_role_id']) if t_data['admin_role_id'] else None
-    helper_role = guild.get_role(t_data['helper_role_id']) if t_data['helper_role_id'] else None
+    def safe_int(v):
+        try:
+            return int(v) if v is not None else None
+        except:
+            return None
+
+    admin_role_id = safe_int(t_data.get('admin_role_id'))
+    helper_role_id = safe_int(t_data.get('helper_role_id'))
+    admin_role = guild.get_role(admin_role_id) if admin_role_id else None
+    helper_role = guild.get_role(helper_role_id) if helper_role_id else None
     
     admin_str = admin_role.mention if admin_role else "Using default from settings"
     helper_str = helper_role.mention if helper_role else "Using default from settings"
     
-    attendance_channel = guild.get_channel(t_data['attendance_channel_id']) if t_data['attendance_channel_id'] else None
-    transcript_channel = guild.get_channel(t_data['transcript_channel_id']) if t_data['transcript_channel_id'] else None
-    rules_channel = guild.get_channel(t_data['rules_channel_id']) if t_data['rules_channel_id'] else None
-    result_channel = guild.get_channel(t_data['result_channel_id']) if t_data['result_channel_id'] else None
-    
-    att_str = attendance_channel.mention if attendance_channel else "Using default from settings"
-    rules_str = rules_channel.mention if rules_channel else "Using default from settings"
-    trans_str = transcript_channel.mention if transcript_channel else "Not Set"
-    res_str = result_channel.mention if result_channel else "Using default from settings"
-    
-    closed_cat_1 = guild.get_channel(t_data['closed_ticket_category_id']) if t_data['closed_ticket_category_id'] else None
-    closed_cat_2 = guild.get_channel(t_data['close_ticket_category_2_id']) if t_data['close_ticket_category_2_id'] else None
-    
+    attendance_channel = guild.get_channel(safe_int(t_data.get('attendance_channel_id')))
+    transcript_channel = guild.get_channel(safe_int(t_data.get('transcript_channel_id')))
+    rules_channel      = guild.get_channel(safe_int(t_data.get('rules_channel_id')))
+    result_channel     = guild.get_channel(safe_int(t_data.get('result_channel_id')))
+    deadline_channel   = guild.get_channel(safe_int(t_data.get('deadline_channel_id')))
+
+    att_str      = attendance_channel.mention if attendance_channel else "Using default from settings"
+    rules_str    = rules_channel.mention      if rules_channel      else "Using default from settings"
+    trans_str    = transcript_channel.mention if transcript_channel else "Not Set"
+    res_str      = (result_channel.mention + "\n*(default)*") if result_channel else "Using default from settings"
+    deadline_str = deadline_channel.mention   if deadline_channel   else "Not Set"
+
+    closed_cat_1 = guild.get_channel(safe_int(t_data.get('closed_ticket_category_id')))
+    closed_cat_2 = guild.get_channel(safe_int(t_data.get('close_ticket_category_2_id')))
+
     closed_parts = []
     if closed_cat_1:
-        closed_parts.append(f"{closed_cat_1.name} (Primary)")
+        closed_parts.append(f"#{closed_cat_1.name} (Primary)")
     if closed_cat_2:
-        closed_parts.append(f"{closed_cat_2.name} (Fallback)")
+        closed_parts.append(f"#{closed_cat_2.name} (Fallback)")
     closed_str = "\n".join(closed_parts) if closed_parts else "Using default from settings"
-    
-    sheet_link = t_data.get('sheet_link')
-    sheet_str = f"[Click Here]({sheet_link})" if sheet_link else "Not Set"
-    
+
+    sheet_link = t_data.get('sheet_link', '')
+    sheet_str  = f"[Click Here]({sheet_link})" if sheet_link else "Not Set"
+
+    bracket_val = t_data.get('challonge_bracket_link', '')
+    bracket_str = f"[Click Here]({bracket_val})" if bracket_val.startswith("http") else (f"`{bracket_val}`" if bracket_val else "Not Set")
+
+    key_val = t_data.get('key', '')
+    key_str = f"`{mask_api_key(key_val)}`"
+
+    thumb_val = t_data.get('thumbnail_url', '')
+    thumb_str = f"[Click Here]({thumb_val})" if thumb_val else "Not Set"
+    if thumb_val:
+        embed.set_thumbnail(url=thumb_val)
+
     room_str = "Enabled" if t_data.get('auto_room_creation', True) else "Disabled"
-    
-    embed.add_field(name="🆔 ID", value=t_data['id'], inline=True)
+
+    # Row 1: Tournament ID | State | Key
+    embed.add_field(name="🆔 Tournament ID",   value=f"`{t_data['id']}`",    inline=True)
     embed.add_field(name="📊 Tournament State", value=f"`{t_data['state']}`", inline=True)
-    embed.add_field(name="📊 Attendance Channel", value=att_str, inline=True)
-    
-    embed.add_field(name="📌 Rules Channel", value=rules_str, inline=True)
-    embed.add_field(name="📜 Transcript Channel", value=trans_str, inline=True)
-    embed.add_field(name="🔒 Closed Ticket Categories", value=closed_str, inline=True)
-    
-    embed.add_field(name="🏆 Result Channel", value=res_str, inline=True)
-    embed.add_field(name="📋 Sheet Link", value=sheet_str, inline=True)
-    embed.add_field(name="👑 Admin Role", value=admin_str, inline=True)
-    
-    embed.add_field(name="👥 Helper Role", value=helper_str, inline=True)
-    embed.add_field(name="⚙️ Auto Room Creation", value=room_str, inline=True)
-    embed.add_field(name="\u200b", value="\u200b", inline=True)
-    
+    embed.add_field(name="🔑 Challonge API Key", value=key_str,               inline=True)
+
+    # Row 2: Transcript | Closed Tickets | Attendance
+    embed.add_field(name="🗒️ Transcript Channel",      value=trans_str,  inline=True)
+    embed.add_field(name="📁 Closed Ticket Categories", value=closed_str, inline=True)
+    embed.add_field(name="📊 Attendance Channel",         value=att_str,    inline=True)
+
+    # Row 3: Rules | Deadline | Result
+    embed.add_field(name="📌 Rules Channel",    value=rules_str,    inline=True)
+    embed.add_field(name="🏆 Deadline Channel", value=deadline_str, inline=True)
+    embed.add_field(name="🏆 Result Channel",   value=res_str,      inline=True)
+
+    # Row 4: Captains Sheet | Challonge Bracket | Tour Admin Role
+    embed.add_field(name="📂 Captains Sheet",      value=sheet_str,  inline=True)
+    embed.add_field(name="🎮 Challonge Bracket",   value=bracket_str, inline=True)
+    embed.add_field(name="👑 Tour Admin Role",     value=admin_str,  inline=True)
+
+    # Row 5: Helper Role | Auto Room | Thumbnail URL
+    embed.add_field(name="🤝 Helper Role",         value=helper_str, inline=True)
+    embed.add_field(name="🔄 Auto Room Creation", value=room_str,   inline=True)
+    embed.add_field(name="🖼️ Thumbnail URL",      value=thumb_str,  inline=True)
+
+    # Row 6: Open Ticket Categories list
     open_cats = []
     for i in range(1, 5):
         cat_id = t_data.get(f'ticket_open_category_{i}_id')
-        cat = guild.get_channel(cat_id) if cat_id else None
+        cat = guild.get_channel(safe_int(cat_id)) if cat_id else None
         if cat:
-            open_cats.append(f"# 🏆 {cat.name}")
-    open_cats_str = "\n".join(open_cats) if open_cats else "Using default from settings"
-    
-    embed.add_field(name="🎟️ Open Ticket Categories", value=open_cats_str, inline=False)
-    
-    embed.set_footer(text=f"Server ID: {guild.id}")
+            open_cats.append(f"▪️ Category {i}: # 🏆 {cat.name} 🏆")
+    if open_cats:
+        embed.add_field(name="📂 Open Ticket Categories", value="\n".join(open_cats), inline=False)
+
+    embed.set_footer(text=f"Requested by {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url if interaction.user.display_avatar else None)
     return embed
+
+async def tournament_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    if not interaction.guild_id:
+        return []
+    try:
+        tournaments = load_guild_tournaments(interaction.guild_id)
+        choices = []
+        for t_id, t_cfg in tournaments.items():
+            name = t_cfg.get('name', t_id)
+            if current.lower() in name.lower() or current.lower() in t_id.lower():
+                choices.append(app_commands.Choice(name=name, value=t_id))
+        return choices[:25]
+    except Exception as e:
+        print(f"Error in tournament_autocomplete: {e}")
+        return []
 
 tournament_group = app_commands.Group(name="tournament", description="Manage tournaments configurations")
 
 @tournament_group.command(name="add", description="Add a tournament configuration")
+@app_commands.describe(
+    name="The user-friendly display name of the tournament",
+    id="Unique ID for the tournament (e.g. valorant_cup_1)",
+    challonge_api_key="Challonge API Key for bracket integration",
+    challonge_bracket_link="Challonge Bracket URL or ID",
+    captains_sheet_link="Google Sheet URL for captain mappings",
+    thumbnail_url="HTTP(S) URL of the tournament thumbnail",
+    admin_role="Role allowed to manage this tournament",
+    helper_role="Helper role for this tournament",
+    attendance_channel="Channel for staff attendance logs",
+    transcript_channel="Channel for ticket transcripts",
+    schedule_channel="Channel for schedule announcements",
+    rules_channel="Channel for rule configurations/posts",
+    deadline_channel="Channel for match deadline alerts",
+    closed_ticket_category="Category for archiving closed tickets",
+    close_ticket_category_2="Secondary/fallback closed ticket category",
+    ticket_open_category_1="Category 1 for active match tickets",
+    ticket_open_category_2="Category 2 for active match tickets",
+    ticket_open_category_3="Category 3 for active match tickets",
+    ticket_open_category_4="Category 4 for active match tickets",
+    result_channel="Channel where match results are posted",
+    auto_room_creation="Whether to enable auto-ticket creation loops"
+)
 async def tournament_add(
     interaction: discord.Interaction,
     name: str,
     id: str,
-    key: Optional[str] = None,
-    sheet_link: Optional[str] = None,
+    challonge_api_key: Optional[str] = None,
+    challonge_bracket_link: Optional[str] = None,
+    captains_sheet_link: Optional[str] = None,
+    thumbnail_url: Optional[str] = None,
     admin_role: Optional[discord.Role] = None,
     helper_role: Optional[discord.Role] = None,
     attendance_channel: Optional[discord.TextChannel] = None,
     transcript_channel: Optional[discord.TextChannel] = None,
+    schedule_channel: Optional[discord.TextChannel] = None,
     rules_channel: Optional[discord.TextChannel] = None,
     deadline_channel: Optional[discord.TextChannel] = None,
     closed_ticket_category: Optional[discord.CategoryChannel] = None,
@@ -7148,23 +7959,27 @@ async def tournament_add(
         await interaction.response.send_message("❌ You do not have permission to manage tournaments.", ephemeral=True)
         return
         
+    await interaction.response.defer()
     tournaments = load_guild_tournaments(interaction.guild.id)
     
     t_id_clean = id.strip().replace(" ", "_")
     if t_id_clean in tournaments:
-        await interaction.response.send_message(f"❌ A tournament with ID `{t_id_clean}` already exists.", ephemeral=True)
+        await interaction.followup.send(f"❌ A tournament with ID `{t_id_clean}` already exists.")
         return
         
     t_data = get_default_tournament_data()
     t_data.update({
         'name': name.strip(),
         'id': t_id_clean,
-        'key': key.strip() if key else "",
-        'sheet_link': sheet_link.strip() if sheet_link else "",
+        'key': challonge_api_key.strip() if challonge_api_key else "",
+        'challonge_bracket_link': challonge_bracket_link.strip() if challonge_bracket_link else "",
+        'sheet_link': captains_sheet_link.strip() if captains_sheet_link else "",
+        'thumbnail_url': thumbnail_url.strip() if thumbnail_url else "",
         'admin_role_id': admin_role.id if admin_role else None,
         'helper_role_id': helper_role.id if helper_role else None,
         'attendance_channel_id': attendance_channel.id if attendance_channel else None,
         'transcript_channel_id': transcript_channel.id if transcript_channel else None,
+        'schedule_channel_id': schedule_channel.id if schedule_channel else None,
         'rules_channel_id': rules_channel.id if rules_channel else None,
         'deadline_channel_id': deadline_channel.id if deadline_channel else None,
         'closed_ticket_category_id': closed_ticket_category.id if closed_ticket_category else None,
@@ -7180,12 +7995,14 @@ async def tournament_add(
     
     if not tournaments:
         t_data['state'] = 'active'
+        if t_data.get('auto_room_creation', True):
+            start_auto_room_loop(interaction.guild.id)
         
     tournaments[t_id_clean] = t_data
     save_guild_tournaments(interaction.guild.id, tournaments)
     
     embed = build_tournament_embed(interaction, t_data, "Tournament Created")
-    await interaction.response.send_message(embed=embed)
+    await interaction.followup.send(embed=embed)
 
 @tournament_group.command(name="edit", description="Edit an existing tournament configuration")
 @app_commands.choices(
@@ -7195,16 +8012,44 @@ async def tournament_add(
         app_commands.Choice(name="completed", value="completed")
     ]
 )
+@app_commands.autocomplete(tournament=tournament_autocomplete)
+@app_commands.describe(
+    tournament="Select the tournament configuration to edit",
+    name="The user-friendly display name of the tournament",
+    challonge_api_key="Challonge API Key for bracket integration",
+    challonge_bracket_link="Challonge Bracket URL or ID",
+    captains_sheet_link="Google Sheet URL for captain mappings",
+    thumbnail_url="HTTP(S) URL of the tournament thumbnail",
+    admin_role="Role allowed to manage this tournament",
+    helper_role="Helper role for this tournament",
+    attendance_channel="Channel for staff attendance logs",
+    transcript_channel="Channel for ticket transcripts",
+    schedule_channel="Channel for schedule announcements",
+    rules_channel="Channel for rule configurations/posts",
+    deadline_channel="Channel for match deadline alerts",
+    closed_ticket_category="Category for archiving closed tickets",
+    close_ticket_category_2="Secondary/fallback closed ticket category",
+    ticket_open_category_1="Category 1 for active match tickets",
+    ticket_open_category_2="Category 2 for active match tickets",
+    ticket_open_category_3="Category 3 for active match tickets",
+    ticket_open_category_4="Category 4 for active match tickets",
+    result_channel="Channel where match results are posted",
+    auto_room_creation="Whether to enable auto-ticket creation loops",
+    state="The lifecycle state of this tournament"
+)
 async def tournament_edit(
     interaction: discord.Interaction,
-    id: str,
+    tournament: str,
     name: Optional[str] = None,
-    key: Optional[str] = None,
-    sheet_link: Optional[str] = None,
+    challonge_api_key: Optional[str] = None,
+    challonge_bracket_link: Optional[str] = None,
+    captains_sheet_link: Optional[str] = None,
+    thumbnail_url: Optional[str] = None,
     admin_role: Optional[discord.Role] = None,
     helper_role: Optional[discord.Role] = None,
     attendance_channel: Optional[discord.TextChannel] = None,
     transcript_channel: Optional[discord.TextChannel] = None,
+    schedule_channel: Optional[discord.TextChannel] = None,
     rules_channel: Optional[discord.TextChannel] = None,
     deadline_channel: Optional[discord.TextChannel] = None,
     closed_ticket_category: Optional[discord.CategoryChannel] = None,
@@ -7225,21 +8070,26 @@ async def tournament_edit(
         await interaction.response.send_message("❌ You do not have permission to manage tournaments.", ephemeral=True)
         return
         
+    await interaction.response.defer()
     tournaments = load_guild_tournaments(interaction.guild.id)
     
-    t_id_clean = id.strip().replace(" ", "_")
+    t_id_clean = tournament.strip().replace(" ", "_")
     if t_id_clean not in tournaments:
-        await interaction.response.send_message(f"❌ Tournament with ID `{t_id_clean}` not found.", ephemeral=True)
+        await interaction.followup.send(f"❌ Tournament with ID `{t_id_clean}` not found.")
         return
         
     t_data = tournaments[t_id_clean]
     
     if name is not None:
         t_data['name'] = name.strip()
-    if key is not None:
-        t_data['key'] = key.strip()
-    if sheet_link is not None:
-        t_data['sheet_link'] = sheet_link.strip()
+    if challonge_api_key is not None:
+        t_data['key'] = challonge_api_key.strip()
+    if challonge_bracket_link is not None:
+        t_data['challonge_bracket_link'] = challonge_bracket_link.strip()
+    if captains_sheet_link is not None:
+        t_data['sheet_link'] = captains_sheet_link.strip()
+    if thumbnail_url is not None:
+        t_data['thumbnail_url'] = thumbnail_url.strip()
     if admin_role is not None:
         t_data['admin_role_id'] = admin_role.id
     if helper_role is not None:
@@ -7248,6 +8098,8 @@ async def tournament_edit(
         t_data['attendance_channel_id'] = attendance_channel.id
     if transcript_channel is not None:
         t_data['transcript_channel_id'] = transcript_channel.id
+    if schedule_channel is not None:
+        t_data['schedule_channel_id'] = schedule_channel.id
     if rules_channel is not None:
         t_data['rules_channel_id'] = rules_channel.id
     if deadline_channel is not None:
@@ -7273,6 +8125,7 @@ async def tournament_edit(
         new_state = state.value
         t_data['state'] = new_state
         if new_state == 'active':
+            start_auto_room_loop(interaction.guild.id)
             for other_id, other_cfg in tournaments.items():
                 if other_id != t_id_clean and other_cfg.get('state') == 'active':
                     other_cfg['state'] = 'pending'
@@ -7281,10 +8134,11 @@ async def tournament_edit(
     save_guild_tournaments(interaction.guild.id, tournaments)
     
     embed = build_tournament_embed(interaction, t_data, "Tournament Edited")
-    await interaction.response.send_message(embed=embed)
+    await interaction.followup.send(embed=embed)
 
 @tournament_group.command(name="delete", description="Delete an existing tournament configuration")
-async def tournament_delete(interaction: discord.Interaction, id: str):
+@app_commands.autocomplete(tournament=tournament_autocomplete)
+async def tournament_delete(interaction: discord.Interaction, tournament: str):
     if not interaction.guild:
         await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
         return
@@ -7293,41 +8147,53 @@ async def tournament_delete(interaction: discord.Interaction, id: str):
         await interaction.response.send_message("❌ You do not have permission to manage tournaments.", ephemeral=True)
         return
         
+    await interaction.response.defer()
     tournaments = load_guild_tournaments(interaction.guild.id)
     
-    t_id_clean = id.strip().replace(" ", "_")
+    t_id_clean = tournament.strip().replace(" ", "_")
     if t_id_clean not in tournaments:
-        await interaction.response.send_message(f"❌ Tournament with ID `{t_id_clean}` not found.", ephemeral=True)
+        await interaction.followup.send(f"❌ Tournament with ID `{t_id_clean}` not found.")
         return
         
     t_data = tournaments[t_id_clean]
     del tournaments[t_id_clean]
     save_guild_tournaments(interaction.guild.id, tournaments)
+    asyncio.create_task(delete_tournament_from_sheetdb(interaction.guild.id, t_id_clean))
     
+    active_exists = False
+    for other_id, other_cfg in tournaments.items():
+        if other_cfg.get('state') == 'active':
+            active_exists = True
+            break
+    if not active_exists:
+        stop_auto_room_loop(interaction.guild.id)
+        
     embed = discord.Embed(
         title="🗑️ Tournament Deleted",
         description=f"Successfully deleted tournament configuration for **{t_data['name']}** (ID: `{t_id_clean}`).",
         color=discord.Color.red(),
         timestamp=discord.utils.utcnow()
     )
-    await interaction.response.send_message(embed=embed)
+    await interaction.followup.send(embed=embed)
 
 @tournament_group.command(name="info", description="Get information about a specific tournament")
-async def tournament_info(interaction: discord.Interaction, id: str):
+@app_commands.autocomplete(tournament=tournament_autocomplete)
+async def tournament_info(interaction: discord.Interaction, tournament: str):
     if not interaction.guild:
         await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
         return
         
+    await interaction.response.defer()
     tournaments = load_guild_tournaments(interaction.guild.id)
     
-    t_id_clean = id.strip().replace(" ", "_")
+    t_id_clean = tournament.strip().replace(" ", "_")
     if t_id_clean not in tournaments:
-        await interaction.response.send_message(f"❌ Tournament with ID `{t_id_clean}` not found.", ephemeral=True)
+        await interaction.followup.send(f"❌ Tournament with ID `{t_id_clean}` not found.")
         return
         
     t_data = tournaments[t_id_clean]
     embed = build_tournament_embed(interaction, t_data, "Tournament Info")
-    await interaction.response.send_message(embed=embed)
+    await interaction.followup.send(embed=embed)
 
 @tournament_group.command(name="list", description="Get the tournament list for this server")
 async def tournament_list(interaction: discord.Interaction):
@@ -7335,10 +8201,11 @@ async def tournament_list(interaction: discord.Interaction):
         await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
         return
         
+    await interaction.response.defer()
     tournaments = load_guild_tournaments(interaction.guild.id)
     
     if not tournaments:
-        await interaction.response.send_message("ℹ️ No tournaments have been configured on this server yet.", ephemeral=True)
+        await interaction.followup.send("ℹ️ No tournaments have been configured on this server yet.")
         return
         
     embed = discord.Embed(
@@ -7356,9 +8223,200 @@ async def tournament_list(interaction: discord.Interaction):
             inline=True
         )
         
-    await interaction.response.send_message(embed=embed)
+    await interaction.followup.send(embed=embed)
+
+auto_room_group = app_commands.Group(name="auto_room", description="Automatic room creation management")
+
+@auto_room_group.command(name="run", description="Manually trigger auto room creation")
+@app_commands.autocomplete(tournament=tournament_autocomplete)
+async def auto_room_run(interaction: discord.Interaction, tournament: Optional[str] = None):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+    if not is_authorized_to_configure(interaction):
+        await interaction.response.send_message("❌ You do not have permission to run this command.", ephemeral=True)
+        return
+        
+    await interaction.response.defer()
+    
+    try:
+        tournaments = load_guild_tournaments(interaction.guild.id)
+        t_cfg = None
+        if tournament:
+            t_id_clean = tournament.strip().replace(" ", "_")
+            t_cfg = tournaments.get(t_id_clean)
+            if not t_cfg:
+                await interaction.followup.send(f"❌ Tournament with ID `{t_id_clean}` not found.")
+                return
+        else:
+            t_cfg = get_active_tournament_config(interaction.guild.id)
+            if not t_cfg:
+                await interaction.followup.send("❌ No active tournament found on this server. Please specify a tournament ID.")
+                return
+                
+        status_msg = await interaction.followup.send(f"⏳ [░░░░░░░░░░] 0% — Triggering manual room creation for tournament **{t_cfg['name']}**...")
+        
+        async def on_progress(percent: int, text: str):
+            filled = percent // 10
+            bar = "█" * filled + "░" * (10 - filled)
+            try:
+                await status_msg.edit(content=f"⏳ [{bar}] {percent}% — {text}")
+            except Exception as e:
+                print(f"Error updating progress message: {e}")
+                
+        created, error_msg = await auto_create_open_tickets_for_tournament(interaction.guild, t_cfg, on_progress=on_progress)
+        
+        if error_msg:
+            try:
+                await status_msg.edit(content=f"❌ Error during room creation: {error_msg}")
+            except Exception:
+                await interaction.followup.send(f"❌ Error during room creation: {error_msg}")
+        else:
+            try:
+                await status_msg.edit(content=f"✅ [██████████] 100% — Auto room creation complete! Created **{created}** new match room(s).")
+            except Exception:
+                await interaction.followup.send(f"✅ Auto room creation complete! Created **{created}** new match room(s).")
+                
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        try:
+            await interaction.followup.send(f"❌ An unexpected error occurred: {str(e)}")
+        except Exception:
+            pass
+
+@auto_room_group.command(name="stop", description="Stop automatic room creation")
+@app_commands.autocomplete(tournament=tournament_autocomplete)
+async def auto_room_stop(interaction: discord.Interaction, tournament: Optional[str] = None):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+    if not is_authorized_to_configure(interaction):
+        await interaction.response.send_message("❌ You do not have permission to run this command.", ephemeral=True)
+        return
+        
+    await interaction.response.defer()
+    tournaments = load_guild_tournaments(interaction.guild.id)
+    t_id_clean = None
+    if tournament:
+        t_id_clean = tournament.strip().replace(" ", "_")
+        if t_id_clean not in tournaments:
+            await interaction.followup.send(f"❌ Tournament with ID `{t_id_clean}` not found.")
+            return
+    else:
+        t_cfg = get_active_tournament_config(interaction.guild.id)
+        if not t_cfg:
+            await interaction.followup.send("❌ No active tournament found on this server.")
+            return
+        t_id_clean = t_cfg['id']
+        
+    t_cfg = tournaments[t_id_clean]
+    t_cfg['auto_room_creation'] = False
+    tournaments[t_id_clean] = t_cfg
+    save_guild_tournaments(interaction.guild.id, tournaments)
+    stop_auto_room_loop(interaction.guild.id)
+    
+    await interaction.followup.send(f"⏹️ Stopped automatic room creation for tournament **{t_cfg['name']}**.")
+
+@auto_room_group.command(name="toggle", description="Toggle automatic room creation for a tournament")
+@app_commands.autocomplete(tournament=tournament_autocomplete)
+async def auto_room_toggle(interaction: discord.Interaction, tournament: Optional[str] = None):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+    if not is_authorized_to_configure(interaction):
+        await interaction.response.send_message("❌ You do not have permission to run this command.", ephemeral=True)
+        return
+        
+    await interaction.response.defer()
+    tournaments = load_guild_tournaments(interaction.guild.id)
+    t_id_clean = None
+    if tournament:
+        t_id_clean = tournament.strip().replace(" ", "_")
+        if t_id_clean not in tournaments:
+            await interaction.followup.send(f"❌ Tournament with ID `{t_id_clean}` not found.")
+            return
+    else:
+        t_cfg = get_active_tournament_config(interaction.guild.id)
+        if not t_cfg:
+            await interaction.followup.send("❌ No active tournament found on this server.")
+            return
+        t_id_clean = t_cfg['id']
+        
+    t_cfg = tournaments[t_id_clean]
+    new_state = not t_cfg.get('auto_room_creation', True)
+    t_cfg['auto_room_creation'] = new_state
+    tournaments[t_id_clean] = t_cfg
+    save_guild_tournaments(interaction.guild.id, tournaments)
+    
+    if new_state:
+        start_auto_room_loop(interaction.guild.id)
+    else:
+        stop_auto_room_loop(interaction.guild.id)
+    
+    state_str = "Enabled" if new_state else "Disabled"
+    await interaction.followup.send(f"🔄 Automatic room creation for tournament **{t_cfg['name']}** has been **{state_str}**.")
+
+
+clear_group = app_commands.Group(name="clear", description="Clear cache or delete categories")
+
+@clear_group.command(name="category", description="Deletes all channels in a specified category (Organizer only)")
+@app_commands.describe(category="The category channel to delete all channels from")
+async def clear_category(interaction: discord.Interaction, category: discord.CategoryChannel):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+    if not is_authorized_to_configure(interaction):
+        await interaction.response.send_message("❌ You do not have permission to run this command.", ephemeral=True)
+        return
+        
+    await interaction.response.defer(ephemeral=True)
+    
+    channels_to_delete = list(category.channels)
+    if not channels_to_delete:
+        await interaction.followup.send(f"ℹ️ Category **{category.name}** has no channels to delete.")
+        return
+        
+    deleted_count = 0
+    failed_count = 0
+    
+    for ch in channels_to_delete:
+        try:
+            await ch.delete()
+            deleted_count += 1
+        except Exception as e:
+            print(f"Error deleting channel {ch.name} in clear_category: {e}")
+            failed_count += 1
+            
+    await interaction.followup.send(
+        f"✅ Purge complete for category **{category.name}**.\n"
+        f"🟢 **Deleted:** {deleted_count} channels.\n"
+        f"🔴 **Failed:** {failed_count} channels."
+    )
+
+@clear_group.command(name="cache", description="Clear Challonge and sheet caches")
+async def clear_cache(interaction: discord.Interaction):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+    if not is_authorized_to_configure(interaction):
+        await interaction.response.send_message("❌ You do not have permission to run this command.", ephemeral=True)
+        return
+        
+    await interaction.response.defer(ephemeral=True)
+    
+    global GUILD_CONFIG_CACHE, RULES_CACHE, STAFF_STATS_CACHE, TOURNAMENTS_CACHE
+    GUILD_CONFIG_CACHE.clear()
+    RULES_CACHE.clear()
+    STAFF_STATS_CACHE.clear()
+    TOURNAMENTS_CACHE.clear()
+    
+    await interaction.followup.send("✅ Config, rules, and staff stats caches cleared successfully!")
+
 
 bot.tree.add_command(tournament_group)
+bot.tree.add_command(auto_room_group)
+bot.tree.add_command(clear_group)
 
 
 if __name__ == "__main__":
