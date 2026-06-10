@@ -45,7 +45,6 @@ CREATE TABLE "GuildConfig" (
     "player_info_link" text,
     "player_info_format" text,
     "player_info_participant_channel_id" text,
-    "current_tournament_name" text,
     "Updated_At" text,
     -- Legacy columns included at the end to prevent legacy fallback errors
     "Challonge_Role_ID" text,
@@ -69,15 +68,12 @@ CREATE TABLE "Tournaments" (
     "State" text,
     "Key" text,
     "challonge_bracket_link" text,
-    "Thumbnail_Channel_ID" text,
     "Attendance_Channel_ID" text,
     "Transcript_Channel_ID" text,
     "Schedule_Channel_ID" text,
     "Rules_Channel_ID" text,
-    "Result_Channel_ID" text, -- 1st instance (per user request)
+    "Result_Channel_ID" text,
     "Deadline_Channel_ID" text,
-    -- Column 14 (User wrote Result_Channel_ID twice; we map 2nd instance here as Participant_Channel_ID / repeat Result)
-    "Participant_Channel_ID" text, 
     "Challonge_Logs_Channel_ID" text,
     "Transcript_Logs_Channel_ID" text,
     "Bot_Logs_Channel_ID" text,
@@ -87,14 +83,9 @@ CREATE TABLE "Tournaments" (
     "Open_Category_2_ID" text,
     "Open_Category_3_ID" text,
     "Updated_At" text,
-    -- Additional columns required by main.py full schema or legacy fallback
     "Captains_Sheet_Link" text,
-    "Sheet_Link" text,
     "Open_Category_4_ID" text,
-    "Auto_Room_Creation" text,
-    "Admin_Role_ID" text,
-    "Helper_Role_ID" text,
-    "Thumbnail_URL" text
+    "Auto_Room_Creation" text
 );
 
 -- TABLE 3: Events
@@ -191,13 +182,13 @@ CREATE TABLE "StaffStats" (
 -- GuildConfig Data Copy
 INSERT INTO "GuildConfig" (
     "Guild_ID", "Admin_Role_ID", "Organizer_Role_ID", "Helper_Role_ID", "Judge_Role_ID", "Recorder_Role_ID", "Staff_Role_ID", "Players_Role_ID", 
-    "organization_name", "tournament_system_name", "player_info_link", "player_info_format", "player_info_participant_channel_id", "current_tournament_name", "Updated_At",
+    "organization_name", "tournament_system_name", "player_info_link", "player_info_format", "player_info_participant_channel_id", "Updated_At",
     "Challonge_Role_ID", "Challonge_Logs_Channel_ID", "Transcript_Logs_Channel_ID", "Closed_Category_ID", "Schedule_Channel_ID", "Results_Channel_ID", 
     "channel_bracket", "Bot_Logs_Channel_ID", "Thumbnail_Channel_ID", "google_sheet_link", "sheetdb_api_url"
 )
 SELECT 
     "Guild_ID", "Admin_Role_ID", NULLIF("Admin_Role_ID", "Admin_Role_ID"), "Staff_Role_ID", "Judge_Role_ID", "Recorder_Role_ID", "Staff_Role_ID", "Challonge_Role_ID", 
-    "organization_name", "tournament_system_name", "player_info_link", "player_info_format", "player_info_participant_channel_id", "current_tournament_name", "Updated_At",
+    "organization_name", "tournament_system_name", "player_info_link", "player_info_format", "player_info_participant_channel_id", "Updated_At",
     "Challonge_Role_ID", "Challonge_Logs_Channel_ID", "Transcript_Logs_Channel_ID", "Closed_Category_ID", "Schedule_Channel_ID", "Results_Channel_ID", 
     "channel_bracket", "Bot_Logs_Channel_ID", "Thumbnail_Channel_ID", "google_sheet_link", "sheetdb_api_url"
 FROM "GuildConfig_old" ON CONFLICT DO NOTHING;
@@ -318,7 +309,6 @@ CREATE TABLE "GuildConfig" (
     "player_info_link" text,
     "player_info_format" text,
     "player_info_participant_channel_id" text,
-    "current_tournament_name" text,
     "Updated_At" text,
     -- Fallback & compatibility columns
     "Challonge_Role_ID" text,
@@ -342,14 +332,12 @@ CREATE TABLE "Tournaments" (
     "State" text,
     "Key" text,
     "challonge_bracket_link" text,
-    "Thumbnail_Channel_ID" text,
     "Attendance_Channel_ID" text,
     "Transcript_Channel_ID" text,
     "Schedule_Channel_ID" text,
     "Rules_Channel_ID" text,
     "Result_Channel_ID" text,
     "Deadline_Channel_ID" text,
-    "Participant_Channel_ID" text,
     "Challonge_Logs_Channel_ID" text,
     "Transcript_Logs_Channel_ID" text,
     "Bot_Logs_Channel_ID" text,
@@ -359,14 +347,9 @@ CREATE TABLE "Tournaments" (
     "Open_Category_2_ID" text,
     "Open_Category_3_ID" text,
     "Updated_At" text,
-    -- Additional/Fallback columns
     "Captains_Sheet_Link" text,
-    "Sheet_Link" text,
     "Open_Category_4_ID" text,
-    "Auto_Room_Creation" text,
-    "Admin_Role_ID" text,
-    "Helper_Role_ID" text,
-    "Thumbnail_URL" text
+    "Auto_Room_Creation" text
 );
 
 -- Events

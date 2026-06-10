@@ -176,7 +176,7 @@ def load_guild_config(guild_id: int) -> dict:
                             pass
                             
                 # Branding and settings (only overlay if not empty in DB)
-                for key in ['organization_name', 'tournament_system_name', 'google_sheet_link', 'current_tournament_name', 'player_info_link', 'player_info_format']:
+                for key in ['organization_name', 'tournament_system_name', 'google_sheet_link', 'player_info_link', 'player_info_format']:
                     db_val = db_data.get(key)
                     if db_val not in (None, "", "None"):
                         config[key] = db_val
@@ -413,6 +413,22 @@ def get_google_sheet_link(context=None) -> str:
     return get_guild_config(context).get("google_sheet_link", "")
 
 def get_tournament_name(context=None) -> str:
+    guild_id = None
+    if context:
+        if isinstance(context, int):
+            guild_id = context
+        elif hasattr(context, "guild") and context.guild:
+            guild_id = context.guild.id
+        elif isinstance(context, discord.Guild):
+            guild_id = context.id
+    if not guild_id:
+        guild_id = current_guild_id.get()
+    
+    if guild_id:
+        t_cfg = get_active_tournament_config(guild_id)
+        if t_cfg and t_cfg.get('name'):
+            return t_cfg.get('name')
+            
     return get_guild_config(context).get("current_tournament_name", "")
 
 def get_player_info_link(context=None) -> str:
@@ -632,28 +648,108 @@ judge_assignments = {}  # {judge_id: [event_ids]}
 import csv
 import io
 
-# ===========================================================================================
-# SHEETDB INTEGRATION
-# ===========================================================================================
+# Cache for SheetDB tab names to prevent querying on every request
+sheetdb_tabs_cache = {}  # {api_url: [tab_names]}
 
 def _sync_sheetdb_post(sheet_name: str, row_data: dict):
-    """Synchronous write to Supabase directly (SheetDB is removed). Call via asyncio.to_thread."""
+    """Synchronous write to Supabase and SheetDB (Google Sheets). Call via asyncio.to_thread."""
+    # 1. Supabase insert
+    supabase_success = False
+    cleaned_row = row_data.copy()
+    if "sheetdb_api_url" in cleaned_row:
+        del cleaned_row["sheetdb_api_url"]
+
     if supabase_client:
         try:
-            # Strip SheetDB config values if passed
-            cleaned_row = row_data.copy()
-            if "sheetdb_api_url" in cleaned_row:
-                del cleaned_row["sheetdb_api_url"]
             supabase_client.table(sheet_name).insert(cleaned_row).execute()
             print(f"[Supabase] ✅ Row added to '{sheet_name}'")
-            return True
+            supabase_success = True
         except Exception as e:
             print(f"[Supabase] ❌ Exception posting to '{sheet_name}': {e}")
-            return False
-    return False
+
+    # 2. SheetDB insert
+    guild_id = row_data.get("Guild_ID")
+    if not guild_id:
+        guild_id = current_guild_id.get()
+
+    try:
+        api_url = get_sheetdb_api_url(guild_id)
+    except Exception as e:
+        print(f"[SheetDB] ❌ Failed to fetch SheetDB URL for guild {guild_id}: {e}")
+        api_url = "https://sheetdb.io/api/v1/vlbn6vbc8vdbb"
+
+    if not api_url:
+        print(f"[SheetDB] ❌ No API URL found for guild {guild_id}")
+        return supabase_success
+
+    import urllib.parse
+    import time
+    
+    # Dynamically match sheet name to resolve spaces/casing differences
+    global sheetdb_tabs_cache
+    resolved_sheet_name = sheet_name
+    try:
+        parsed_api = urllib.parse.urlparse(api_url)
+        sheets_url = f"{parsed_api.scheme}://{parsed_api.netloc}{parsed_api.path.rstrip('/')}/sheets"
+        
+        if api_url not in sheetdb_tabs_cache:
+            sheets_resp = requests.get(sheets_url, timeout=5)
+            if sheets_resp.status_code == 200:
+                data = sheets_resp.json()
+                if isinstance(data, dict) and "sheets" in data:
+                    sheetdb_tabs_cache[api_url] = data["sheets"]
+                elif isinstance(data, list):
+                    sheetdb_tabs_cache[api_url] = data
+                print(f"[SheetDB] Cached sheet tabs for {api_url}: {sheetdb_tabs_cache[api_url]}")
+        
+        if api_url in sheetdb_tabs_cache:
+            tabs = sheetdb_tabs_cache[api_url]
+            if sheet_name in tabs:
+                resolved_sheet_name = sheet_name
+            else:
+                stripped_target = sheet_name.strip().lower()
+                for existing_tab in tabs:
+                    if existing_tab.strip().lower() == stripped_target:
+                        resolved_sheet_name = existing_tab
+                        print(f"[SheetDB] ℹ️ Mapped '{sheet_name}' to existing tab '{resolved_sheet_name}'")
+                        break
+    except Exception as e:
+        print(f"[SheetDB] ⚠️ Failed to resolve/map sheet name '{sheet_name}': {e}")
+
+    parsed = urllib.parse.urlparse(api_url)
+    quoted_sheet = urllib.parse.quote(resolved_sheet_name)
+    if parsed.query:
+        post_url = f"{api_url}&sheet={quoted_sheet}"
+    else:
+        post_url = f"{api_url}?sheet={quoted_sheet}"
+
+    payload = {"data": [cleaned_row]}
+    
+    sheetdb_success = False
+    retry_delay = 1.0
+    for attempt in range(1, 4):
+        try:
+            response = requests.post(post_url, json=payload, timeout=10)
+            if response.status_code in (200, 201):
+                print(f"[SheetDB] ✅ Row added to '{sheet_name}' (as '{resolved_sheet_name}') (Attempt {attempt})")
+                sheetdb_success = True
+                break
+            else:
+                print(f"[SheetDB] ⚠️ Non-200 response on attempt {attempt}: Status {response.status_code}, Body: {response.text}")
+        except Exception as e:
+            print(f"[SheetDB] ⚠️ Request exception on attempt {attempt}: {e}")
+        
+        if attempt < 3:
+            time.sleep(retry_delay)
+            retry_delay *= 2.0
+
+    if not sheetdb_success:
+        print(f"[SheetDB] ❌ Failed to post to '{sheet_name}' after 3 attempts")
+
+    return supabase_success or sheetdb_success
 
 async def sheetdb_post(sheet_name: str, row_data: dict):
-    """Async wrapper — runs Supabase insert in a thread so the event loop stays free."""
+    """Async wrapper — runs Supabase and SheetDB inserts in a thread so the event loop stays free."""
     await asyncio.to_thread(_sync_sheetdb_post, sheet_name, row_data)
 
 
@@ -681,7 +777,6 @@ def _sync_save_guild_config_to_supabase(guild_id: int, cfg: dict):
         "player_info_link": str(cfg.get('player_info_link', '')),
         "player_info_format": str(cfg.get('player_info_format', '5 vs 5')),
         "player_info_participant_channel_id": str(cfg.get('player_info_participant_channel_id', '')),
-        "current_tournament_name": str(cfg.get('current_tournament_name', '')),
         "Updated_At": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     }
 
@@ -698,7 +793,6 @@ def _sync_save_guild_config_to_supabase(guild_id: int, cfg: dict):
         "player_info_link": str(cfg.get('player_info_link', '')),
         "player_info_format": str(cfg.get('player_info_format', '5 vs 5')),
         "player_info_participant_channel_id": str(cfg.get('player_info_participant_channel_id', '')),
-        "current_tournament_name": str(cfg.get('current_tournament_name', '')),
         "Updated_At": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     }
 
@@ -732,10 +826,8 @@ def _sync_save_tournament_to_supabase(guild_id: int, tournament_id: str, t_data:
         "State": str(t_data.get('state') or "pending"),
         "Key": str(t_data.get('key') or ""),
         "challonge_bracket_link": str(t_data.get('challonge_bracket_link') or ""),
-        "Captains_Sheet_Link": str(t_data.get('captains_sheet_link') or ""),
         
         # Channels
-        "Thumbnail_Channel_ID": str(t_data.get('thumbnail') or ""),
         "Attendance_Channel_ID": str(t_data.get('attendance') or ""),
         "Transcript_Channel_ID": str(t_data.get('transcript') or ""),
         "Schedule_Channel_ID": str(t_data.get('schedule') or ""),
@@ -745,7 +837,6 @@ def _sync_save_tournament_to_supabase(guild_id: int, tournament_id: str, t_data:
         "Challonge_Logs_Channel_ID": str(t_data.get('challonge_logs') or ""),
         "Transcript_Logs_Channel_ID": str(t_data.get('transcript_logs') or ""),
         "Bot_Logs_Channel_ID": str(t_data.get('bot_logs') or ""),
-        "Participant_Channel_ID": str(t_data.get('participant') or ""),
         
         # Categories
         "Closed_Ticket_Category_ID": str(t_data.get('closed_ticket_1') or ""),
@@ -754,6 +845,7 @@ def _sync_save_tournament_to_supabase(guild_id: int, tournament_id: str, t_data:
         "Open_Category_2_ID": str(t_data.get('ticket_open_category_2') or ""),
         "Open_Category_3_ID": str(t_data.get('ticket_open_category_3') or ""),
         
+        "Auto_Room_Creation": str(t_data.get('auto_room_creation', True)),
         "Updated_At": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     }
 
@@ -765,7 +857,6 @@ def _sync_save_tournament_to_supabase(guild_id: int, tournament_id: str, t_data:
         "State": str(t_data.get('state') or "pending"),
         "Key": str(t_data.get('key') or ""),
         "challonge_bracket_link": str(t_data.get('challonge_bracket_link') or ""),
-        "Sheet_Link": str(t_data.get('captains_sheet_link') or ""),
         "Transcript_Channel_ID": str(t_data.get('transcript') or ""),
         "Closed_Ticket_Category_ID": str(t_data.get('closed_ticket_1') or ""),
         "Closed_Ticket_Category_2_ID": str(t_data.get('closed_ticket_2') or ""),
@@ -776,6 +867,7 @@ def _sync_save_tournament_to_supabase(guild_id: int, tournament_id: str, t_data:
         "Open_Category_1_ID": str(t_data.get('ticket_open_category_1') or ""),
         "Open_Category_2_ID": str(t_data.get('ticket_open_category_2') or ""),
         "Open_Category_3_ID": str(t_data.get('ticket_open_category_3') or ""),
+        "Auto_Room_Creation": str(t_data.get('auto_room_creation', True)),
         "Updated_At": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     }
 
@@ -1810,6 +1902,13 @@ def remove_judge_assignment(judge_id: int, event_id: str):
 # STAFF CONFIRMATION AND REPLACEMENT SYSTEM
 # ===========================================================================================
 
+def get_staff_emoji(guild: discord.Guild, role: str) -> str:
+    if guild:
+        for emoji in guild.emojis:
+            if "peek" in emoji.name.lower():
+                return str(emoji)
+    return "👩‍⚖️" if role == "judge" else "🎥"
+
 class StaffConfirmationView(discord.ui.View):
     def __init__(self, event_id: str, judge_member: Optional[discord.Member], recorder_member: Optional[discord.Member]):
         super().__init__(timeout=None)
@@ -1826,14 +1925,14 @@ class StaffConfirmationView(discord.ui.View):
         self.judge_member = ev.get('judge')
         self.recorder_member = ev.get('recorder')
         
-        # Check if within 10 mins
+        # Check if within 20 mins
         dt = ev.get('datetime')
         is_too_late = False
         if dt:
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=pytz.UTC)
             now = datetime.datetime.now(pytz.UTC)
-            is_too_late = (dt - now).total_seconds() < 600
+            is_too_late = (dt - now).total_seconds() < 1200
         
         # Add Judge button if a judge is assigned
         if self.judge_member:
@@ -1879,7 +1978,7 @@ class StaffConfirmationView(discord.ui.View):
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=pytz.UTC)
             now = datetime.datetime.now(pytz.UTC)
-            if (dt - now).total_seconds() < 600:
+            if (dt - now).total_seconds() < 1200:
                 await interaction.response.send_message("❌ Too late to confirm presence. Staff replacement is now required.", ephemeral=True)
                 return
                 
@@ -1895,10 +1994,22 @@ class StaffConfirmationView(discord.ui.View):
         if r_conf: status_parts.append("Recorder Present")
         status_str = " | ".join(status_parts) if status_parts else "Pending Confirmation"
         
-        embed = interaction.message.embeds[0]
-        embed.set_footer(text=f"{ORGANIZATION_NAME} • Staff Status: {status_str}")
-        await interaction.response.edit_message(embed=embed, view=self)
+        if interaction.message.embeds:
+            embed = interaction.message.embeds[0]
+            embed.set_footer(text=f"{ORGANIZATION_NAME} • Staff Status: {status_str}")
+            await interaction.response.edit_message(embed=embed, view=self)
+        else:
+            await interaction.response.edit_message(view=self)
         await interaction.followup.send("✅ You have confirmed your presence as Judge!", ephemeral=True)
+        # Log Bot Activity
+        log_embed = discord.Embed(
+            title="⚖️ Judge Presence Confirmed",
+            description=f"Judge **{interaction.user.display_name}** confirmed presence for match (Event ID: `{self.event_id}`).",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow()
+        )
+        log_embed.set_footer(text=f"Confirmed by {interaction.user.display_name}")
+        await log_bot_activity(interaction.guild, log_embed)
 
     @with_guild_context
     async def confirm_recorder_callback(self, interaction: discord.Interaction):
@@ -1918,7 +2029,7 @@ class StaffConfirmationView(discord.ui.View):
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=pytz.UTC)
             now = datetime.datetime.now(pytz.UTC)
-            if (dt - now).total_seconds() < 600:
+            if (dt - now).total_seconds() < 1200:
                 await interaction.response.send_message("❌ Too late to confirm presence. Staff replacement is now required.", ephemeral=True)
                 return
                 
@@ -1934,10 +2045,22 @@ class StaffConfirmationView(discord.ui.View):
         if r_conf: status_parts.append("Recorder Present")
         status_str = " | ".join(status_parts) if status_parts else "Pending Confirmation"
         
-        embed = interaction.message.embeds[0]
-        embed.set_footer(text=f"{ORGANIZATION_NAME} • Staff Status: {status_str}")
-        await interaction.response.edit_message(embed=embed, view=self)
+        if interaction.message.embeds:
+            embed = interaction.message.embeds[0]
+            embed.set_footer(text=f"{ORGANIZATION_NAME} • Staff Status: {status_str}")
+            await interaction.response.edit_message(embed=embed, view=self)
+        else:
+            await interaction.response.edit_message(view=self)
         await interaction.followup.send("✅ You have confirmed your presence as Recorder!", ephemeral=True)
+        # Log Bot Activity
+        log_embed = discord.Embed(
+            title="🎥 Recorder Presence Confirmed",
+            description=f"Recorder **{interaction.user.display_name}** confirmed presence for match (Event ID: `{self.event_id}`).",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow()
+        )
+        log_embed.set_footer(text=f"Confirmed by {interaction.user.display_name}")
+        await log_bot_activity(interaction.guild, log_embed)
 
 
 class StaffReplacementView(discord.ui.View):
@@ -2025,14 +2148,26 @@ class StaffReplacementView(discord.ui.View):
         except Exception as e:
             print(f"Error updating schedule message after replacement: {e}")
         
-        embed = interaction.message.embeds[0]
-        embed.color = discord.Color.green()
-        embed.add_field(name="✅ New Judge Assigned", value=f"{interaction.user.mention} has taken over judging this match.", inline=False)
-        
-        await interaction.response.edit_message(embed=embed, view=self)
+        if interaction.message.embeds:
+            embed = interaction.message.embeds[0]
+            embed.color = discord.Color.green()
+            embed.add_field(name="✅ New Judge Assigned", value=f"{interaction.user.mention} has taken over judging this match.", inline=False)
+            await interaction.response.edit_message(embed=embed, view=self)
+        else:
+            await interaction.response.edit_message(view=self)
         await interaction.followup.send(f"✅ You have successfully replaced the judge for this match!", ephemeral=True)
+        # Log Bot Activity
+        log_embed = discord.Embed(
+            title="👨‍⚖️ Judge Replaced",
+            description=f"New Judge **{interaction.user.display_name}** took over judging for match (Event ID: `{self.event_id}`).",
+            color=discord.Color.orange(),
+            timestamp=discord.utils.utcnow()
+        )
+        log_embed.set_footer(text=f"Replaced by {interaction.user.display_name}")
+        await log_bot_activity(interaction.guild, log_embed)
         if event_ch:
-            await event_ch.send(f"⚖️ {interaction.user.mention} is now the assigned Judge for this match.")
+            emoji = get_staff_emoji(event_ch.guild, "judge")
+            await event_ch.send(f"{interaction.user.mention} assigned as **judge** {emoji}")
 
     @with_guild_context
     async def replace_recorder_callback(self, interaction: discord.Interaction):
@@ -2090,14 +2225,26 @@ class StaffReplacementView(discord.ui.View):
         except Exception as e:
             print(f"Error updating schedule message after recorder replacement: {e}")
         
-        embed = interaction.message.embeds[0]
-        embed.color = discord.Color.green()
-        embed.add_field(name="✅ New Recorder Assigned", value=f"{interaction.user.mention} has taken over recording this match.", inline=False)
-        
-        await interaction.response.edit_message(embed=embed, view=self)
+        if interaction.message.embeds:
+            embed = interaction.message.embeds[0]
+            embed.color = discord.Color.green()
+            embed.add_field(name="✅ New Recorder Assigned", value=f"{interaction.user.mention} has taken over recording this match.", inline=False)
+            await interaction.response.edit_message(embed=embed, view=self)
+        else:
+            await interaction.response.edit_message(view=self)
         await interaction.followup.send(f"✅ You have successfully replaced the recorder for this match!", ephemeral=True)
+        # Log Bot Activity
+        log_embed = discord.Embed(
+            title="🎥 Recorder Replaced",
+            description=f"New Recorder **{interaction.user.display_name}** took over recording for match (Event ID: `{self.event_id}`).",
+            color=discord.Color.orange(),
+            timestamp=discord.utils.utcnow()
+        )
+        log_embed.set_footer(text=f"Replaced by {interaction.user.display_name}")
+        await log_bot_activity(interaction.guild, log_embed)
         if event_ch:
-            await event_ch.send(f"🎥 {interaction.user.mention} is now the assigned Recorder for this match.")
+            emoji = get_staff_emoji(event_ch.guild, "recorder")
+            await event_ch.send(f"{interaction.user.mention} assigned as **recorder** {emoji}")
 
 
 async def run_staff_presence_check(event_id: str, event_channel: discord.TextChannel, match_time: datetime.datetime, minutes_before: int = 10):
@@ -2124,12 +2271,13 @@ async def run_staff_presence_check(event_id: str, event_channel: discord.TextCha
         recorder_needs_replacement = True
         
     if not judge_needs_replacement and not recorder_needs_replacement:
-        # Both are confirmed! Send regular 10-minute reminder
-        t1 = ev.get('team1_captain')
-        t2 = ev.get('team2_captain')
-        t1_m = guild.get_member(t1) if isinstance(t1, int) else t1
-        t2_m = guild.get_member(t2) if isinstance(t2, int) else t2
-        await send_ten_minute_reminder(event_id, t1_m, t2_m, judge, event_channel, match_time)
+        # Both are confirmed! Send regular 10-minute reminder if within 10 minutes
+        if minutes_before <= 10:
+            t1 = ev.get('team1_captain')
+            t2 = ev.get('team2_captain')
+            t1_m = guild.get_member(t1) if isinstance(t1, int) else t1
+            t2_m = guild.get_member(t2) if isinstance(t2, int) else t2
+            await send_ten_minute_reminder(event_id, t1_m, t2_m, judge, event_channel, match_time)
         return
         
     pings = []
@@ -2313,25 +2461,61 @@ class TakeScheduleButton(discord.ui.View):
                             await interaction.response.send_message("❌ You are already scheduled as staff (Judge/Recorder) for another match at this exact same time.", ephemeral=True)
                             return
 
+        # Capture original button states for rollback if needed
+        original_label = button.label
+        original_style = button.style
+        original_disabled = button.disabled
+        original_emoji = button.emoji
+
+        # Instant-disable button to prevent double clicks
+        button.label = "Claiming..."
+        button.style = discord.ButtonStyle.secondary
+        button.disabled = True
+        button.emoji = None
+
         self._taking_schedule = True
         try:
-            await interaction.response.defer(ephemeral=True)
+            await interaction.response.edit_message(view=self)
+        except Exception as e:
+            self._taking_schedule = False
+            button.label = original_label
+            button.style = original_style
+            button.disabled = original_disabled
+            button.emoji = original_emoji
+            print(f"Failed to edit message in take_schedule initial response: {e}")
+            return
 
-            if self.judge:
-                await interaction.followup.send(f"❌ This schedule has already been taken by {self.judge.display_name}.", ephemeral=True)
+        try:
+            # Recheck after the edit_message to prevent race conditions
+            ev = scheduled_events.get(self.event_id, {})
+            if ev.get('judge'):
+                button.label = original_label
+                button.style = original_style
+                button.disabled = original_disabled
+                button.emoji = original_emoji
+                await interaction.message.edit(view=self)
+                j_val = ev.get('judge')
+                j_name = getattr(j_val, 'display_name', str(j_val))
+                await interaction.followup.send(f"❌ This schedule has already been taken by {j_name}.", ephemeral=True)
                 return
 
             self.judge = interaction.user
             add_judge_assignment(interaction.user.id, self.event_id)
 
             button.label = f"Taken by {interaction.user.display_name}"
-            button.style = discord.ButtonStyle.gray
+            button.style = discord.ButtonStyle.secondary
             button.disabled = True
             button.emoji = "✅"
 
             embed = interaction.message.embeds[0]
             embed.color = discord.Color.green()
             if not update_judge_field(embed, interaction.user):
+                # Restore button state on embed update failure
+                button.label = original_label
+                button.style = original_style
+                button.disabled = original_disabled
+                button.emoji = original_emoji
+                await interaction.message.edit(view=self)
                 await interaction.followup.send("❌ Failed to update embed with judge information.", ephemeral=True)
                 return
 
@@ -2355,7 +2539,6 @@ class TakeScheduleButton(discord.ui.View):
                 save_scheduled_events()
 
             # Log judge assignment to SheetDB
-            ev = scheduled_events.get(self.event_id, {})
             asyncio.create_task(sheetdb_post("JudgeAssignments", {
                 "Guild_ID":       str(interaction.guild.id) if interaction.guild else "",
                 "Timestamp":      datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
@@ -2370,8 +2553,15 @@ class TakeScheduleButton(discord.ui.View):
             }))
 
         except Exception as e:
-            self._taking_schedule = False
             print(f"Error in take_schedule: {e}")
+            button.label = original_label
+            button.style = original_style
+            button.disabled = original_disabled
+            button.emoji = original_emoji
+            try:
+                await interaction.message.edit(view=self)
+            except Exception as edit_err:
+                print(f"Error editing message back: {edit_err}")
             await interaction.followup.send(f"❌ An error occurred: {str(e)}", ephemeral=True)
         finally:
             self._taking_schedule = False
@@ -2403,6 +2593,10 @@ class TakeScheduleButton(discord.ui.View):
             await interaction.response.send_message("❌ You do not have the required role to record.", ephemeral=True)
             return
 
+        if self.recorder:
+            await interaction.response.send_message(f"❌ This recording slot has already been claimed by {self.recorder.display_name}.", ephemeral=True)
+            return
+
         # Check overlapping schedules
         ev = scheduled_events.get(self.event_id, {})
         current_dt = ev.get('datetime')
@@ -2424,79 +2618,110 @@ class TakeScheduleButton(discord.ui.View):
                             await interaction.response.send_message("❌ You are already scheduled as staff (Judge/Recorder) for another match at this exact same time.", ephemeral=True)
                             return
 
-        await interaction.response.defer(ephemeral=True)
+        # Capture original button states for rollback if needed
+        original_label = button.label
+        original_style = button.style
+        original_disabled = button.disabled
+        original_emoji = button.emoji
 
-        button.label = f"Recording: {interaction.user.display_name}"
-        button.style = discord.ButtonStyle.gray
+        # Instant-disable button to prevent double clicks
+        button.label = "Processing..."
+        button.style = discord.ButtonStyle.secondary
         button.disabled = True
-        button.emoji = "✅"
+        button.emoji = None
 
-        if self.event_id in scheduled_events:
-            scheduled_events[self.event_id]['recorder'] = interaction.user
-            save_scheduled_events()
-            
-        # Log Bot Activity
-        log_embed = discord.Embed(
-            title="🎥 Recording claimed",
-            description=f"Recorder **{interaction.user.display_name}** claimed match recording (Event ID: `{self.event_id}`).",
-            color=discord.Color.blue(),
-            timestamp=discord.utils.utcnow()
-        )
-        log_embed.set_footer(text=f"Claimed by {interaction.user.display_name}")
-        await log_bot_activity(interaction.guild, log_embed)
+        try:
+            await interaction.response.edit_message(view=self)
+        except Exception as e:
+            button.label = original_label
+            button.style = original_style
+            button.disabled = original_disabled
+            button.emoji = original_emoji
+            print(f"Failed to edit message in record initial response: {e}")
+            return
 
-        embed = interaction.message.embeds[0]
-        remove_field_by_name(embed, "🎥 Recorder")
-        embed.add_field(name="🎥 Recorder", value=interaction.user.mention, inline=True)
-        await interaction.message.edit(embed=embed, view=self)
+        try:
+            # Recheck after the edit_message to prevent race conditions
+            ev = scheduled_events.get(self.event_id, {})
+            if ev.get('recorder'):
+                button.label = original_label
+                button.style = original_style
+                button.disabled = original_disabled
+                button.emoji = original_emoji
+                await interaction.message.edit(view=self)
+                r_val = ev.get('recorder')
+                r_name = getattr(r_val, 'display_name', str(r_val))
+                await interaction.followup.send(f"❌ This recording slot has already been claimed by {r_name}.", ephemeral=True)
+                return
 
-        if self.event_channel:
+            self.recorder = interaction.user
+            button.label = f"Recording: {interaction.user.display_name}"
+            button.style = discord.ButtonStyle.secondary
+            button.disabled = True
+            button.emoji = "✅"
+
+            if self.event_id in scheduled_events:
+                scheduled_events[self.event_id]['recorder'] = interaction.user
+                save_scheduled_events()
+                
+            # Log Bot Activity
+            log_embed = discord.Embed(
+                title="🎥 Recording claimed",
+                description=f"Recorder **{interaction.user.display_name}** claimed match recording (Event ID: `{self.event_id}`).",
+                color=discord.Color.blue(),
+                timestamp=discord.utils.utcnow()
+            )
+            log_embed.set_footer(text=f"Claimed by {interaction.user.display_name}")
+            await log_bot_activity(interaction.guild, log_embed)
+
+            embed = interaction.message.embeds[0]
+            remove_field_by_name(embed, "🎥 Recorder")
+            embed.add_field(name="🎥 Recorder", value=interaction.user.mention, inline=True)
+            await interaction.message.edit(embed=embed, view=self)
+
+            if self.event_channel:
+                try:
+                    await self.event_channel.set_permissions(
+                        interaction.user,
+                        read_messages=True, send_messages=True, view_channel=True,
+                        embed_links=True, attach_files=True, read_message_history=True
+                    )
+                    # Retrieve latest judge
+                    ev = scheduled_events.get(self.event_id, {})
+                    j_val = ev.get('judge')
+                    judge_mem = self.event_channel.guild.get_member(j_val) if isinstance(j_val, int) else j_val
+                    
+                    emoji = get_staff_emoji(self.event_channel.guild, "recorder")
+                    await self.event_channel.send(content=f"{interaction.user.mention} assigned as **recorder** {emoji}")
+                except Exception as e:
+                    print(f"Error notifying recorder: {e}")
+
+            # Log recorder to SheetDB
+            asyncio.create_task(sheetdb_post("JudgeAssignments", {
+                "Guild_ID":    str(interaction.guild.id) if interaction.guild else "",
+                "Timestamp":   datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                "Event_ID":    self.event_id,
+                "Judge_ID":    str(interaction.user.id),
+                "Judge_Name":  interaction.user.name,
+                "Tournament":  ev.get('tournament', ''),
+                "Round":       ev.get('round', ''),
+                "Date":        ev.get('date_str', ''),
+                "UTC_Time":    ev.get('time_str', ''),
+                "Action":      "Recorder",
+            }))
+            await interaction.followup.send("✅ You have been assigned as the Recorder!", ephemeral=True)
+
+        except Exception as e:
+            print(f"Error in record callback: {e}")
+            button.label = original_label
+            button.style = original_style
+            button.disabled = original_disabled
+            button.emoji = original_emoji
             try:
-                await self.event_channel.set_permissions(
-                    interaction.user,
-                    read_messages=True, send_messages=True, view_channel=True,
-                    embed_links=True, attach_files=True, read_message_history=True
-                )
-                t1_mention = getattr(self.team1_captain, 'mention', f"<@{self.team1_captain}>")
-                t2_mention = getattr(self.team2_captain, 'mention', f"<@{self.team2_captain}>")
-                notify_embed = discord.Embed(
-                    title="🎥 Recorder Assigned",
-                    description=f"**{interaction.user.display_name}** will record this match.",
-                    color=discord.Color.blurple(),
-                    timestamp=discord.utils.utcnow()
-                )
-                notify_embed.add_field(name="Match", value=f"{t1_mention} vs {t2_mention}", inline=False)
-                
-                # Retrieve latest judge
-                ev = scheduled_events.get(self.event_id, {})
-                j_val = ev.get('judge')
-                judge_mem = self.event_channel.guild.get_member(j_val) if isinstance(j_val, int) else j_val
-                
-                if judge_mem:
-                    notify_embed.add_field(name="👨‍⚖️ Judge", value=judge_mem.mention, inline=True)
-                notify_embed.add_field(name="🎥 Recorder", value=interaction.user.mention, inline=True)
-                notify_embed.set_footer(text=f"{ORGANIZATION_NAME}")
-                
-                view = StaffConfirmationView(self.event_id, judge_mem, interaction.user)
-                await self.event_channel.send(content=f"🔔 {interaction.user.mention} {t1_mention} {t2_mention}", embed=notify_embed, view=view)
-            except Exception as e:
-                print(f"Error notifying recorder: {e}")
-
-        # Log recorder to SheetDB
-        ev = scheduled_events.get(self.event_id, {})
-        asyncio.create_task(sheetdb_post("JudgeAssignments", {
-            "Guild_ID":    str(interaction.guild.id) if interaction.guild else "",
-            "Timestamp":   datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-            "Event_ID":    self.event_id,
-            "Judge_ID":    str(interaction.user.id),
-            "Judge_Name":  interaction.user.name,
-            "Tournament":  ev.get('tournament', ''),
-            "Round":       ev.get('round', ''),
-            "Date":        ev.get('date_str', ''),
-            "UTC_Time":    ev.get('time_str', ''),
-            "Action":      "Recorder",
-        }))
-        await interaction.followup.send("✅ You have been assigned as the Recorder!", ephemeral=True)
+                await interaction.message.edit(view=self)
+            except Exception as edit_err:
+                print(f"Error editing message back: {edit_err}")
+            await interaction.followup.send(f"❌ An error occurred: {str(e)}", ephemeral=True)
 
     async def send_judge_assignment_notification(self, judge: discord.Member):
         """Send notification to the event channel when a judge is assigned and add judge to channel"""
@@ -2511,23 +2736,9 @@ class TakeScheduleButton(discord.ui.View):
             ev = scheduled_events.get(self.event_id, {})
             r_val = ev.get('recorder')
             recorder_mem = self.event_channel.guild.get_member(r_val) if isinstance(r_val, int) else r_val
-
-            embed = discord.Embed(
-                title="👨‍⚖️ Judge Assigned",
-                description=f"**{judge.display_name}** has been assigned as the judge for this match!",
-                color=discord.Color.green(),
-                timestamp=discord.utils.utcnow()
-            )
-            t1_mention = getattr(self.team1_captain, 'mention', f"<@{self.team1_captain}>" if isinstance(self.team1_captain, int) else "<@Unknown>")
-            t2_mention = getattr(self.team2_captain, 'mention', f"<@{self.team2_captain}>" if isinstance(self.team2_captain, int) else "<@Unknown>")
-            embed.add_field(name="📋 Match Details", value=f"**Team 1:** {t1_mention}\n**Team 2:** {t2_mention}", inline=False)
-            embed.add_field(name="👨‍⚖️ Judge", value=f"{judge.mention}\n✅ **Added to channel**", inline=True)
-            if recorder_mem:
-                embed.add_field(name="🎥 Recorder", value=recorder_mem.mention, inline=True)
-            embed.set_footer(text=f"Judge Assignment • {ORGANIZATION_NAME}")
             
-            view = StaffConfirmationView(self.event_id, judge, recorder_mem)
-            await self.event_channel.send(content=f"🔔 {judge.mention} {t1_mention} {t2_mention}", embed=embed, view=view)
+            emoji = get_staff_emoji(self.event_channel.guild, "judge")
+            await self.event_channel.send(content=f"{judge.mention} assigned as **judge** {emoji}")
         except discord.Forbidden:
             print(f"Error: Bot doesn't have permission to add {judge.display_name} to channel {self.event_channel.name}")
         except Exception as e:
@@ -2811,6 +3022,7 @@ async def schedule_ten_minute_reminder(event_id: str, team1_captain: discord.Mem
         if match_time.tzinfo is None:
             match_time = match_time.replace(tzinfo=pytz.UTC)
             
+        reminder_time_30 = match_time - datetime.timedelta(minutes=30)
         reminder_time_20 = match_time - datetime.timedelta(minutes=20)
         reminder_time_10 = match_time - datetime.timedelta(minutes=10)
         
@@ -2821,80 +3033,86 @@ async def schedule_ten_minute_reminder(event_id: str, team1_captain: discord.Mem
                 if g_id:
                     current_guild_id.set(g_id)
                     
-            # Wait for 20-min reminder
-            delay_20 = (reminder_time_20 - datetime.datetime.now(pytz.UTC)).total_seconds()
-            if delay_20 > 0:
-                await asyncio.sleep(delay_20)
+            # Wait for 30-min reminder
+            delay_30 = (reminder_time_30 - datetime.datetime.now(pytz.UTC)).total_seconds()
+            if delay_30 > 0:
+                await asyncio.sleep(delay_30)
             
             if g_id:
                 current_guild_id.set(g_id)
                 
-            # Fire 20-min reminder / staff confirmation request
+            # Fire 30-min reminder / staff confirmation request
             if event_id in scheduled_events:
-                ev_data = scheduled_events[event_id]
-                j = ev_data.get('judge')
-                r = ev_data.get('recorder')
-                
-                # Check assignments and alert roles if missing
-                if not j:
-                    try:
-                        j_role = ROLE_IDS.get('judge', '')
-                        await event_channel.send(f"⚠️ <@&{j_role}> **URGENT:** A match is starting in 20 minutes and NO JUDGE is assigned! Please Take Schedule!")
-                    except Exception as e:
-                        print(f"Failed to send 20 min judge warning: {e}")
-                
-                if not r:
-                    try:
-                        r_role = ROLE_IDS.get('recorder', '')
-                        await event_channel.send(f"⚠️ <@&{r_role}> **URGENT:** A match is starting in 20 minutes and NO RECORDER is assigned! Please Record!")
-                    except Exception as e:
-                        print(f"Failed to send 20 min recorder warning: {e}")
-                
-                # If Judge or Recorder are assigned, send presence confirmation view
-                if j or r:
-                    try:
-                        pings = []
-                        if j:
-                            j_member = event_channel.guild.get_member(j) if isinstance(j, int) else j
-                            if j_member:
-                                pings.append(j_member.mention)
-                        if r:
-                            r_member = event_channel.guild.get_member(r) if isinstance(r, int) else r
-                            if r_member:
-                                pings.append(r_member.mention)
-                        
-                        ping_str = " ".join(pings)
-                        
-                        embed = discord.Embed(
-                            title="Staff Confirmation Required",
-                            description="Please confirm your presence for the upcoming match.",
-                            color=discord.Color.orange(),
-                            timestamp=discord.utils.utcnow()
-                        )
-                        embed.set_footer(text=f"Staff Confirmation Required | Confirm before the 10-minute staff check")
-                        
-                        # Set poster image for unified size
-                        poster_image = ev_data.get('poster_path')
-                        file = None
-                        if poster_image and os.path.exists(poster_image):
-                            try:
-                                file = discord.File(poster_image, filename="event_poster.png")
-                                embed.set_image(url="attachment://event_poster.png")
-                            except Exception as e:
-                                print(f"Error loading poster image for confirmation request: {e}")
-                        
-                        j_m = event_channel.guild.get_member(j) if isinstance(j, int) else j
-                        r_m = event_channel.guild.get_member(r) if isinstance(r, int) else r
-                        view = StaffConfirmationView(event_id, j_m, r_m)
-                        
-                        if file:
-                            await event_channel.send(content=f"{ping_str} 🔔 **Staff Confirmation Required**", embed=embed, file=file, view=view)
-                        else:
+                now_check = datetime.datetime.now(pytz.UTC)
+                if now_check < match_time:
+                    ev_data = scheduled_events[event_id]
+                    j = ev_data.get('judge')
+                    r = ev_data.get('recorder')
+                    
+                    # Check assignments and alert roles if missing
+                    if not j:
+                        try:
+                            j_role = ROLE_IDS.get('judge', '')
+                            await event_channel.send(f"⚠️ <@&{j_role}> **URGENT:** A match is starting in 30 minutes and NO JUDGE is assigned! Please Take Schedule!")
+                        except Exception as e:
+                            print(f"Failed to send 30 min judge warning: {e}")
+                    
+                    if not r:
+                        try:
+                            r_role = ROLE_IDS.get('recorder', '')
+                            await event_channel.send(f"⚠️ <@&{r_role}> **URGENT:** A match is starting in 30 minutes and NO RECORDER is assigned! Please Record!")
+                        except Exception as e:
+                            print(f"Failed to send 30 min recorder warning: {e}")
+                    
+                    # If Judge or Recorder are assigned, send presence confirmation view
+                    if j or r:
+                        try:
+                            pings = []
+                            if j:
+                                j_member = event_channel.guild.get_member(j) if isinstance(j, int) else j
+                                if j_member:
+                                    pings.append(j_member.mention)
+                            if r:
+                                r_member = event_channel.guild.get_member(r) if isinstance(r, int) else r
+                                if r_member:
+                                    pings.append(r_member.mention)
+                            
+                            ping_str = " ".join(pings)
+                            
+                            embed = discord.Embed(
+                                title="Staff Confirmation Required",
+                                description="Please confirm your presence for the upcoming match.",
+                                color=discord.Color.orange(),
+                                timestamp=discord.utils.utcnow()
+                            )
+                            embed.set_footer(text=f"{ORGANIZATION_NAME} • Staff Confirmation Required | Confirm before the 20-minute staff check")
+                            
+                            j_m = event_channel.guild.get_member(j) if isinstance(j, int) else j
+                            r_m = event_channel.guild.get_member(r) if isinstance(r, int) else r
+                            view = StaffConfirmationView(event_id, j_m, r_m)
+                            
                             await event_channel.send(content=f"{ping_str} 🔔 **Staff Confirmation Required**", embed=embed, view=view)
-                    except Exception as e:
-                        print(f"Failed to send staff confirmation request at 20m: {e}")
+                        except Exception as e:
+                            print(f"Failed to send staff confirmation request at 30m: {e}")
             
-            # Wait for 10-min reminder / staff check
+            # Wait for 20-min staff presence check
+            delay_20 = (reminder_time_20 - datetime.datetime.now(pytz.UTC)).total_seconds()
+            if delay_20 > 0:
+                await asyncio.sleep(delay_20)
+                
+            if g_id:
+                current_guild_id.set(g_id)
+                
+            # Fire staff presence check (replacement trigger at 20-min mark)
+            if event_id in scheduled_events:
+                now_check = datetime.datetime.now(pytz.UTC)
+                if now_check < match_time:
+                    try:
+                        await run_staff_presence_check(event_id, event_channel, match_time, minutes_before=20)
+                    except Exception as e:
+                        print(f"Failed to run 20-min staff check: {e}")
+            
+            # Wait for 10-min player reminder
             delay_10 = (reminder_time_10 - datetime.datetime.now(pytz.UTC)).total_seconds()
             if delay_10 > 0:
                 await asyncio.sleep(delay_10)
@@ -2902,11 +3120,21 @@ async def schedule_ten_minute_reminder(event_id: str, team1_captain: discord.Mem
             if g_id:
                 current_guild_id.set(g_id)
                 
-            # Fire staff presence check (replacement trigger)
-            try:
-                await run_staff_presence_check(event_id, event_channel, match_time, minutes_before=10)
-            except Exception as e:
-                print(f"Failed to run staff check: {e}")
+            # Send 10-min player reminder
+            if event_id in scheduled_events:
+                now_check = datetime.datetime.now(pytz.UTC)
+                if now_check < match_time:
+                    try:
+                        ev_data = scheduled_events[event_id]
+                        t1 = ev_data.get('team1_captain')
+                        t2 = ev_data.get('team2_captain')
+                        t1_m = event_channel.guild.get_member(t1) if isinstance(t1, int) else t1
+                        t2_m = event_channel.guild.get_member(t2) if isinstance(t2, int) else t2
+                        j_val = ev_data.get('judge')
+                        j_m = event_channel.guild.get_member(j_val) if isinstance(j_val, int) else j_val
+                        await send_ten_minute_reminder(event_id, t1_m, t2_m, j_m, event_channel, match_time)
+                    except Exception as e:
+                        print(f"Failed to send 10-min player reminder: {e}")
 
         # Cancel existing reminder if any
         if event_id in reminder_tasks:
@@ -3925,6 +4153,16 @@ async def upload_score(
 
     tournament_name = t_cfg.get('name') if t_cfg else get_tournament_name(interaction) or ""
 
+    # Fetch Challonge Logs Channel
+    challonge_logs_channel = None
+    if t_cfg and t_cfg.get('challonge_logs') and interaction.guild:
+        try:
+            challonge_logs_channel = interaction.guild.get_channel(int(t_cfg['challonge_logs']))
+            if not challonge_logs_channel:
+                challonge_logs_channel = await interaction.guild.fetch_channel(int(t_cfg['challonge_logs']))
+        except Exception:
+            pass
+
     if success:
         # Log to SheetDB
         asyncio.create_task(sheetdb_post("Challonge_Uploads", {
@@ -3948,8 +4186,26 @@ async def upload_score(
         embed.add_field(name="🏆 Score", value=f"**{winner_score}** – {loser_score}", inline=True)
         embed.add_field(name="🆔 Match ID", value=f"`{match_id}`", inline=True)
         embed.add_field(name="👤 Winner Team", value=f"**{winner_name}** (`{winner_participant_id}`)", inline=True)
-        embed.set_footer(text=f"Uploaded by {interaction.user.display_name}")
+        embed.set_footer(text=f"{ORGANIZATION_NAME} • Uploaded by {interaction.user.display_name}")
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+        # Log to challonge_logs channel if configured
+        if challonge_logs_channel:
+            try:
+                await challonge_logs_channel.send(embed=embed)
+            except Exception as e:
+                print(f"Error sending log to challonge_logs channel: {e}")
+
+        # Log to bot logs channel
+        bot_log_embed = discord.Embed(
+            title="🏆 Score Uploaded to Challonge",
+            description=f"Judge **{interaction.user.display_name}** successfully uploaded match score (Event ID: `{match_id}`): **{winner_name}** won!",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow()
+        )
+        bot_log_embed.add_field(name="Score", value=f"**{winner_score}** – {loser_score}", inline=True)
+        bot_log_embed.set_footer(text=f"Uploaded by {interaction.user.display_name}")
+        await log_bot_activity(interaction.guild, bot_log_embed)
     else:
         # Log to SheetDB
         asyncio.create_task(sheetdb_post("Challonge_Uploads", {
@@ -3965,6 +4221,34 @@ async def upload_score(
             "Status": f"Failed: {error[:100] if error else 'Unknown'}"
         }))
         await interaction.followup.send(f"❌ Challonge rejected the score upload:\n```{error[:500] if error else 'Unknown error'}```", ephemeral=True)
+
+        # Log to challonge_logs channel if configured
+        if challonge_logs_channel:
+            try:
+                fail_embed = discord.Embed(
+                    title="❌ Challonge Score Upload Failed",
+                    description=f"Failed to update match score on Challonge: **{winner_name}**.",
+                    color=discord.Color.red(),
+                    timestamp=discord.utils.utcnow()
+                )
+                fail_embed.add_field(name="🏆 Intended Score", value=f"**{winner_score}** – {loser_score}", inline=True)
+                fail_embed.add_field(name="🆔 Match ID", value=f"`{match_id}`", inline=True)
+                fail_embed.add_field(name="❌ Error Details", value=f"```{error[:500] if error else 'Unknown error'}```", inline=False)
+                fail_embed.set_footer(text=f"Attempted by {interaction.user.display_name}")
+                await challonge_logs_channel.send(embed=fail_embed)
+            except Exception as e:
+                print(f"Error sending fail log to challonge_logs channel: {e}")
+
+        # Log to bot logs channel
+        bot_log_embed = discord.Embed(
+            title="❌ Score Upload to Challonge Failed",
+            description=f"Judge **{interaction.user.display_name}** attempted score upload for (Event ID: `{match_id}`) but it failed.",
+            color=discord.Color.red(),
+            timestamp=discord.utils.utcnow()
+        )
+        bot_log_embed.add_field(name="Error Details", value=f"```{error[:200]}```", inline=False)
+        bot_log_embed.set_footer(text=f"Attempted by {interaction.user.display_name}")
+        await log_bot_activity(interaction.guild, bot_log_embed)
 
 
 @upload_score.autocomplete('winner')
@@ -4010,6 +4294,43 @@ async def upload_score_winner_autocomplete(
         
     choices = []
     current_lower = current.lower()
+    
+    # Check if we are inside a ticket channel and can extract the match ID
+    channel_match_id = None
+    if interaction.channel and hasattr(interaction.channel, 'topic') and interaction.channel.topic:
+        topic = interaction.channel.topic
+        m_match = re.search(r'MatchID:([a-zA-Z0-9-_]+)', topic)
+        if m_match:
+            channel_match_id = m_match.group(1)
+
+    if channel_match_id:
+        target_match = None
+        for m in matches:
+            if str(m.get('id')) == str(channel_match_id):
+                target_match = m
+                break
+        if target_match:
+            team1 = target_match.get('team1') or "TBD"
+            team2 = target_match.get('team2') or "TBD"
+            match_id = target_match.get('id')
+            p1_id = target_match.get('player1_id')
+            p2_id = target_match.get('player2_id')
+            
+            # Show simple team/player names
+            opt1_name = team1
+            opt1_val = f"{match_id}:{p1_id}:{team1}"
+            if not current or current_lower in opt1_name.lower():
+                choices.append(app_commands.Choice(name=opt1_name[:100], value=opt1_val[:100]))
+                
+            opt2_name = team2
+            opt2_val = f"{match_id}:{p2_id}:{team2}"
+            if not current or current_lower in opt2_name.lower():
+                choices.append(app_commands.Choice(name=opt2_name[:100], value=opt2_val[:100]))
+            
+            if choices:
+                return choices
+
+    # Fallback/General search: show teams with opponents in parenthesis
     for m in matches:
         team1 = m.get('team1') or "TBD"
         team2 = m.get('team2') or "TBD"
@@ -4017,12 +4338,12 @@ async def upload_score_winner_autocomplete(
         p1_id = m.get('player1_id')
         p2_id = m.get('player2_id')
         
-        opt1_name = f"{team1} VS {team2} (Winner: {team1})"
+        opt1_name = f"{team1} (vs {team2})"
         opt1_val = f"{match_id}:{p1_id}:{team1}"
         if not current or current_lower in opt1_name.lower():
             choices.append(app_commands.Choice(name=opt1_name[:100], value=opt1_val[:100]))
             
-        opt2_name = f"{team1} VS {team2} (Winner: {team2})"
+        opt2_name = f"{team2} (vs {team1})"
         opt2_val = f"{match_id}:{p2_id}:{team2}"
         if not current or current_lower in opt2_name.lower():
             choices.append(app_commands.Choice(name=opt2_name[:100], value=opt2_val[:100]))
@@ -4798,9 +5119,6 @@ async def event_result(
     captains_text += f"▪ Team2 Captain: {l_display_mention}" + (f" `@{loser.name}`" if loser else "")
     embed.add_field(name="", value=captains_text, inline=False)
     
-    # Add spacing
-    embed.add_field(name="\u200b", value="\u200b", inline=False) 
-    
     # Results Section
     results_text = f"**Results**\n"
     if dq_status == "Both":
@@ -4813,9 +5131,6 @@ async def event_result(
         results_text += f"🏆 {w_name} ({winner_score}) Vs ({loser_score}) {l_name} 💀"
     embed.add_field(name="", value=results_text, inline=False)
     
-    # Add spacing
-    embed.add_field(name="\u200b", value="\u200b", inline=False)
-    
     # Staff Section
     staff_text = f"👨‍⚖️ **Staffs**\n"
     staff_text += f"▪ Judge: {interaction.user.mention}"
@@ -4827,9 +5142,6 @@ async def event_result(
     update_staff_stats(interaction.user, "judge")
     if recorder:
         update_staff_stats(recorder, "recorder")
-    
-    # Add spacing
-    embed.add_field(name="\u200b", value="\u200b", inline=False)
     
     # Remarks Section
     embed.add_field(name="📝 Remarks", value=remarks, inline=False)
@@ -6466,6 +6778,8 @@ async def add_captain(
             description="Welcome to your match channel. Use this channel for all tournament discussions.",
             color=discord.Color(BRAND_COLOR)
         )
+        if interaction.guild and interaction.guild.icon:
+            rules_embed.set_thumbnail(url=interaction.guild.icon.url)
         rules_embed.add_field(
             name="📋 Tournament Information",
             value=(
@@ -6497,21 +6811,25 @@ async def add_captain(
         )
         rules_embed.set_footer(text=f"{ORGANIZATION_NAME} | Setup by {interaction.user.name} • {datetime.datetime.now().strftime('%d-%m-%Y %H:%M')}")
         try:
-            logo_candidates = ["tournament_bot_logo.png", "logo.png"]
-            logo_sent = False
-            for logo_path in logo_candidates:
-                try:
-                    with open(logo_path, "rb") as logo_file:
-                        logo_data = io.BytesIO(logo_file.read())
-                        lf = discord.File(logo_data, filename="logo.png")
-                        rules_embed.set_thumbnail(url="attachment://logo.png")
-                        await channel.send(embed=rules_embed, file=lf)
-                        logo_sent = True
-                        break
-                except FileNotFoundError:
-                    continue
-            if not logo_sent:
+            if interaction.guild and interaction.guild.icon:
+                rules_embed.set_thumbnail(url=interaction.guild.icon.url)
                 await channel.send(embed=rules_embed)
+            else:
+                logo_candidates = ["tournament_bot_logo.png", "logo.png"]
+                logo_sent = False
+                for logo_path in logo_candidates:
+                    try:
+                        with open(logo_path, "rb") as logo_file:
+                            logo_data = io.BytesIO(logo_file.read())
+                            lf = discord.File(logo_data, filename="logo.png")
+                            rules_embed.set_thumbnail(url="attachment://logo.png")
+                            await channel.send(embed=rules_embed, file=lf)
+                            logo_sent = True
+                            break
+                    except FileNotFoundError:
+                        continue
+                if not logo_sent:
+                    await channel.send(embed=rules_embed)
         except Exception as e:
             print(f"Warning: Could not send logo: {e}")
             await channel.send(embed=rules_embed)
@@ -6831,241 +7149,293 @@ async def registration_command(interaction: discord.Interaction):
 
 # Automatic background ticket creation for open matches based on active tournament configuration
 auto_room_loops = {}
+auto_room_locks = {}
 
 async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: dict, on_progress=None) -> tuple[int, str]:
-    import time
-    last_edit = 0
-    
-    async def report(percent: int, text: str, force: bool = False):
-        nonlocal last_edit
-        if not on_progress:
-            return
-        now = time.time()
-        if force or (now - last_edit >= 1.5):
-            await on_progress(percent, text)
-            last_edit = now
+    guild_id = guild.id
+    if guild_id not in auto_room_locks:
+        auto_room_locks[guild_id] = asyncio.Lock()
+        
+    async with auto_room_locks[guild_id]:
+        import time
+        last_edit = 0
+        
+        async def report(percent: int, text: str, force: bool = False):
+            nonlocal last_edit
+            if not on_progress:
+                return
+            now = time.time()
+            if force or (now - last_edit >= 1.5):
+                await on_progress(percent, text)
+                last_edit = now
 
-    await report(0, "Fetching matches from Challonge...", force=True)
-    
-    bracket_link = t_cfg.get('challonge_bracket_link') or t_cfg.get('id')
-    api_key = t_cfg.get('key')
-    sheet_link = t_cfg.get('sheet_link')
-    
-    if not (bracket_link and api_key and sheet_link):
-        return 0, "Missing Challonge Bracket ID/Link, API Key, or Google Sheet link in tournament configuration."
+        await report(0, "Fetching matches from Challonge...", force=True)
         
-    matches, err = await fetch_challonge_open_matches(bracket_link, api_key)
-    if err:
-        return 0, f"Challonge API Error: {err}"
-    if not matches:
-        return 0, ""
-        
-    await report(15, f"Fetched {len(matches)} matches. Fetching captain info from Google Sheet...", force=True)
-    
-    captains_dict, is_1v1, err2 = await fetch_google_sheet_captains(sheet_link)
-    if err2:
-        return 0, f"Google Sheet Error: {err2}"
-        
-    await report(30, "Parsing categories and roles...", force=True)
-    
-    categories = []
-    for i in range(1, 5):
-        cat_id = t_cfg.get(f'ticket_open_category_{i}_id')
-        if cat_id:
-            try:
-                cat_id = int(cat_id)
-            except (ValueError, TypeError):
-                pass
-            cat = discord.utils.get(guild.categories, id=cat_id)
-            if cat:
-                categories.append(cat)
-                
-    if not categories:
-        return 0, "No open ticket categories configured for this tournament."
-        
-    helper_team_role = None
-    if helper_role_id := t_cfg.get('helper_role_id'):
-        try:
-            helper_role_id = int(helper_role_id)
-        except (ValueError, TypeError):
-            pass
-        helper_team_role = discord.utils.get(guild.roles, id=helper_role_id)
-    if not helper_team_role:
         cfg = get_guild_config(guild.id)
-        if global_helper_id := cfg.get('role_ids', {}).get('helper_team'):
+        bracket_link = t_cfg.get('challonge_bracket_link') or t_cfg.get('id')
+        api_key = t_cfg.get('key') or get_bracket_api_key(guild.id)
+        sheet_link = t_cfg.get('sheet_link') or t_cfg.get('captains_sheet_link') or cfg.get('player_info_link') or cfg.get('google_sheet_link')
+        
+        missing_fields = []
+        if not bracket_link or not bracket_link.strip():
+            missing_fields.append("❌ Challonge Bracket Link is missing.")
+        if not api_key or not api_key.strip():
+            missing_fields.append("❌ Challonge API Key is missing.")
+        if not sheet_link or not sheet_link.strip():
+            missing_fields.append("❌ Google Sheet Link is missing.")
+            
+        if missing_fields:
+            return 0, "\n".join(missing_fields)
+            
+        matches, err = await fetch_challonge_open_matches(bracket_link, api_key)
+        if err:
+            return 0, f"Challonge API Error: {err}"
+        if not matches:
+            return 0, ""
+            
+        await report(15, f"Fetched {len(matches)} matches. Fetching captain info from Google Sheet...", force=True)
+        
+        captains_dict, is_1v1, err2 = await fetch_google_sheet_captains(sheet_link)
+        if err2:
+            return 0, f"Google Sheet Error: {err2}"
+            
+        await report(30, "Parsing categories and roles...", force=True)
+        
+        categories = []
+        for i in range(1, 5):
+            cat_id = t_cfg.get(f'ticket_open_category_{i}')
+            if cat_id:
+                try:
+                    cat_id = int(cat_id)
+                except (ValueError, TypeError):
+                    pass
+                cat = discord.utils.get(guild.categories, id=cat_id)
+                if cat:
+                    categories.append(cat)
+                    
+        if not categories:
+            return 0, "No open ticket categories configured for this tournament."
+            
+        helper_team_role = None
+        if helper_role_id := t_cfg.get('helper_role_id'):
             try:
-                global_helper_id = int(global_helper_id)
+                helper_role_id = int(helper_role_id)
             except (ValueError, TypeError):
                 pass
-            helper_team_role = discord.utils.get(guild.roles, id=global_helper_id)
-            
-    rules_link = f"https://discord.com/channels/{guild.id}/{t_cfg.get('rules_channel_id')}" if t_cfg.get('rules_channel_id') else "Not Set"
-    deadline_link = f"https://discord.com/channels/{guild.id}/{t_cfg.get('deadline_channel_id')}" if t_cfg.get('deadline_channel_id') else "Not Set"
-    bracket_display_link = bracket_link if bracket_link.startswith("http") else f"https://challonge.com/{bracket_link}"
-    
-    created_count = 0
-    total_matches = len(matches)
-    
-    for idx, match in enumerate(matches):
-        team1, team2 = match['team1'], match['team2']
-        p1_id, p2_id = match['player1_id'], match['player2_id']
-        match_id, mod_round = match['id'], match['round']
-        
-        loop_percent = 40 + int((idx / total_matches) * 55)
-        await report(loop_percent, f"Processing match {idx+1}/{total_matches}: {team1} vs {team2}...")
-        
-        c1_raw = captains_dict.get(team1, "") or captains_dict.get(team1.strip(), "")
-        c2_raw = captains_dict.get(team2, "") or captains_dict.get(team2.strip(), "")
-        
-        def extract_uid(raw: str):
-            m = re.search(r'<@!?(\d+)>', raw)
-            if m: return int(m.group(1))
-            if raw.strip().isdigit(): return int(raw.strip())
-            return None
-            
-        uid1, uid2 = extract_uid(c1_raw), extract_uid(c2_raw)
-        
-        captain1 = None
-        if uid1:
-            captain1 = guild.get_member(uid1)
-            if not captain1:
-                try:
-                    captain1 = await guild.fetch_member(uid1)
-                except (discord.NotFound, discord.HTTPException):
-                    pass
-                    
-        captain2 = None
-        if uid2:
-            captain2 = guild.get_member(uid2)
-            if not captain2:
-                try:
-                    captain2 = await guild.fetch_member(uid2)
-                except (discord.NotFound, discord.HTTPException):
-                    pass
-        
-        if is_1v1:
-            n1 = (captain1.name if captain1 else re.sub(r'[^a-zA-Z0-9]', '', team1))[:12].lower()
-            n2 = (captain2.name if captain2 else re.sub(r'[^a-zA-Z0-9]', '', team2))[:12].lower()
-            chan_name = f"r{mod_round}-{n1}-vs-{n2}"
-        else:
-            safe_t1 = re.sub(r'[^a-zA-Z0-9]', '', team1).lower()[:8]
-            safe_t2 = re.sub(r'[^a-zA-Z0-9]', '', team2).lower()[:8]
-            chan_name = f"r{mod_round}-{safe_t1}-vs-{safe_t2}"
-            
-        chan_name = re.sub(r'[^a-zA-Z0-9\-]', '-', chan_name)
-        chan_name = re.sub(r'-+', '-', chan_name).strip('-')[:100]
-        topic = f"MatchID:{match_id} | P1:{p1_id} | P2:{p2_id} | Team1:{team1} | Team2:{team2}"
-        
-        already_exists = False
-        for c in categories:
-            if discord.utils.get(c.channels, name=chan_name):
-                already_exists = True
-                break
-        if already_exists:
-            continue
-            
-        target_category = None
-        for c in categories:
-            if len(c.channels) < 49:
-                target_category = c
-                break
-        if not target_category:
-            break
-            
-        try:
-            overwrites = dict(target_category.overwrites) if target_category and target_category.overwrites else {}
-            if guild.default_role not in overwrites:
-                overwrites[guild.default_role] = discord.PermissionOverwrite(view_channel=False)
-            else:
-                overwrites[guild.default_role].view_channel = False
-                
-            overwrites[guild.me] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_channels=True, manage_permissions=True)
-            
-            for role_key in ["admin_role_id", "helper_role_id"]:
-                if r_id := t_cfg.get(role_key):
-                    try:
-                        r_id = int(r_id)
-                    except (ValueError, TypeError):
-                        pass
-                    if staff_r := discord.utils.get(guild.roles, id=r_id):
-                        overwrites[staff_r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-                        
+            helper_team_role = discord.utils.get(guild.roles, id=helper_role_id)
+        if not helper_team_role:
             cfg = get_guild_config(guild.id)
-            for role_key in ["head_organizer", "head_helper", "helper_team", "judge", "recorder", "staff"]:
-                if r_id := cfg.get('role_ids', {}).get(role_key):
-                    try:
-                        r_id = int(r_id)
-                    except (ValueError, TypeError):
-                        pass
-                    if staff_r := discord.utils.get(guild.roles, id=r_id):
-                        overwrites[staff_r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-                        
-            if captain1:
-                overwrites[captain1] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-            if captain2:
-                overwrites[captain2] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+            if global_helper_id := cfg.get('role_ids', {}).get('helper_team'):
+                try:
+                    global_helper_id = int(global_helper_id)
+                except (ValueError, TypeError):
+                    pass
+                helper_team_role = discord.utils.get(guild.roles, id=global_helper_id)
                 
-            new_ch = await guild.create_text_channel(
-                name=chan_name,
-                category=target_category,
-                topic=topic,
-                overwrites=overwrites
-            )
+        rules_link = f"https://discord.com/channels/{guild.id}/{t_cfg.get('rules')}" if t_cfg.get('rules') else "Not Set"
+        deadline_link = f"https://discord.com/channels/{guild.id}/{t_cfg.get('deadline')}" if t_cfg.get('deadline') else "Not Set"
+        bracket_display_link = bracket_link if bracket_link.startswith("http") else f"https://challonge.com/{bracket_link}"
+        
+        created_count = 0
+        total_matches = len(matches)
+        
+        for idx, match in enumerate(matches):
+            team1, team2 = match['team1'], match['team2']
+            p1_id, p2_id = match['player1_id'], match['player2_id']
+            match_id, mod_round = match['id'], match['round']
             
-            org_name = cfg.get('organization_name', 'Tournament Organizer')
-            rules_embed = discord.Embed(
-                title=f"⚓ {get_system_name(guild)} | {t_cfg.get('name')} — Match Setup",
-                description="Welcome to your match channel. Use this channel for all tournament discussions.",
-                color=discord.Color(BRAND_COLOR)
-            )
-            rules_embed.add_field(
-                name="📋 Tournament Information",
-                value=(
-                    f"• 🏆 [Live Bracket]({bracket_display_link})\n"
-                    f"• ⏰ [Deadlines]({deadline_link})\n"
-                    f"• 📜 [Rules]({rules_link})"
-                ),
-                inline=False
-            )
+            loop_percent = 40 + int((idx / total_matches) * 55)
+            await report(loop_percent, f"Processing match {idx+1}/{total_matches}: {team1} vs {team2}...")
+            
+            c1_raw = captains_dict.get(team1, "") or captains_dict.get(team1.strip(), "")
+            c2_raw = captains_dict.get(team2, "") or captains_dict.get(team2.strip(), "")
+            
+            async def resolve_member(raw: str) -> Optional[discord.Member]:
+                if not raw or not raw.strip():
+                    return None
+                clean_raw = raw.strip()
+                if clean_raw.startswith('@'):
+                    clean_raw = clean_raw[1:].strip()
+                    
+                m = re.search(r'<@!?(\d+)>', clean_raw)
+                uid = None
+                if m:
+                    uid = int(m.group(1))
+                elif clean_raw.isdigit():
+                    uid = int(clean_raw)
+                    
+                if uid:
+                    member = guild.get_member(uid)
+                    if not member:
+                        try:
+                            member = await guild.fetch_member(uid)
+                        except Exception:
+                            pass
+                    return member
+                
+                # Fallback to search by username / display name in cache
+                for member in guild.members:
+                    if member.name.lower() == clean_raw.lower() or member.display_name.lower() == clean_raw.lower():
+                        return member
+                
+                # Fallback to query_members via Gateway search
+                try:
+                    found_members = await guild.query_members(query=clean_raw, limit=5)
+                    for member in found_members:
+                        if member.name.lower() == clean_raw.lower() or member.display_name.lower() == clean_raw.lower():
+                            return member
+                except Exception:
+                    pass
+                return None
+                
+            captain1 = await resolve_member(c1_raw)
+            captain2 = await resolve_member(c2_raw)
             
             if is_1v1:
-                pval = f"**Round:** R{mod_round}\n**Captain 1:** {captain1.mention if captain1 else c1_raw or team1}\n**Captain 2:** {captain2.mention if captain2 else c2_raw or team2}"
+                n1 = (captain1.name if captain1 else re.sub(r'[^a-zA-Z0-9]', '', team1))[:12].lower()
+                n2 = (captain2.name if captain2 else re.sub(r'[^a-zA-Z0-9]', '', team2))[:12].lower()
+                chan_name = f"r{mod_round}-{n1}-vs-{n2}"
             else:
-                pval = f"**Round:** R{mod_round}\n**Team 1:** {team1} — Captain: {captain1.mention if captain1 else c1_raw or 'Not Found'}\n**Team 2:** {team2} — Captain: {captain2.mention if captain2 else c2_raw or 'Not Found'}"
+                safe_t1 = re.sub(r'[^a-zA-Z0-9]', '', team1).lower()[:8]
+                safe_t2 = re.sub(r'[^a-zA-Z0-9]', '', team2).lower()[:8]
+                chan_name = f"r{mod_round}-{safe_t1}-vs-{safe_t2}"
                 
-            rules_embed.add_field(name="👥 Match Participants", value=pval, inline=False)
-            rules_embed.add_field(
-                name="🆘 Need Help?",
-                value=f"Ping {helper_team_role.mention if helper_team_role else '@Helper Team'} for assistance. ⚓",
-                inline=False
-            )
-            rules_embed.set_footer(text=f"{org_name} • Auto-Ticket")
+            chan_name = re.sub(r'[^a-zA-Z0-9\-]', '-', chan_name)
+            chan_name = re.sub(r'-+', '-', chan_name).strip('-')[:100].lower()
+            topic = f"MatchID:{match_id} | P1:{p1_id} | P2:{p2_id} | Team1:{team1} | Team2:{team2}"
             
-            ping_content = " ".join(filter(None, [
-                captain1.mention if captain1 else (c1_raw or None),
-                captain2.mention if captain2 else (c2_raw or None),
-            ])) or f"{team1} vs {team2}"
-            
-            logo_candidates_at = ["tournament_bot_logo.png", "logo.png"]
-            sent_at = False
-            for logo_file in logo_candidates_at:
-                if os.path.exists(logo_file):
-                    try:
-                        with open(logo_file, "rb") as lf:
-                            rules_embed.set_thumbnail(url="attachment://logo.png")
-                            await new_ch.send(content=ping_content, embed=rules_embed, file=discord.File(io.BytesIO(lf.read()), "logo.png"))
-                            sent_at = True
-                            break
-                    except Exception:
-                        pass
-            if not sent_at:
-                await new_ch.send(content=ping_content, embed=rules_embed)
+            already_exists = False
+            for channel in guild.text_channels:
+                if channel.name == chan_name:
+                    already_exists = True
+                    break
+                if channel.topic and f"MatchID:{match_id}" in channel.topic:
+                    already_exists = True
+                    break
+            if already_exists:
+                continue
                 
-            created_count += 1
-        except Exception as e:
-            print(f"Error creating auto-room channel {chan_name}: {e}")
-            
-    return created_count, ""
+            target_category = None
+            for c in categories:
+                if len(c.channels) < 49:
+                    target_category = c
+                    break
+            if not target_category:
+                break
+                
+            try:
+                overwrites = dict(target_category.overwrites) if target_category and target_category.overwrites else {}
+                if guild.default_role not in overwrites:
+                    overwrites[guild.default_role] = discord.PermissionOverwrite(view_channel=False)
+                else:
+                    overwrites[guild.default_role].view_channel = False
+                    
+                overwrites[guild.me] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_channels=True, manage_permissions=True)
+                
+                for role_key in ["admin_role_id", "helper_role_id"]:
+                    if r_id := t_cfg.get(role_key):
+                        try:
+                            r_id = int(r_id)
+                        except (ValueError, TypeError):
+                            pass
+                        if staff_r := discord.utils.get(guild.roles, id=r_id):
+                            overwrites[staff_r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+                            
+                cfg = get_guild_config(guild.id)
+                for role_key in ["head_organizer", "head_helper", "helper_team", "judge", "recorder", "staff"]:
+                    if r_id := cfg.get('role_ids', {}).get(role_key):
+                        try:
+                            r_id = int(r_id)
+                        except (ValueError, TypeError):
+                            pass
+                        if staff_r := discord.utils.get(guild.roles, id=r_id):
+                            overwrites[staff_r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+                            
+                if captain1:
+                    overwrites[captain1] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+                if captain2:
+                    overwrites[captain2] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+                    
+                new_ch = await guild.create_text_channel(
+                    name=chan_name,
+                    category=target_category,
+                    topic=topic,
+                    overwrites=overwrites
+                )
+                
+                org_name = cfg.get('organization_name', 'Tournament Organizer')
+                rules_embed = discord.Embed(
+                    title=f"⚓ {get_system_name(guild)} | {t_cfg.get('name')} — Match Setup",
+                    description="Welcome to your match channel. Use this channel for all tournament discussions.",
+                    color=discord.Color(BRAND_COLOR)
+                )
+                if guild.icon:
+                    rules_embed.set_thumbnail(url=guild.icon.url)
+                rules_embed.add_field(
+                    name="📋 Tournament Information",
+                    value=(
+                        f"• 🏆 [Live Bracket]({bracket_display_link})\n"
+                        f"• ⏰ [Deadlines]({deadline_link})\n"
+                        f"• 📜 [Rules]({rules_link})"
+                    ),
+                    inline=False
+                )
+                
+                if is_1v1:
+                    pval = f"**Round:** R{mod_round}\n**Captain 1:** {captain1.mention if captain1 else c1_raw or team1}\n**Captain 2:** {captain2.mention if captain2 else c2_raw or team2}"
+                else:
+                    pval = f"**Round:** R{mod_round}\n**Team 1:** {team1} — Captain: {captain1.mention if captain1 else c1_raw or 'Not Found'}\n**Team 2:** {team2} — Captain: {captain2.mention if captain2 else c2_raw or 'Not Found'}"
+                    
+                rules_embed.add_field(name="👥 Match Participants", value=pval, inline=False)
+                rules_embed.add_field(
+                    name="🆘 Need Help?",
+                    value=f"Ping {helper_team_role.mention if helper_team_role else '@Helper Team'} for assistance. ⚓",
+                    inline=False
+                )
+                rules_embed.set_footer(text=f"{org_name} • Auto-Ticket")
+                
+                ping_content = " ".join(filter(None, [
+                    captain1.mention if captain1 else (c1_raw or None),
+                    captain2.mention if captain2 else (c2_raw or None),
+                ])) or f"{team1} vs {team2}"
+                
+                if guild.icon:
+                    await new_ch.send(content=ping_content, embed=rules_embed)
+                else:
+                    logo_candidates_at = ["tournament_bot_logo.png", "logo.png"]
+                    sent_at = False
+                    for logo_file in logo_candidates_at:
+                        if os.path.exists(logo_file):
+                            try:
+                                with open(logo_file, "rb") as lf:
+                                    rules_embed.set_thumbnail(url="attachment://logo.png")
+                                    await new_ch.send(content=ping_content, embed=rules_embed, file=discord.File(io.BytesIO(lf.read()), "logo.png"))
+                                    sent_at = True
+                                    break
+                            except Exception:
+                                pass
+                    if not sent_at:
+                        await new_ch.send(content=ping_content, embed=rules_embed)
+                    
+                created_count += 1
+            except Exception as e:
+                print(f"Error creating auto-room channel {chan_name}: {e}")
+                
+        if created_count > 0:
+            try:
+                log_embed = discord.Embed(
+                    title="🎫 Auto Rooms Created",
+                    description=f"Automatically created **{created_count}** match room channel(s) for tournament **{t_cfg.get('name')}**.",
+                    color=discord.Color.green(),
+                    timestamp=discord.utils.utcnow()
+                )
+                if guild.icon:
+                    log_embed.set_thumbnail(url=guild.icon.url)
+                await log_bot_activity(guild, log_embed)
+            except Exception as log_err:
+                print(f"Failed to log auto room creation: {log_err}")
+                
+        return created_count, ""
 
 async def auto_create_open_tickets(guild: discord.Guild, user: discord.Member):
     t_cfg = get_active_tournament_config(guild.id)
@@ -8642,6 +9012,10 @@ def load_guild_tournaments(guild_id: int) -> dict:
                                 except:
                                     pass
                                     
+                        db_val = row.get("Auto_Room_Creation")
+                        if db_val not in (None, "", "None"):
+                            existing["auto_room_creation"] = (str(db_val).lower() == 'true')
+                                    
                         tournaments[t_id] = existing
                 print(f"Merged tournaments for guild {guild_id} with Supabase.")
         except Exception as e:
@@ -8691,18 +9065,31 @@ async def log_bot_activity(guild: discord.Guild, embed: discord.Embed):
     if not guild:
         return
     t_cfg = get_active_tournament_config(guild.id)
+    channel = None
     if t_cfg and t_cfg.get('bot_logs'):
-        channel = guild.get_channel(int(t_cfg['bot_logs']))
-        if not channel:
-            try:
+        try:
+            channel = guild.get_channel(int(t_cfg['bot_logs']))
+            if not channel:
                 channel = await guild.fetch_channel(int(t_cfg['bot_logs']))
-            except:
-                pass
-        if channel:
+        except Exception:
+            pass
+            
+    if not channel:
+        cfg = get_guild_config(guild.id)
+        default_logs_id = cfg.get('channel_ids', {}).get('bot_logs')
+        if default_logs_id:
             try:
-                await channel.send(embed=embed)
-            except Exception as e:
-                print(f"Failed to log bot activity to channel {t_cfg['bot_logs']}: {e}")
+                channel = guild.get_channel(int(default_logs_id))
+                if not channel:
+                    channel = await guild.fetch_channel(int(default_logs_id))
+            except Exception:
+                pass
+                
+    if channel:
+        try:
+            await channel.send(embed=embed)
+        except Exception as e:
+            print(f"Failed to log bot activity: {e}")
 
 async def get_thumbnail_url_from_channel(channel_id: Optional[int]) -> Optional[str]:
     if not channel_id:
@@ -9279,11 +9666,37 @@ async def auto_room_run(interaction: discord.Interaction, tournament: Optional[s
                 await status_msg.edit(content=f"❌ Error during room creation: {error_msg}")
             except Exception:
                 await interaction.followup.send(f"❌ Error during room creation: {error_msg}")
+                
+            try:
+                log_embed = discord.Embed(
+                    title="❌ Auto Room Run Failed",
+                    description=f"Manual auto room run failed for tournament **{t_cfg['name']}**.\nReason: {error_msg}",
+                    color=discord.Color.red(),
+                    timestamp=discord.utils.utcnow()
+                )
+                log_embed.set_footer(text=f"Triggered by {interaction.user.name}")
+                await log_bot_activity(interaction.guild, log_embed)
+            except Exception as log_err:
+                print(f"Failed to log auto room run failure: {log_err}")
         else:
             try:
                 await status_msg.edit(content=f"✅ [██████████] 100% — Auto room creation complete! Created **{created}** new match room(s).")
             except Exception:
                 await interaction.followup.send(f"✅ Auto room creation complete! Created **{created}** new match room(s).")
+                
+            try:
+                log_embed = discord.Embed(
+                    title="✅ Auto Room Run Complete",
+                    description=f"Manual auto room run completed for tournament **{t_cfg['name']}**.\nCreated **{created}** new match room(s).",
+                    color=discord.Color.green(),
+                    timestamp=discord.utils.utcnow()
+                )
+                log_embed.set_footer(text=f"Triggered by {interaction.user.name}")
+                if interaction.guild.icon:
+                    log_embed.set_thumbnail(url=interaction.guild.icon.url)
+                await log_bot_activity(interaction.guild, log_embed)
+            except Exception as log_err:
+                print(f"Failed to log auto room run completion: {log_err}")
                 
     except Exception as e:
         import traceback
@@ -9326,6 +9739,18 @@ async def auto_room_stop(interaction: discord.Interaction, tournament: Optional[
     stop_auto_room_loop(interaction.guild.id)
     
     await interaction.followup.send(f"⏹️ Stopped automatic room creation for tournament **{t_cfg['name']}**.")
+    
+    try:
+        log_embed = discord.Embed(
+            title="⏹️ Auto Room Loop Stopped",
+            description=f"Automatic room creation loop stopped for tournament **{t_cfg['name']}**.",
+            color=discord.Color.orange(),
+            timestamp=discord.utils.utcnow()
+        )
+        log_embed.set_footer(text=f"Action by {interaction.user.name}")
+        await log_bot_activity(interaction.guild, log_embed)
+    except Exception as log_err:
+        print(f"Failed to log auto room stop: {log_err}")
 
 @auto_room_group.command(name="toggle", description="Toggle automatic room creation for a tournament")
 @app_commands.autocomplete(tournament=tournament_autocomplete)
@@ -9366,6 +9791,18 @@ async def auto_room_toggle(interaction: discord.Interaction, tournament: Optiona
     
     state_str = "Enabled" if new_state else "Disabled"
     await interaction.followup.send(f"🔄 Automatic room creation for tournament **{t_cfg['name']}** has been **{state_str}**.")
+    
+    try:
+        log_embed = discord.Embed(
+            title="🔄 Auto Room Config Toggled",
+            description=f"Automatic room creation loop for tournament **{t_cfg['name']}** has been **{state_str}**.",
+            color=discord.Color.blue(),
+            timestamp=discord.utils.utcnow()
+        )
+        log_embed.set_footer(text=f"Action by {interaction.user.name}")
+        await log_bot_activity(interaction.guild, log_embed)
+    except Exception as log_err:
+        print(f"Failed to log auto room toggle: {log_err}")
 
 
 clear_group = app_commands.Group(name="clear", description="Clear cache or delete categories")
@@ -9404,6 +9841,18 @@ async def clear_category(interaction: discord.Interaction, category: discord.Cat
         f"🟢 **Deleted:** {deleted_count} channels.\n"
         f"🔴 **Failed:** {failed_count} channels."
     )
+    
+    try:
+        log_embed = discord.Embed(
+            title="🗑️ Category Purged",
+            description=f"Category **{category.name}** has been purged.\n🟢 **Deleted:** {deleted_count} channels.\n🔴 **Failed:** {failed_count} channels.",
+            color=discord.Color.red(),
+            timestamp=discord.utils.utcnow()
+        )
+        log_embed.set_footer(text=f"Purged by {interaction.user.name}")
+        await log_bot_activity(interaction.guild, log_embed)
+    except Exception as log_err:
+        print(f"Failed to log category purge: {log_err}")
 
 @clear_group.command(name="cache", description="Clear Challonge and sheet caches")
 @with_guild_context
