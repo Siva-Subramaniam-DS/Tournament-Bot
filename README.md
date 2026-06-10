@@ -111,7 +111,7 @@ The bot operates on five main tables in Supabase:
 - `/available_events` — Lists scheduled matches needing a judge.
 - `/event-result` — Enters official match results, uploads screenshots, logs stats, and posts results.
 - `/upload-score` — Uploads scores directly to Challonge bracket using an autocomplete match list. Takes exactly three parameters:
-  - `winner` (Dropdown selection): Autocompleted list of active matches in the format `Team A VS Team B (Winner: Team A)`.
+  - `winner` (Dropdown selection): Autocompleted list of active matches. If run inside a match ticket, it displays just the simple team/player names (e.g. `Carb-zir-nian` or `lets win for bundle`) by matching the channel topic `MatchID:XXXX`. Otherwise, it formats choices as `TeamName (vs OpponentName)`.
   - `winner_score` (Integer): Final score of the winner.
   - `loser_score` (Integer): Final score of the loser.
 
@@ -151,11 +151,12 @@ Use `/settings add` or `/settings edit` with parameters `player_info_link` and `
 ## 🔄 Event Lifecycle
 
 1. **Create:** `/event-create` creates match → Renders poster banner → Logs to database → Posts schedule.
-2. **Claim:** Judges/Recorders click buttons in the `#schedule` channel to assign themselves.
-3. **Pings:** Pre-match pings trigger 20 minutes and 10 minutes before the start time.
-4. **Officiate:** Match starts → claim buttons disable automatically.
-5. **Finalize:** Judge runs `/event-result` to log scores and post to the `#results` channel.
-6. **Sync:** Results upload to Challonge automatically via `/upload-score` dropdown.
+2. **Claim:** Judges/Recorders click buttons in the `#schedule` channel to assign themselves (notifies the match ticket via simple plain-text messages).
+3. **Presence Ask (30m):** 30 minutes before the start time, the bot sends a simple presence confirmation embed to the ticket and alerts missing staff.
+4. **Presence Check (20m):** 20 minutes before the start time, the bot checks staff presence. If staff has not confirmed, it locks confirmation and triggers replacement alerts in the schedule channel.
+5. **Captains Reminder (10m):** 10 minutes before the start time, the bot sends the match player reminder to captains.
+6. **Finalize:** Judge runs `/event-result` to log scores, upload screenshots, and post results to the results channel (using a compact embed layout).
+7. **Sync:** Results upload to Challonge via `/upload-score` (the winner option shows clean team names, automatically filtered if run inside the ticket channel).
 
 ---
 
@@ -188,7 +189,14 @@ Use `/settings add` or `/settings edit` with parameters `player_info_link` and `
 
 ## 🗓️ Version History & Changelog
 
-### **v1.2.0 (Latest Update)**
+### **v1.3.0 (Latest Update)**
+* **Staff Timings Shift**: Realigned pre-match staff confirmation to a 30-minute presence check-in, 20-minute presence validation/replacement trigger, and 10-minute player match reminder flow.
+* **Simplified Claim Messages**: Replaced initial claim embeds in tickets with plain-text `{mention} assigned as **role** {emoji}` alerts. Confirmation buttons are now exclusively posted at the 30-minute reminder mark.
+* **Sleeker Autocomplete**: Restructured `/upload-score` autocompletes to show clean team/player names. If executed inside a match ticket, it automatically reads the channel topic's `MatchID:XXXX` and shows only the relevant two competing teams.
+* **Tighter Results Layout**: Removed redundant vertical blank space fields from the `/event-result` embed.
+* **Detailed Logs**: Log presence confirmations, staff replacements, and score uploads directly to the Discord bot logs and tournament-specific Challonge logs channels.
+
+### **v1.2.0**
 * **Database Alignment**: Re-arranged and cleaned up `GuildConfig` and `Tournaments` database column header orders in Supabase to match custom sheet sequences exactly.
 * **Branding Clean**: Removed `Tournament Name`, `Player Info Link`, and `Player Info Format` fields from the `/settings show` embed presentation.
 * **Google Sheet Tab `gid` Support**: Updated `/config_player_information` and `/player_information` commands to extract the sheet tab ID (`gid=`) from the URL. The bot now syncs the exact configured sheet sub-tab instead of defaulting to the first tab.
