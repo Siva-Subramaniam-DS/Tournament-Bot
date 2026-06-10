@@ -178,4 +178,30 @@ Use `/settings add` or `/settings edit` with parameters `player_info_link` and `
    python main.py
    ```
 
+---
+
+## 👥 Credits & Developer Info
+* **Developer:** Siva Subramaniam
+* **Discord Username:** Hokage
+
+---
+
+## 🗓️ Version History & Changelog
+
+### **v1.2.0 (Latest Update)**
+* **Database Alignment**: Re-arranged and cleaned up `GuildConfig` and `Tournaments` database column header orders in Supabase to match custom sheet sequences exactly.
+* **Branding Clean**: Removed `Tournament Name`, `Player Info Link`, and `Player Info Format` fields from the `/settings show` embed presentation.
+* **Google Sheet Tab `gid` Support**: Updated `/config_player_information` and `/player_information` commands to extract the sheet tab ID (`gid=`) from the URL. The bot now syncs the exact configured sheet sub-tab instead of defaulting to the first tab.
+* **Railway Crash Fix**: Added the missing `supabase` package dependency to `requirements.txt` to prevent boot crashes on deployment.
+
+### **v1.1.0**
+* **Supabase Integration**: Migrated guild configs and tournament settings storage to Supabase PostgreSQL backend.
+* **Multi-Guild Isolation**: Added workspace isolation supporting config/attendance channels across multiple Discord servers.
+* **Challonge logs**: Added tracking database tables for bracket upload stats.
+
+### **v1.0.0**
+* **Initial Release**: Basic event life-cycle management, Claim Schedule / Record claims, PIL poster generation, and local JSON config caching.
+
+---
+
 *Built for **TASK FORCE TRIDENT** · Powered by discord.py and Supabase*

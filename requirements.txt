@@ -22,4 +22,5 @@ requests>=2.31.0
 # - asyncio-throttle (not essential)
 # - colorlog (not essential)
 # - gunicorn (not needed for Discord bots)
-firebase-admin>=6.0.0  
+firebase-admin>=6.0.0
+supabase>=2.3.0  
