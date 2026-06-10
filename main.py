@@ -25,6 +25,8 @@ from supabase import create_client, Client
 # Load environment variables
 load_dotenv()
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # Supabase Setup
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
@@ -3340,28 +3342,43 @@ def download_google_font(font_family: str, font_style: str = "regular", font_wei
 
 def get_font_with_fallbacks(font_name: str, size: int, font_style: str = "regular") -> ImageFont.FreeTypeFont:
     """Get a font using your local fonts first, then Google Fonts as fallback"""
+    fonts_dir = os.path.join(BASE_DIR, "Fonts")
     font_candidates = []
     
     # 1. Try your local fonts FIRST (from Fonts/ folder)
     if font_name == "DS-Digital":
         # Prioritize DS-Digital fonts when specifically requested
         local_fonts = [
-            str(Path("Fonts") / "ds_digital" / "DS-DIGIB.TTF"),
-            str(Path("Fonts") / "ds_digital" / "DS-DIGII.TTF"),
-            str(Path("Fonts") / "ds_digital" / "DS-DIGI.TTF"),
-            str(Path("Fonts") / "ds_digital" / "DS-DIGIT.TTF"),
+            str(Path(fonts_dir) / "ds_digital" / "DS-DIGIB.TTF"),
+            str(Path(fonts_dir) / "ds_digital" / "DS-DIGII.TTF"),
+            str(Path(fonts_dir) / "ds_digital" / "DS-DIGI.TTF"),
+            str(Path(fonts_dir) / "ds_digital" / "DS-DIGIT.TTF"),
         ]
     else:
         # Default local fonts for other font requests
-        local_fonts = [
-            str(Path("Fonts") / "capture_it" / "Capture it.ttf"),
-            str(Path("Fonts") / "square_one_2" / "Square One.ttf"),
-            str(Path("Fonts") / "square_one_2" / "Square One Bold.ttf"),
-            str(Path("Fonts") / "ds_digital" / "DS-DIGIB.TTF"),
-            str(Path("Fonts") / "ds_digital" / "DS-DIGII.TTF"),
-            str(Path("Fonts") / "ds_digital" / "DS-DIGI.TTF"),
-            str(Path("Fonts") / "ds_digital" / "DS-DIGIT.TTF"),
+        local_fonts = []
+        # Prioritize requested font first if recognized
+        if font_name == "Capture it":
+            local_fonts.append(str(Path(fonts_dir) / "capture_it" / "Capture it.ttf"))
+        elif font_name == "Square One":
+            local_fonts.extend([
+                str(Path(fonts_dir) / "square_one_2" / "Square One Bold.ttf"),
+                str(Path(fonts_dir) / "square_one_2" / "Square One.ttf"),
+            ])
+            
+        # Add secondary local font fallbacks
+        all_other_fonts = [
+            str(Path(fonts_dir) / "capture_it" / "Capture it.ttf"),
+            str(Path(fonts_dir) / "square_one_2" / "Square One.ttf"),
+            str(Path(fonts_dir) / "square_one_2" / "Square One Bold.ttf"),
+            str(Path(fonts_dir) / "ds_digital" / "DS-DIGIB.TTF"),
+            str(Path(fonts_dir) / "ds_digital" / "DS-DIGII.TTF"),
+            str(Path(fonts_dir) / "ds_digital" / "DS-DIGI.TTF"),
+            str(Path(fonts_dir) / "ds_digital" / "DS-DIGIT.TTF"),
         ]
+        for f_path in all_other_fonts:
+            if f_path not in local_fonts:
+                local_fonts.append(f_path)
     font_candidates.extend(local_fonts)
     
     # 2. Try Google Fonts as fallback (only if local fonts fail)
@@ -3423,7 +3440,7 @@ def sanitize_username_for_poster(username: str) -> str:
 
 def get_random_template():
     """Get a random template image from the Templates folder"""
-    template_path = "Templates"
+    template_path = os.path.join(BASE_DIR, "Templates")
     if os.path.exists(template_path):
         # Get all image files
         image_extensions = ['*.jpg', '*.jpeg', '*.png', '*.gif']
@@ -3641,7 +3658,7 @@ def create_event_poster(template_path: str, round_label: str, team1_captain: str
                 print(f"Error adding time: {e}")
             
             # Save the modified image
-            output_path = f"temp_poster_{int(datetime.datetime.now().timestamp())}.png"
+            output_path = os.path.join(BASE_DIR, f"temp_poster_{int(datetime.datetime.now().timestamp())}.png")
             poster.save(output_path, "PNG")
             print(f"Poster saved successfully: {output_path}")
             return output_path
@@ -5107,7 +5124,7 @@ async def event_result(
         _thumb_url_result = _t_cfg_result.get('thumbnail_url') if _t_cfg_result else None
         if _thumb_url_result:
             embed.set_thumbnail(url=_thumb_url_result)
-        elif os.path.exists("tournament_bot_logo.png"):
+        elif os.path.exists(os.path.join(BASE_DIR, "tournament_bot_logo.png")):
             embed.set_thumbnail(url="attachment://tournament_bot_logo.png")
             use_fallback_logo = True
     except Exception:
@@ -5154,7 +5171,7 @@ async def event_result(
     # Add fallback logo file if needed for embed thumbnail
     if use_fallback_logo:
         try:
-            with open("tournament_bot_logo.png", "rb") as logo_file:
+            with open(os.path.join(BASE_DIR, "tournament_bot_logo.png"), "rb") as logo_file:
                 logo_data = logo_file.read()
                 file_obj = discord.File(
                     fp=io.BytesIO(logo_data),
@@ -5163,6 +5180,105 @@ async def event_result(
                 files_to_send.append(file_obj)
         except Exception as e:
             print(f"Error reading tournament_bot_logo.png for embed thumbnail: {e}")
+            
+    # Find matching scheduled event to fetch its poster
+    matching_event = None
+    poster_image = None
+    
+    # Normalizing comparison values
+    norm_tournament = tournament.strip().lower()
+    norm_round = round.strip().lower()
+    norm_group = group_label.strip().lower() if group_label else None
+    
+    w_cap_id = winner.id if winner else None
+    l_cap_id = loser.id if loser else None
+    
+    w_team = winner_team_name.strip().lower() if winner_team_name else ""
+    l_team = loser_team_name.strip().lower() if loser_team_name else ""
+    
+    def get_member_id(m):
+        if m is None:
+            return None
+        if hasattr(m, 'id'):
+            return m.id
+        try:
+            return int(m)
+        except:
+            return None
+
+    # Loop to find the matching event
+    for ev_id, ev_data in scheduled_events.items():
+        if (ev_data.get('tournament') or "").strip().lower() != norm_tournament:
+            continue
+        if (ev_data.get('round') or "").strip().lower() != norm_round:
+            continue
+        ev_group = ev_data.get('group')
+        norm_ev_group = ev_group.strip().lower() if ev_group else None
+        if norm_group != norm_ev_group:
+            continue
+            
+        # Compare captains or team names
+        ev_t1_cap_id = get_member_id(ev_data.get('team1_captain'))
+        ev_t2_cap_id = get_member_id(ev_data.get('team2_captain'))
+        ev_t1_name = (ev_data.get('team1_name') or "").strip().lower()
+        ev_t2_name = (ev_data.get('team2_name') or "").strip().lower()
+        
+        match_captains = False
+        if w_cap_id and l_cap_id:
+            if (w_cap_id == ev_t1_cap_id and l_cap_id == ev_t2_cap_id) or \
+               (w_cap_id == ev_t2_cap_id and l_cap_id == ev_t1_cap_id):
+                match_captains = True
+        elif w_cap_id:
+            if w_cap_id in (ev_t1_cap_id, ev_t2_cap_id):
+                match_captains = True
+        elif l_cap_id:
+            if l_cap_id in (ev_t1_cap_id, ev_t2_cap_id):
+                match_captains = True
+                
+        match_names = False
+        if w_team and l_team:
+            if (w_team == ev_t1_name and l_team == ev_t2_name) or \
+               (w_team == ev_t2_name and l_team == ev_t1_name):
+                match_names = True
+        elif w_team:
+            if w_team in (ev_t1_name, ev_t2_name):
+                match_names = True
+        elif l_team:
+            if l_team in (ev_t1_name, ev_t2_name):
+                match_names = True
+                
+        if match_captains or match_names:
+            matching_event = ev_data
+            break
+            
+    # Fallback to single candidate if no direct match by captains/names
+    if not matching_event:
+        candidates = []
+        for ev_id, ev_data in scheduled_events.items():
+            ev_t = ev_data.get('tournament') or ""
+            ev_r = ev_data.get('round') or ""
+            ev_g = ev_data.get('group')
+            norm_ev_g = ev_g.strip().lower() if ev_g else None
+            if ev_t.strip().lower() == norm_tournament and ev_r.strip().lower() == norm_round and norm_group == norm_ev_g:
+                candidates.append(ev_data)
+        if len(candidates) == 1:
+            matching_event = candidates[0]
+            
+    if matching_event:
+        poster_image = matching_event.get('poster_path')
+        
+    if poster_image and os.path.exists(poster_image):
+        try:
+            with open(poster_image, 'rb') as f:
+                poster_data = f.read()
+                poster_file = discord.File(
+                    fp=io.BytesIO(poster_data),
+                    filename="event_poster.png"
+                )
+                embed.set_image(url="attachment://event_poster.png")
+                files_to_send.append(poster_file)
+        except Exception as e:
+            print(f"Error loading poster image for result embed: {e}")
     
     for i, screenshot in enumerate(screenshots, 1):
         if screenshot:
