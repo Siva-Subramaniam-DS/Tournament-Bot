@@ -212,4 +212,4 @@ Use `/settings add` or `/settings edit` with parameters `player_info_link` and `
 
 ---
 
-*Built for **TASK FORCE TRIDENT** · Powered by discord.py and Supabase*
+*Built for **Discord Tournament Bot** · Powered by discord.py and Supabase*
