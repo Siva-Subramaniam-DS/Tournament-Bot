@@ -4808,7 +4808,7 @@ async def upload_score_winner_autocomplete(
     return choices[:25]
 
 
-NOTION_HELP_URL = "https://www.notion.so/Tournament-Bot-Help-Guide-23219abfba784caa9d98c36e65a0e44d"
+NOTION_HELP_URL = "https://app.notion.com/p/Tournament-Bot-Help-Guide-37c8a2e4cbdf80af8e87d6a03b7db8e5?source=copy_link"
 
 @tree.command(name="help", description="Show all available bot commands and guide")
 @with_guild_context
