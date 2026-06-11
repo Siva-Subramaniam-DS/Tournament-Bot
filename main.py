@@ -647,6 +647,409 @@ cleanup_tasks = {}
 # Store judge assignments to prevent overloading
 judge_assignments = {}  # {judge_id: [event_ids]}
 
+# Store scheduled deadlines for reminders
+scheduled_deadlines = {}
+deadline_tasks = {} # {dl_id: [tasks]}
+
+# Load scheduled deadlines from Supabase (with JSON fallback)
+def load_scheduled_deadlines():
+    global scheduled_deadlines
+    # 1. Load from local fallback JSON first
+    try:
+        if os.path.exists('scheduled_deadlines.json'):
+            with open('scheduled_deadlines.json', 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                for dl_id, dl_data in data.items():
+                    if 'deadline_dt' in dl_data:
+                        dl_data['deadline_dt'] = datetime.datetime.fromisoformat(dl_data['deadline_dt'])
+                scheduled_deadlines = data
+                print(f"Loaded {len(scheduled_deadlines)} scheduled deadlines from local fallback")
+    except Exception as e:
+        print(f"Error loading scheduled_deadlines.json fallback: {e}")
+        scheduled_deadlines = {}
+
+    # 2. Merge/Overlay with Supabase
+    if supabase_client:
+        try:
+            resp = supabase_client.table("Deadlines").select("*").execute()
+            if resp.data:
+                for row in resp.data:
+                    try:
+                        g_id = int(row["Guild_ID"])
+                        rnd = row["Round"]
+                        dl_id = f"dl_{rnd.lower().replace('-', '_').replace(' ', '_')}_{g_id}"
+                        scheduled_deadlines[dl_id] = {
+                            'guild_id': g_id,
+                            'round': rnd,
+                            'deadline_dt': datetime.datetime.fromisoformat(row["Deadline_Time"])
+                        }
+                    except Exception as parse_err:
+                        print(f"Error parsing Supabase deadline row {row}: {parse_err}")
+                print(f"Merged config with {len(resp.data)} deadlines from Supabase.")
+        except Exception as e:
+            print(f"Error loading deadlines from Supabase: {e}")
+
+# Save scheduled deadline to file and Supabase
+def save_scheduled_deadline(dl_id: str, dl_data: dict):
+    # Save to local in-memory
+    scheduled_deadlines[dl_id] = dl_data
+
+    # Save to local JSON backup
+    try:
+        data_to_save = {}
+        for d_id, d_data in scheduled_deadlines.items():
+            copy_data = d_data.copy()
+            if 'deadline_dt' in copy_data and isinstance(copy_data['deadline_dt'], datetime.datetime):
+                copy_data['deadline_dt'] = copy_data['deadline_dt'].isoformat()
+            data_to_save[d_id] = copy_data
+        with open('scheduled_deadlines.json', 'w', encoding='utf-8') as f:
+            json.dump(data_to_save, f, indent=4)
+    except Exception as e:
+        print(f"Error saving scheduled_deadlines.json: {e}")
+
+    # Save to Supabase table
+    if supabase_client:
+        try:
+            row = {
+                "Guild_ID": str(dl_data['guild_id']),
+                "Round": dl_data['round'],
+                "Deadline_Time": dl_data['deadline_dt'].isoformat()
+            }
+            # Upsert into Deadlines table based on Guild_ID + Round uniqueness
+            supabase_client.table("Deadlines").upsert(row).execute()
+            print(f"[Supabase] ✅ Deadline for round '{dl_data['round']}' in guild {dl_data['guild_id']} saved.")
+        except Exception as e:
+            print(f"[Supabase] ❌ Failed to upsert deadline to Supabase: {e}")
+
+# Helper to cancel scheduled deadline tasks
+def cancel_deadline_tasks(dl_id: str):
+    if dl_id in deadline_tasks:
+        for t in deadline_tasks[dl_id]:
+            if not t.done():
+                t.cancel()
+        del deadline_tasks[dl_id]
+
+# Schedule the deadline reminder tasks
+def schedule_deadline_tasks(dl_id: str):
+    cancel_deadline_tasks(dl_id)
+    
+    dl_data = scheduled_deadlines.get(dl_id)
+    if not dl_data:
+        return
+        
+    guild_id = dl_data.get('guild_id')
+    round_name = dl_data.get('round')
+    deadline_dt = dl_data.get('deadline_dt')
+    if isinstance(deadline_dt, str):
+        deadline_dt = datetime.datetime.fromisoformat(deadline_dt)
+    if deadline_dt.tzinfo is None:
+        deadline_dt = deadline_dt.replace(tzinfo=pytz.UTC)
+        
+    now = datetime.datetime.now(pytz.UTC)
+    
+    # Calculate target reminder times (06:00 UTC)
+    deadline_date = deadline_dt.date()
+    reminder_1_dt = datetime.datetime.combine(deadline_date - datetime.timedelta(days=1), datetime.time(6, 0)).replace(tzinfo=pytz.UTC)
+    reminder_2_dt = datetime.datetime.combine(deadline_date, datetime.time(6, 0)).replace(tzinfo=pytz.UTC)
+    
+    tasks = []
+    
+    # 1. One day before at 06:00 UTC
+    if reminder_1_dt > now:
+        t1 = asyncio.create_task(run_deadline_reminder_task(dl_id, reminder_1_dt, "one_day_before"))
+        tasks.append(t1)
+        
+    # 2. On the deadline day at 06:00 UTC
+    if reminder_2_dt > now:
+        t2 = asyncio.create_task(run_deadline_reminder_task(dl_id, reminder_2_dt, "deadline_day"))
+        tasks.append(t2)
+        
+    if tasks:
+        deadline_tasks[dl_id] = tasks
+
+# Background task wrapper
+async def run_deadline_reminder_task(dl_id: str, target_dt: datetime.datetime, reminder_type: str):
+    try:
+        now = datetime.datetime.now(pytz.UTC)
+        delay = (target_dt - now).total_seconds()
+        if delay > 0:
+            await asyncio.sleep(delay)
+            
+        # Verify deadline still exists
+        dl_data = scheduled_deadlines.get(dl_id)
+        if not dl_data:
+            return
+            
+        guild_id = dl_data.get('guild_id')
+        round_name = dl_data.get('round')
+        deadline_dt = dl_data.get('deadline_dt')
+        if isinstance(deadline_dt, str):
+            deadline_dt = datetime.datetime.fromisoformat(deadline_dt)
+        if deadline_dt.tzinfo is None:
+            deadline_dt = deadline_dt.replace(tzinfo=pytz.UTC)
+            
+        current_guild_id.set(guild_id)
+        
+        guild = bot.get_guild(guild_id)
+        if not guild:
+            try:
+                guild = await bot.fetch_guild(guild_id)
+            except Exception:
+                print(f"Failed to fetch guild {guild_id} for deadline reminder")
+                return
+                
+        # Get deadline channel ID
+        t_cfg = get_active_tournament_config(guild_id)
+        channel_id = None
+        if t_cfg:
+            channel_id = t_cfg.get('deadline') or t_cfg.get('Deadline_Channel_ID')
+        if not channel_id:
+            cfg = get_guild_config(guild_id)
+            channel_id = cfg.get('channel_ids', {}).get('deadlines')
+            
+        if not channel_id:
+            print(f"No deadline channel configured for guild {guild_id}")
+            return
+            
+        channel = guild.get_channel(int(channel_id))
+        if not channel:
+            try:
+                channel = await guild.fetch_channel(int(channel_id))
+            except Exception:
+                print(f"Failed to fetch deadline channel {channel_id} in guild {guild_id}")
+                return
+                
+        # Find unscheduled players for this round
+        players_to_ping = await get_unscheduled_players_for_round(guild, round_name)
+        
+        pings_str = " ".join(players_to_ping) if players_to_ping else "@Player"
+        
+        deadline_date_str = deadline_dt.strftime("%d/%m/%Y")
+        deadline_time_str = deadline_dt.strftime("%H:%M UTC")
+        
+        if reminder_type == "one_day_before":
+            message = (
+                f"Hello Tournament Player ID {pings_str}!\n"
+                f" Tomorrow ({deadline_date_str}) is the deadline for Round {round_name}. If you have not opened your ticket and scheduled your match time, please do so. Otherwise, the bot will randomly assign a time based on the UTC time you provided.\n"
+                f"**Deadline: {deadline_time_str}**\n\n"
+                f"Good luck!"
+            )
+        else: # "deadline_day"
+            message = (
+                f"Hello Tournament Player ID {pings_str}!\n"
+                f"Today ({deadline_date_str}) is the deadline for Round {round_name}. If you have not opened your ticket and scheduled your match time, please do so immediately. Otherwise, the bot will randomly assign a time based on the UTC time you provided.\n"
+                f"**Deadline: {deadline_time_str}**\n\n"
+                f"Good luck!"
+            )
+            
+        await channel.send(message)
+        
+    except Exception as e:
+        print(f"Error running deadline reminder task for {dl_id}: {e}")
+
+# Helper to map round name selection to Challonge round numbers
+def map_round_name_to_challonge_rounds(round_name: str, matches: list) -> list[int]:
+    if round_name.startswith("D"):
+        try:
+            num = int(round_name[1:])
+            return [num, -num]
+        except ValueError:
+            pass
+            
+    # Find unique rounds from matches
+    rounds = sorted(list(set(m.get('round') for m in matches if m.get('round') is not None)))
+    winners_rounds = [r for r in rounds if r > 0]
+    
+    if round_name == "Final":
+        res = []
+        if winners_rounds:
+            res.append(winners_rounds[-1])
+        return res
+    elif round_name == "Semi-Final":
+        res = []
+        if len(winners_rounds) >= 2:
+            res.append(winners_rounds[-2])
+        return res
+    elif round_name == "Bronze Match":
+        res = []
+        if winners_rounds:
+            res.append(winners_rounds[-1])
+        return res
+    return []
+
+# Helper to map round name selection to channel prefix patterns
+def get_round_channel_prefixes(round_name: str) -> list[str]:
+    if round_name.startswith("D"):
+        try:
+            num = int(round_name[1:])
+            return [f"rd{num}-", f"r{num}-", f"r-{num}-"]
+        except ValueError:
+            pass
+    if round_name == "Semi-Final":
+        return ["rsemi-", "rsemifinal-", "rsemi-final-"]
+    if round_name == "Final":
+        return ["rfinal-"]
+    if round_name == "Bronze Match":
+        return ["rbronze-", "r3rd-", "rthird-"]
+    return [f"r{round_name.lower()}-"]
+
+# Helper to resolve member names to discord members
+async def resolve_member_helper(guild: discord.Guild, raw: str) -> Optional[discord.Member]:
+    if not raw or not raw.strip():
+        return None
+    clean_raw = raw.strip()
+    if clean_raw.startswith('@'):
+        clean_raw = clean_raw[1:].strip()
+        
+    m = re.search(r'<@!?(\d+)>', clean_raw)
+    uid = None
+    if m:
+        uid = int(m.group(1))
+    elif clean_raw.isdigit():
+        uid = int(clean_raw)
+        
+    if uid:
+        member = guild.get_member(uid)
+        if not member:
+            try:
+                member = await guild.fetch_member(uid)
+            except Exception:
+                pass
+        return member
+    
+    for member in guild.members:
+        if member.name.lower() == clean_raw.lower() or member.display_name.lower() == clean_raw.lower():
+            return member
+            
+    try:
+        found_members = await guild.query_members(query=clean_raw, limit=5)
+        for member in found_members:
+            if member.name.lower() == clean_raw.lower() or member.display_name.lower() == clean_raw.lower():
+                return member
+    except Exception:
+        pass
+    return None
+
+# Find relevant players to ping
+async def get_unscheduled_players_for_round(guild: discord.Guild, round_name: str) -> list[str]:
+    unscheduled = []
+    
+    t_cfg = get_active_tournament_config(guild.id)
+    if not t_cfg:
+        return []
+        
+    bracket_link = t_cfg.get('challonge_bracket_link') or t_cfg.get('id')
+    api_key = t_cfg.get('key')
+    sheet_link = t_cfg.get('google_sheet_link') or t_cfg.get('Captains_Sheet_Link')
+    
+    # 1. Fetch matches from Challonge
+    matches = []
+    if bracket_link and api_key:
+        try:
+            matches_info, err = await fetch_challonge_open_matches(bracket_link, api_key)
+            if matches_info:
+                matches = matches_info
+        except Exception as e:
+            print(f"Error fetching Challonge matches for deadline reminder: {e}")
+            
+    # 2. Fetch captains from Google Sheet
+    captains_dict = {}
+    if sheet_link:
+        try:
+            c_dict, is_1v1, err2 = await fetch_google_sheet_captains(sheet_link)
+            if c_dict:
+                captains_dict = c_dict
+        except Exception as e:
+            print(f"Error fetching Google Sheet captains for deadline reminder: {e}")
+            
+    target_rounds = map_round_name_to_challonge_rounds(round_name, matches)
+    target_matches = [m for m in matches if m.get('round') in target_rounds]
+    
+    for match in target_matches:
+        match_id = match.get('id')
+        team1 = match.get('team1')
+        team2 = match.get('team2')
+        
+        c1_raw = captains_dict.get(team1) or captains_dict.get(team1.strip()) if team1 else None
+        c2_raw = captains_dict.get(team2) or captains_dict.get(team2.strip()) if team2 else None
+        
+        captain1_mention = None
+        captain2_mention = None
+        
+        if c1_raw:
+            if c1_raw.startswith("<@") and c1_raw.endswith(">"):
+                captain1_mention = c1_raw
+            elif c1_raw.isdigit():
+                captain1_mention = f"<@{c1_raw}>"
+            else:
+                member = await resolve_member_helper(guild, c1_raw)
+                if member:
+                    captain1_mention = member.mention
+                    
+        if c2_raw:
+            if c2_raw.startswith("<@") and c2_raw.endswith(">"):
+                captain2_mention = c2_raw
+            elif c2_raw.isdigit():
+                captain2_mention = f"<@{c2_raw}>"
+            else:
+                member = await resolve_member_helper(guild, c2_raw)
+                if member:
+                    captain2_mention = member.mention
+                    
+        channel_exists = False
+        channel_id = None
+        for channel in guild.text_channels:
+            if channel.topic and f"MatchID:{match_id}" in channel.topic:
+                channel_exists = True
+                channel_id = channel.id
+                break
+                
+        is_scheduled = False
+        if channel_exists and channel_id:
+            for ev_id, ev_data in scheduled_events.items():
+                if ev_data.get('channel_id') == channel_id:
+                    is_scheduled = True
+                    break
+                    
+        if not channel_exists or not is_scheduled:
+            if captain1_mention and captain1_mention not in unscheduled:
+                unscheduled.append(captain1_mention)
+            if captain2_mention and captain2_mention not in unscheduled:
+                unscheduled.append(captain2_mention)
+                
+    # Fallback to scanning ticket channels if no matches found via Challonge (or API fails)
+    if not unscheduled:
+        prefix_options = get_round_channel_prefixes(round_name)
+        for channel in guild.text_channels:
+            matches_prefix = any(channel.name.startswith(p) for p in prefix_options)
+            if matches_prefix:
+                is_scheduled = False
+                for ev_id, ev_data in scheduled_events.items():
+                    if ev_data.get('channel_id') == channel.id:
+                        is_scheduled = True
+                        break
+                if not is_scheduled:
+                    cfg = get_guild_config(guild.id)
+                    staff_role_ids = []
+                    for r_key in ["head_organizer", "organizer", "helper_team", "judge", "recorder", "staff"]:
+                        if r_id := cfg.get('role_ids', {}).get(r_key):
+                            try:
+                                staff_role_ids.append(int(r_id))
+                            except:
+                                pass
+                                
+                    for member, overwrite in channel.overwrites.items():
+                        if isinstance(member, discord.Member) and not member.bot:
+                            is_staff = any(role.id in staff_role_ids for role in member.roles)
+                            if not is_staff and overwrite.view_channel:
+                                if member.mention not in unscheduled:
+                                    unscheduled.append(member.mention)
+                                    
+    return unscheduled
+
+# Store judge assignments to prevent overloading
+judge_assignments = {}  # {judge_id: [event_ids]}
+
 import csv
 import io
 
@@ -4007,6 +4410,9 @@ async def on_ready():
     # Load scheduled events from file
     load_scheduled_events()
     
+    # Load scheduled deadlines from Supabase/JSON fallback
+    load_scheduled_deadlines()
+    
     # Load tournament rules from file
     load_rules()
     
@@ -4076,6 +4482,40 @@ async def on_ready():
         save_scheduled_events()
     except Exception as e:
         print(f"Startup cleanup sweep error: {e}")
+        
+    # Reschedule deadline reminders on startup
+    for dl_id, dl_data in list(scheduled_deadlines.items()):
+        dt = dl_data.get('deadline_dt')
+        if dt:
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=pytz.UTC)
+            
+            # Check if both reminders have already passed
+            deadline_date = dt.date()
+            reminder_1_dt = datetime.datetime.combine(deadline_date - datetime.timedelta(days=1), datetime.time(6, 0)).replace(tzinfo=pytz.UTC)
+            reminder_2_dt = datetime.datetime.combine(deadline_date, datetime.time(6, 0)).replace(tzinfo=pytz.UTC)
+            
+            if reminder_1_dt <= now_utc and reminder_2_dt <= now_utc:
+                # Both reminders have passed. Clean up obsolete ones older than 7 days
+                age_days = (datetime.datetime.now() - dt.replace(tzinfo=None)).days
+                if age_days >= 7:
+                    if dl_id in scheduled_deadlines:
+                        del scheduled_deadlines[dl_id]
+            else:
+                schedule_deadline_tasks(dl_id)
+    # Save any cleanup updates
+    try:
+        data_to_save = {}
+        for d_id, d_data in scheduled_deadlines.items():
+            copy_data = d_data.copy()
+            if 'deadline_dt' in copy_data and isinstance(copy_data['deadline_dt'], datetime.datetime):
+                copy_data['deadline_dt'] = copy_data['deadline_dt'].isoformat()
+            data_to_save[d_id] = copy_data
+        with open('scheduled_deadlines.json', 'w', encoding='utf-8') as f:
+            json.dump(data_to_save, f, indent=4)
+    except Exception as e:
+        print(f"Error saving scheduled_deadlines.json on startup: {e}")
+
     # Start auto-room background loops for all guilds the bot is in
     for guild in bot.guilds:
         try:
@@ -4118,10 +4558,10 @@ async def upload_score(
     if interaction.guild:
         current_guild_id.set(interaction.guild.id)
 
-    # Permission check — Organizer / Helper / Judge
+    # Permission check — Organizer / Bot Owner
     permission_level = get_user_permission_level(interaction.user.roles, interaction.user.id)
-    if permission_level not in ["judge", "organizer", "owner", "helper"]:
-        await interaction.followup.send("❌ You need **Head Organizer**, **Helper Team**, or **Judge** role to upload scores.", ephemeral=True)
+    if permission_level not in ["organizer", "owner"]:
+        await interaction.followup.send("❌ You need **Head Organizer** role to upload scores.", ephemeral=True)
         return
 
     # Parse selected winner option
@@ -4368,28 +4808,63 @@ async def upload_score_winner_autocomplete(
     return choices[:25]
 
 
-@tree.command(name="help", description="Show available commands based on your permissions")
+NOTION_HELP_URL = "https://www.notion.so/Tournament-Bot-Help-Guide-23219abfba784caa9d98c36e65a0e44d"
+
+@tree.command(name="help", description="Show all available bot commands and guide")
 @with_guild_context
 async def help_command(interaction: discord.Interaction):
-    """Enhanced help command with role-based filtering"""
+    """Help command — links to the Notion command guide"""
     try:
         if interaction.guild:
             current_guild_id.set(interaction.guild.id)
-        # Bot owner always gets owner level
+
         permission_level = get_user_permission_level(
-            interaction.user.roles, 
-            interaction.user.id, 
+            interaction.user.roles,
+            interaction.user.id,
             interaction.guild.id if interaction.guild else None
         )
-        
+
+        badge_map = {
+            "owner":     "👑 Bot Owner",
+            "organizer": "🏛️ Organiser",
+            "helper":    "🛡️ Helper",
+            "judge":     "⚖️ Judge",
+            "recorder":  "🎥 Recorder",
+            "user":      "👤 Member",
+        }
+        badge = badge_map.get(permission_level, "👤 Member")
+        org_name = get_org_name(interaction.guild)
         bot_icon = interaction.client.user.display_avatar.url if interaction.client.user.display_avatar else None
         user_icon = interaction.user.display_avatar.url if interaction.user.display_avatar else None
-        
-        view = HelpView(permission_level, interaction.user.display_name, interaction.guild, bot_icon_url=bot_icon, user_icon_url=user_icon)
-        embed = build_help_embed(permission_level, interaction.user.display_name, interaction.guild, bot_icon_url=bot_icon, user_icon_url=user_icon, category_key=view.current_category)
-        
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
-        
+
+        embed = discord.Embed(
+            title="📖 Tournament Bot — Command Guide",
+            description=(
+                f"⚓ **{org_name}**\n"
+                f"══════════════════════════════════════\n"
+                f"🔰 **Your Access Level:** {badge}\n\n"
+                f"📚 All commands, usage examples and permissions are documented in our **Notion Help Guide**.\n\n"
+                f"🔗 **[Click here to open the Help Guide]({NOTION_HELP_URL})**\n"
+                f"══════════════════════════════════════\n"
+                f"📌 **Bracket:** [View Live Bracket]({get_link_bracket(interaction.guild)})\n"
+                f"⏰ **Deadlines:** [View Schedule]({get_link_deadline(interaction.guild)})\n"
+                f"📜 **Rules:** [Read Rules]({get_link_rules(interaction.guild)})"
+            ),
+            color=discord.Color(BRAND_COLOR),
+            timestamp=discord.utils.utcnow()
+        )
+
+        if bot_icon:
+            embed.set_thumbnail(url=bot_icon)
+
+        footer_text = f"{org_name} • Help Guide • Requested by {interaction.user.display_name}"
+        if user_icon:
+            embed.set_footer(text=footer_text, icon_url=user_icon)
+        else:
+            embed.set_footer(text=footer_text)
+
+        await interaction.response.send_message(embed=embed, ephemeral=False)
+
     except Exception as e:
         print(f"Error in help command: {e}")
         await interaction.response.send_message("❌ An error occurred while generating help.", ephemeral=True)
@@ -6117,9 +6592,9 @@ async def staff_update(interaction: discord.Interaction, staff_member: discord.M
 ])
 @with_guild_context
 async def exchange(interaction: discord.Interaction, role: app_commands.Choice[str], old_user: discord.Member, new_user: discord.Member):
-    """Exchanges a staff member for events in the current channel, swapping their permissions."""
-    if not (has_event_create_permission(interaction) or has_event_result_permission(interaction)):
-        await interaction.response.send_message("❌ You need **Head Organizer**, **Head Helper**, **Helper Team** or **Judge** role to exchange staff.", ephemeral=True)
+    permission_level = get_user_permission_level(interaction.user.roles, interaction.user.id, interaction.guild_id)
+    if permission_level not in ["helper", "organizer", "owner"]:
+        await interaction.response.send_message("❌ You need **Head Organizer**, **Head Helper** or **Helper Team** role to exchange staff.", ephemeral=True)
         return
 
     current_channel_id = interaction.channel.id
@@ -7107,160 +7582,7 @@ async def choose(interaction: discord.Interaction, options: str):
     
     await interaction.response.send_message(embed=embed)
 
-class RulesModal(discord.ui.Modal, title='Publish Tournament Rules'):
-    title_text = discord.ui.TextInput(
-        label='Rules Title',
-        style=discord.TextStyle.short,
-        placeholder='e.g., Official Tournament Rules',
-        default='🏆 Official Tournament Rules',
-        required=True,
-        max_length=100
-    )
-    rules_text = discord.ui.TextInput(
-        label='Enter Tournament Rules',
-        style=discord.TextStyle.paragraph,
-        placeholder='Type out the rules here. Formatting like **bold** and *italics* is allowed.',
-        required=True,
-        max_length=4000
-    )
 
-    async def on_submit(self, interaction: discord.Interaction):
-        if interaction.guild:
-            current_guild_id.set(interaction.guild.id)
-        channel_id = CHANNEL_IDS.get("rules", 1500279213754945596)
-        channel = interaction.guild.get_channel(channel_id)
-        if not channel:
-            await interaction.response.send_message(f"❌ Could not find the Rules channel (ID: {channel_id}). Please check the ID.", ephemeral=True)
-            return
-
-        embed = discord.Embed(
-            title=self.title_text.value,
-            description=self.rules_text.value,
-            color=0x00ff00,
-            timestamp=discord.utils.utcnow()
-        )
-        embed.set_footer(text=f"{ORGANIZATION_NAME} | Published by {interaction.user.name}")
-        
-        try:
-            await channel.send(embed=embed)
-            await interaction.response.send_message(f"✅ Rules have been successfully published in {channel.mention}!", ephemeral=True)
-        except discord.Forbidden:
-            await interaction.response.send_message(f"❌ I don't have permission to send messages in {channel.mention}.", ephemeral=True)
-
-
-@tree.command(name='publish-rules', description='Write and publish new tournament rules to the guidelines channel')
-@with_guild_context
-async def publish_rules(interaction: discord.Interaction):
-    # Organizers or judges only
-    if not (has_event_create_permission(interaction) or has_event_result_permission(interaction)):
-        await interaction.response.send_message("❌ You lack permission to publish rules.", ephemeral=True)
-        return
-        
-    await interaction.response.send_modal(RulesModal())
-
-
-# ===========================================================================================
-# REGISTRATION COMMAND
-# ===========================================================================================
-
-REGISTRATION_CHANNEL_ID = 1500279086579322920  # #registration channel
-
-class RegistrationView(discord.ui.View):
-    """Persistent view with a 'Register' link button"""
-    def __init__(self, form_url: str):
-        super().__init__(timeout=None)
-        self.add_item(
-            discord.ui.Button(
-                label="Register",
-                style=discord.ButtonStyle.link,
-                url=form_url,
-                emoji="🔗"
-            )
-        )
-
-class RegistrationModal(discord.ui.Modal, title='Post Tournament Registration'):
-    tournament_name = discord.ui.TextInput(
-        label='Tournament Name',
-        style=discord.TextStyle.short,
-        placeholder='e.g., Frigate Master S1',
-        required=True,
-        max_length=100
-    )
-    form_url = discord.ui.TextInput(
-        label='Google Form Registration Link',
-        style=discord.TextStyle.short,
-        placeholder='https://docs.google.com/forms/...',
-        required=True,
-        max_length=500
-    )
-
-    @with_guild_context
-    async def on_submit(self, interaction: discord.Interaction):
-        # Validate that the URL looks reasonable
-        url = self.form_url.value.strip()
-        if not (url.startswith('http://') or url.startswith('https://')):
-            await interaction.response.send_message(
-                "❌ Please enter a valid URL starting with `https://`.",
-                ephemeral=True
-            )
-            return
-
-        tournament = self.tournament_name.value.strip()
-
-        cfg = get_guild_config(interaction.guild)
-        registration_ch_id = cfg["channel_ids"].get("registration", REGISTRATION_CHANNEL_ID)
-        # Fetch the registration channel
-        channel = interaction.guild.get_channel(registration_ch_id)
-        if not channel:
-            await interaction.response.send_message(
-                f"❌ Could not find the Registration channel (ID: `{registration_ch_id}`).",
-                ephemeral=True
-            )
-            return
-
-        # Build the registration embed (mirrors the sample image layout)
-        embed = discord.Embed(
-            title="Registration",
-            description=(
-                f"Here is the registration form for the tournament **{tournament}** "
-                f"and be sure to read the [Rules]({get_link_rules(interaction.guild)})"
-            ),
-            color=discord.Color(BRAND_COLOR),
-            timestamp=discord.utils.utcnow()
-        )
-        embed.set_footer(text=f"{cfg.get('organization_name', 'Tournament Organizer')} | Posted by {interaction.user.name}")
-
-        view = RegistrationView(url)
-
-        try:
-            await channel.send(embed=embed, view=view)
-            await interaction.response.send_message(
-                f"✅ Registration post has been successfully published in {channel.mention}!",
-                ephemeral=True
-            )
-        except discord.Forbidden:
-            await interaction.response.send_message(
-                f"❌ I don't have permission to send messages in {channel.mention}.",
-                ephemeral=True
-            )
-        except Exception as e:
-            await interaction.response.send_message(
-                f"❌ An error occurred while posting: {e}",
-                ephemeral=True
-            )
-
-
-@tree.command(name='registration', description='Post tournament registration with a Google Form link to the registration channel')
-@with_guild_context
-async def registration_command(interaction: discord.Interaction):
-    """Open a modal to post registration info to the #registration channel"""
-    if not (has_event_create_permission(interaction) or interaction.user.id == BOT_OWNER_ID):
-        await interaction.response.send_message(
-            "❌ You need **Head Organizer**, **Head Helper**, or **Helper Team** role to post registration.",
-            ephemeral=True
-        )
-        return
-    await interaction.response.send_modal(RegistrationModal())
 
 
 # Automatic background ticket creation for open matches based on active tournament configuration
@@ -8458,122 +8780,7 @@ async def player_information(interaction: discord.Interaction, user: discord.Mem
         print(f"[player_information] Error: {e}")
 
 
-@tree.command(name="id-card", description="Generate a Clan ID Card")
-@app_commands.describe(user="The player or team captain to generate ID card for")
-@with_guild_context
-async def id_card(interaction: discord.Interaction, user: discord.Member):
-    """Fetches user data and generates a Clan ID card"""
-    await interaction.response.defer()
-    clan_sheet_link = "https://docs.google.com/spreadsheets/d/1yo-AhuWRIG0wbZypFmk77jPzq7KrFMrDIPHLayxeMhA/edit?usp=sharing"
-    
-    sheet_match = re.search(r'/d/([a-zA-Z0-9-_]+)', clan_sheet_link)
-    if not sheet_match:
-        await interaction.followup.send("❌ Invalid Google Sheet link in config.", ephemeral=True)
-        return
-        
-    sheet_id = sheet_match.group(1)
-    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
-    
-    try:
-        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
-        resp.raise_for_status()
-        resp.encoding = 'utf-8'  # Force UTF-8 so special characters from the sheet are decoded correctly
-        rows = list(csv.reader(io.StringIO(resp.text)))
-        
-        if not rows:
-            await interaction.followup.send("❌ The player info sheet is empty.", ephemeral=True)
-            return
-            
-        header = rows[0]
-        user_id_str = str(user.id)
-        user_mention = f"<@{user.id}>"
-        
-        found_row = None
-        for row in rows[1:]:
-            for cell in row:
-                cell_clean = cell.strip()
-                if user_id_str in cell_clean or user_mention in cell_clean:
-                    found_row = row
-                    break
-            if found_row:
-                break
-                
-        if found_row is None:
-            await interaction.followup.send(f"❌ {user.mention} was not found in the sheet.", ephemeral=True)
-            return
 
-        def get_val(*keys):
-            for key in keys:
-                col = _col_index(header, key)
-                if col != -1 and col < len(found_row):
-                    val = found_row[col].strip()
-                    if val: return val
-            return ''
-            
-        user_data = {
-            'discord_tag': get_val('Discord tag', 'Discord Tag', 'DiscordTag') or str(user),
-            'discord_id': get_val('Discord ID', 'DiscordID', 'discord id', 'Captain Discord ID'),
-            'game_id': get_val('Game ID', 'GameID', 'game id', 'Captain Game ID'),
-            'game_name': get_val('Game Name', 'GameName', 'game name', 'Captain Game Name'),
-            'real_name': get_val('Real Life Name', 'RealName', 'Real Name'),
-            'country': get_val('Country', 'country'),
-            'title': get_val('Title', 'title', 'Captain Title'),
-            'level': get_val('Level', 'level'),
-            'status': get_val('Status', 'status'),
-            'screenshot_url': get_val('Game Profile Screenshot ( from Google drive image )', 'Game Profile Screenshot', 'Screenshot', 'screenshot')
-        }
-        
-        embed = discord.Embed(
-            title=f"🆔 {ORGANIZATION_NAME} ID Card",
-            description=f"**{user_data.get('game_name') or user.display_name}**'s Clan ID Card",
-            color=0xFFD700
-        )
-        embed.set_thumbnail(url=user.display_avatar.url)
-        
-        embed.add_field(name="Discord Name", value=user_data.get('discord_tag') or str(user), inline=True)
-        embed.add_field(name="Discord ID", value=user_data.get('discord_id') or str(user.id), inline=True)
-        embed.add_field(name="\u200b", value="\u200b", inline=True)
-        
-        embed.add_field(name="Game Name", value=user_data.get('game_name') or "N/A", inline=True)
-        embed.add_field(name="Game ID", value=user_data.get('game_id') or "N/A", inline=True)
-        embed.add_field(name="\u200b", value="\u200b", inline=True)
-        
-        embed.add_field(name="Real Name", value=user_data.get('real_name') or "N/A", inline=True)
-        embed.add_field(name="Country", value=user_data.get('country') or "N/A", inline=True)
-        embed.add_field(name="Title", value=user_data.get('title') or "N/A", inline=True)
-        
-        embed.add_field(name="Level", value=user_data.get('level') or "N/A", inline=True)
-        embed.add_field(name="Status", value=user_data.get('status') or "N/A", inline=True)
-        embed.add_field(name="\u200b", value="\u200b", inline=True)
-        
-        embed.timestamp = discord.utils.utcnow()
-        embed.set_footer(text=f"{ORGANIZATION_NAME} Tournament Bot")
-        
-        screenshot_url = user_data.get('screenshot_url')
-        file = None
-        if screenshot_url:
-            try:
-                if "drive.google.com" in screenshot_url:
-                    screenshot_url = convert_google_drive_url(screenshot_url)
-                
-                img_resp = requests.get(screenshot_url, timeout=10)
-                if img_resp.status_code == 200:
-                    file = discord.File(io.BytesIO(img_resp.content), filename="screenshot.png")
-                    embed.set_image(url="attachment://screenshot.png")
-                else:
-                    embed.set_image(url=screenshot_url)
-            except Exception as e:
-                print(f"[id_card] Error fetching screenshot: {e}")
-                embed.set_image(url=screenshot_url)
-                
-        if file:
-            await interaction.followup.send(embed=embed, file=file)
-        else:
-            await interaction.followup.send(embed=embed)
-            
-    except Exception as e:
-        await interaction.followup.send(f"❌ Error generating ID card: {str(e)}", ephemeral=True)
-        print(f"[id_card] Error: {e}")
 
 
 # ===========================================================================================
@@ -9990,6 +10197,186 @@ async def clear_cache(interaction: discord.Interaction):
     
     await interaction.followup.send("✅ Config, rules, and staff stats caches cleared successfully!")
 
+
+ROUND_OPTIONS = [
+    "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9", "D10",
+    "Semi-Final", "Final", "Bronze Match"
+]
+
+def parse_round_input(val: str) -> Optional[str]:
+    val_clean = val.strip().lower()
+    
+    # Check if integer
+    if val_clean.isdigit():
+        idx = int(val_clean)
+        if 1 <= idx <= 10:
+            return f"D{idx}"
+        elif idx == 11:
+            return "Semi-Final"
+        elif idx == 12:
+            return "Final"
+        elif idx == 13:
+            return "Bronze Match"
+            
+    # Check if exact/substring match
+    for opt in ROUND_OPTIONS:
+        if opt.lower() == val_clean:
+            return opt
+            
+    # Substring match fallback
+    for opt in ROUND_OPTIONS:
+        if val_clean in opt.lower():
+            return opt
+            
+    return None
+
+@tree.command(name="deadline", description="Sets a deadline and schedules automatic reminders (Head Organizer only)")
+@app_commands.describe(
+    round="Type a number (1-13) or select/type the round (D1-D10, Semi-Final, Final, Bronze Match)",
+    day="Day of the month for the deadline (1-31)",
+    month="Month for the deadline (1-12)",
+    year="Year for the deadline (e.g. 2026)",
+    hour="Hour for the deadline (0-23, UTC) - Default is 12",
+    minute="Minute for the deadline (0-59, UTC) - Default is 0"
+)
+@with_guild_context
+async def deadline(
+    interaction: discord.Interaction,
+    round: str,
+    day: int,
+    month: int,
+    year: int,
+    hour: int = 12,
+    minute: int = 0
+):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+        
+    if not has_organizer_permission(interaction):
+        await interaction.response.send_message("❌ You need **Head Organizer** role to manage deadlines.", ephemeral=True)
+        return
+        
+    await interaction.response.defer(ephemeral=True)
+    
+    round_name = parse_round_input(round)
+    if not round_name:
+        await interaction.followup.send(
+            "❌ Invalid round name. Please type a number (1-13) or choose/type one of:\n"
+            "D1, D2, D3, D4, D5, D6, D7, D8, D9, D10, Semi-Final, Final, Bronze Match.",
+            ephemeral=True
+        )
+        return
+        
+    try:
+        deadline_dt = datetime.datetime(year, month, day, hour, minute)
+    except ValueError:
+        await interaction.followup.send("❌ Invalid date/time values provided. Please enter a valid date.", ephemeral=True)
+        return
+        
+    deadline_dt = deadline_dt.replace(tzinfo=pytz.UTC)
+    now = datetime.datetime.now(pytz.UTC)
+    
+    if deadline_dt <= now:
+        await interaction.followup.send("❌ The deadline date must be in the future.", ephemeral=True)
+        return
+        
+    # Get deadline channel
+    t_cfg = get_active_tournament_config(interaction.guild_id)
+    channel_id = None
+    if t_cfg:
+        channel_id = t_cfg.get('deadline') or t_cfg.get('Deadline_Channel_ID')
+    if not channel_id:
+        cfg = get_guild_config(interaction.guild_id)
+        channel_id = cfg.get('channel_ids', {}).get('deadlines')
+        
+    if not channel_id:
+        await interaction.followup.send("❌ No deadline channel configured. Please configure it in your tournament/guild settings.", ephemeral=True)
+        return
+        
+    deadline_channel = interaction.guild.get_channel(int(channel_id))
+    if not deadline_channel:
+        try:
+            deadline_channel = await interaction.guild.fetch_channel(int(channel_id))
+        except Exception:
+            await interaction.followup.send("❌ Configured deadline channel not found or bot lacks permission to access it.", ephemeral=True)
+            return
+            
+    # Save the scheduled deadline
+    dl_id = f"dl_{round_name.lower().replace('-', '_').replace(' ', '_')}_{interaction.guild_id}"
+    
+    dl_data = {
+        'guild_id': interaction.guild_id,
+        'round': round_name,
+        'deadline_dt': deadline_dt
+    }
+    
+    # Save scheduled deadline (writes to Supabase and JSON backup)
+    save_scheduled_deadline(dl_id, dl_data)
+    
+    # Schedule background tasks
+    schedule_deadline_tasks(dl_id)
+    
+    deadline_date_str = deadline_dt.strftime("%d/%m/%Y")
+    deadline_time_str = deadline_dt.strftime("%H:%M UTC")
+    
+    # Post initial announcement to the Deadline channel
+    announce_embed = discord.Embed(
+        title="📢 Round Deadline Set",
+        description=f"A new deadline has been set for **Round {round_name}**.",
+        color=discord.Color(BRAND_COLOR),
+        timestamp=discord.utils.utcnow()
+    )
+    announce_embed.add_field(name="Round", value=round_name, inline=True)
+    announce_embed.add_field(name="Deadline Date & Time", value=f"{deadline_date_str} {deadline_time_str}", inline=True)
+    announce_embed.add_field(
+        name="Action Required", 
+        value="Please ensure you open your ticket and schedule your match time before this deadline. Automatic reminders will be sent to unscheduled captains.",
+        inline=False
+    )
+    announce_embed.set_footer(text=f"{interaction.guild.name} • Tournament Deadlines")
+    
+    try:
+        await deadline_channel.send(embed=announce_embed)
+    except Exception as e:
+        print(f"Failed to send initial deadline announcement to channel: {e}")
+        
+    await interaction.followup.send(
+        f"✅ Successfully scheduled deadline for **Round {round_name}** on **{deadline_date_str} {deadline_time_str}**.\n"
+        f"Reminders will be posted in {deadline_channel.mention} at 06:00 UTC one day before and on the deadline day.",
+        ephemeral=True
+    )
+
+@deadline.autocomplete('round')
+async def deadline_round_autocomplete(
+    interaction: discord.Interaction,
+    current: str
+) -> list[app_commands.Choice[str]]:
+    current_clean = current.strip().lower()
+    
+    choices = []
+    
+    # If digit
+    if current_clean.isdigit():
+        try:
+            idx = int(current_clean)
+            if 1 <= idx <= 10:
+                choices.append(app_commands.Choice(name=f"D{idx} (from number)", value=f"D{idx}"))
+            elif idx == 11:
+                choices.append(app_commands.Choice(name="Semi-Final (from number)", value="Semi-Final"))
+            elif idx == 12:
+                choices.append(app_commands.Choice(name="Final (from number)", value="Final"))
+            elif idx == 13:
+                choices.append(app_commands.Choice(name="Bronze Match (from number)", value="Bronze Match"))
+        except ValueError:
+            pass
+            
+    # Match strings
+    for opt in ROUND_OPTIONS:
+        if not current_clean or current_clean in opt.lower():
+            choices.append(app_commands.Choice(name=opt, value=opt))
+            
+    return choices[:25]
 
 bot.tree.add_command(tournament_group)
 bot.tree.add_command(auto_room_group)
