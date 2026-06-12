@@ -7926,7 +7926,17 @@ def stop_auto_room_loop(guild_id: int):
         task.cancel()
         print(f"⏹️ Stopped auto-room background loop for guild {guild_id}")
 
+@bot.event
+async def on_guild_join(guild: discord.Guild):
+    """Fires when the bot is added to a new server. Starts the auto-room loop for that guild."""
+    print(f"✅ Bot joined new guild: {guild.name} ({guild.id}) — starting auto-room loop...")
+    start_auto_room_loop(guild.id)
 
+@bot.event
+async def on_guild_remove(guild: discord.Guild):
+    """Fires when the bot is removed from a server. Stops the auto-room loop for that guild."""
+    print(f"❌ Bot removed from guild: {guild.name} ({guild.id}) — stopping auto-room loop...")
+    stop_auto_room_loop(guild.id)
 
 
 # ── Column name sets for player-info lookup ──────────────────────────────────
