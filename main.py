@@ -4808,7 +4808,7 @@ async def upload_score_winner_autocomplete(
     return choices[:25]
 
 
-NOTION_HELP_URL = "https://app.notion.com/p/Tournament-Bot-Help-Guide-37c8a2e4cbdf80af8e87d6a03b7db8e5?source=copy_link"
+NOTION_HELP_URL = "https://elated-chartreuse-9a7.notion.site/Tournament-Bot-Help-Guide-37c8a2e4cbdf80af8e87d6a03b7db8e5"
 
 @tree.command(name="help", description="Show all available bot commands and guide")
 @with_guild_context
@@ -4833,7 +4833,8 @@ async def help_command(interaction: discord.Interaction):
             "user":      "👤 Member",
         }
         badge = badge_map.get(permission_level, "👤 Member")
-        org_name = get_org_name(interaction.guild)
+        raw_org_name = get_org_name(interaction.guild)
+        org_name = raw_org_name if raw_org_name else (interaction.guild.name if interaction.guild else "Tournament Organizer")
         bot_icon = interaction.client.user.display_avatar.url if interaction.client.user.display_avatar else None
         user_icon = interaction.user.display_avatar.url if interaction.user.display_avatar else None
 
@@ -4844,11 +4845,7 @@ async def help_command(interaction: discord.Interaction):
                 f"══════════════════════════════════════\n"
                 f"🔰 **Your Access Level:** {badge}\n\n"
                 f"📚 All commands, usage examples and permissions are documented in our **Notion Help Guide**.\n\n"
-                f"🔗 **[Click here to open the Help Guide]({NOTION_HELP_URL})**\n"
-                f"══════════════════════════════════════\n"
-                f"📌 **Bracket:** [View Live Bracket]({get_link_bracket(interaction.guild)})\n"
-                f"⏰ **Deadlines:** [View Schedule]({get_link_deadline(interaction.guild)})\n"
-                f"📜 **Rules:** [Read Rules]({get_link_rules(interaction.guild)})"
+                f"🔗 **[Click here to open the Help Guide]({NOTION_HELP_URL})**"
             ),
             color=discord.Color(BRAND_COLOR),
             timestamp=discord.utils.utcnow()
@@ -4864,6 +4861,21 @@ async def help_command(interaction: discord.Interaction):
             embed.set_footer(text=footer_text)
 
         await interaction.response.send_message(embed=embed, ephemeral=False)
+
+        # Log to bot logs channel
+        try:
+            log_embed = discord.Embed(
+                title="📖 Help Command Used",
+                description=f"{interaction.user.mention} used `/help` and viewed the command guide.",
+                color=discord.Color(BRAND_COLOR),
+                timestamp=discord.utils.utcnow()
+            )
+            log_embed.add_field(name="👤 User", value=f"{interaction.user.display_name} (`{interaction.user.id}`)", inline=True)
+            log_embed.add_field(name="🔰 Access Level", value=badge, inline=True)
+            log_embed.set_footer(text=f"Help requested by {interaction.user.display_name}")
+            await log_bot_activity(interaction.guild, log_embed)
+        except Exception as log_err:
+            print(f"Error logging help command to bot_logs: {log_err}")
 
     except Exception as e:
         print(f"Error in help command: {e}")
