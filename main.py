@@ -1667,299 +1667,6 @@ def set_rules_content(content, user_id, username):
     }
     return True
 
-# Command data structure for help system
-COMMAND_DATA = {
-    "system": {
-        "title": "⚙️ System & Stats",
-        "description": "Core bot commands and statistics",
-        "commands": [
-            {
-                "name": "/help",
-                "description": "Display this comprehensive guide with role-based filtering",
-                "usage": "/help",
-                "permissions": "everyone",
-                "example": "`/help`"
-            },
-            {
-                "name": "/info",
-                "description": "Display bot information, ping, and server stats",
-                "usage": "/info",
-                "permissions": "everyone",
-                "example": "`/info`"
-            },
-            {
-                "name": "/staff-leaderboard",
-                "description": "Show top judges and recorders activity",
-                "usage": "/staff-leaderboard",
-                "permissions": "everyone",
-                "example": "`/staff-leaderboard`"
-            }
-        ]
-    },
-    "player": {
-        "title": "🎮 Player Commands",
-        "description": "Lookup stats, generate cards, or roll maps",
-        "commands": [
-            {
-                "name": "/player_information",
-                "description": "Look up player/team info from Google Sheet",
-                "usage": "/player_information user:<@member>",
-                "permissions": "everyone",
-                "example": "`/player_information user:@Roxanne`"
-            },
-            {
-                "name": "/id-card",
-                "description": "Generate custom Clan ID card with your profile info",
-                "usage": "/id-card user:<@member>",
-                "permissions": "everyone",
-                "example": "`/id-card user:@Mm`"
-            },
-            {
-                "name": "/maps",
-                "description": "Randomly select 3, 5, or 7 maps for gameplay",
-                "usage": "/maps pool:[3/5/7]",
-                "permissions": "everyone",
-                "example": "`/maps pool:3`"
-            },
-            {
-                "name": "/choose",
-                "description": "Make a random choice from comma-separated options",
-                "usage": "/choose options:<option1,option2,...>",
-                "permissions": "everyone",
-                "example": "`/choose options:MapA,MapB,MapC`"
-            },
-            {
-                "name": "/time",
-                "description": "Generate a random tournament match time slot",
-                "usage": "/time",
-                "permissions": "everyone",
-                "example": "`/time`"
-            }
-        ]
-    },
-    "judge": {
-        "title": "👨‍⚖️ Judge Commands",
-        "description": "Match officiating, scheduling, and score upload commands",
-        "commands": [
-            {
-                "name": "Take Schedule Button",
-                "description": "Assign yourself as the official judge for a match announcement",
-                "usage": "Click the green 'Take Schedule' button in the schedule channel",
-                "permissions": "judge / head_organizer",
-                "example": "Check the match schedule channel"
-            },
-            {
-                "name": "/available_events",
-                "description": "List scheduled matches needing a judge assigned",
-                "usage": "/available_events",
-                "permissions": "judge / helper / organizer",
-                "example": "`/available_events`"
-            },
-            {
-                "name": "/event-result",
-                "description": "Record official match outcome (supports disqualification & 0:0 uploads)",
-                "usage": "/event-result winner_score:<score> loser_score:<score> tournament:<name> round:<round> [winner:<@user>] [loser:<@user>] [disqualified:<Winner/Loser/Both>] [winner_team_name:<text>] [loser_team_name:<text>] [group:<A-J>] [remarks:<text>] [ss_1 - ss_11: screenshots]",
-                "permissions": "judge / organizer",
-                "example": "`/event-result winner_score:2 loser_score:1 tournament:Frigate S1 round:R1 winner:@Cap1 loser:@Cap2`"
-            },
-            {
-                "name": "/upload-score",
-                "description": "Upload match scores directly to Challonge bracket from Discord with autocomplete",
-                "usage": "/upload-score winner:<match_and_winner> winner_score:<score> loser_score:<score>",
-                "permissions": "judge / helper / organizer",
-                "example": "`/upload-score winner:\"Match123: TeamA VS TeamB (Winner: TeamA)\" winner_score:2 loser_score:1`"
-            },
-            {
-                "name": "/reassign",
-                "description": "Resign from an assigned match and notify other judges",
-                "usage": "/reassign",
-                "permissions": "judge / organizer",
-                "example": "Run in the specific match channel"
-            }
-        ]
-    },
-    "event_management": {
-        "title": "🏆 Event Management",
-        "description": "Match creation and scheduling tools",
-        "commands": [
-            {
-                "name": "/event-create",
-                "description": "Schedule a new match with group support",
-                "usage": "/event-create team_1_captain:<@user> team_2_captain:<@user> hour:<0-23> minute:<0-59> date:<1-31> month:<1-12> round:<round> tournament:<name> [group:<A-J/Winner/Loser>] [team_1_name:<text>] [team_2_name:<text>]",
-                "permissions": "helper / organizer",
-                "example": "`/event-create team_1_captain:@Cap1 team_2_captain:@Cap2 hour:18 minute:0 date:28 month:5 round:R1 tournament:VCT S1`"
-            },
-            {
-                "name": "/event-edit",
-                "description": "Edit details of the active match in the current ticket channel",
-                "usage": "/event-edit [team_1_captain:<@user>] [team_2_captain:<@user>] [hour:<0-23>] [minute:<0-59>] [date:<1-31>] [month:<1-12>] [round:<round>] [tournament:<name>] [group:<A-J>] [team_1_name:<text>] [team_2_name:<text>]",
-                "permissions": "helper / organizer",
-                "example": "Run `/event-edit round:R2 hour:20` inside the match ticket channel"
-            },
-            {
-                "name": "/event-delete",
-                "description": "Delete a scheduled match and its ticket channel (use with caution)",
-                "usage": "/event-delete",
-                "permissions": "helper / organizer",
-                "example": "Run `/event-delete` inside the match ticket channel"
-            },
-            {
-                "name": "/exchange",
-                "description": "Swap or change assigned Judge/Recorder for a match",
-                "usage": "/exchange role:[Judge/Recorder] old_user:<@user> new_user:<@user>",
-                "permissions": "helper / organizer",
-                "example": "`/exchange role:Judge old_user:@Judge1 new_user:@Judge2`"
-            },
-            {
-                "name": "/add_captain",
-                "description": "Add two captains to a match channel and automatically rename it",
-                "usage": "/add_captain round:<round> captain1:<@user> captain2:<@user> [team_1:<name>] [team_2:<name>]",
-                "permissions": "helper / organizer",
-                "example": "`/add_captain round:R1 captain1:@Cap1 captain2:@Cap2 team_1:Alpha team_2:Bravo`"
-            },
-            {
-                "name": "/general_tie_breaker",
-                "description": "Resolve ties between two teams using aggregate scores",
-                "usage": "/general_tie_breaker team1_score1:<n> team1_score2:<n> team2_score1:<n> team2_score2:<n>",
-                "permissions": "helper / organizer",
-                "example": "`/general_tie_breaker team1_score1:100 team1_score2:95 team2_score1:90 team2_score2:92`"
-            }
-        ]
-    },
-    "admin": {
-        "title": "⚙️ Admin & Setup",
-        "description": "Owner and Head Organizer system configurations",
-        "commands": [
-            {
-                "name": "/settings add",
-                "description": "Add role mappings and server-wide settings / branding parameters",
-                "usage": "/settings add [admin_role:<role>] [organizer_role:<role>] [helper_role:<role>] [judge_role:<role>] [recorder_role:<role>] [staff_role:<role>] [players_role:<role>] [server_name:<name>] [tournament_bot_name:<name>] [player_info_link:<url>] [player_info_format:<format>] [tournament_name:<name>]",
-                "permissions": "organizer / owner",
-                "example": "`/settings add admin_role:@Admin organizer_role:@Organizer`"
-            },
-            {
-                "name": "/settings edit",
-                "description": "Modify existing role mappings and server-wide settings / branding parameters",
-                "usage": "/settings edit [admin_role:<role>] [organizer_role:<role>] [helper_role:<role>] [judge_role:<role>] [recorder_role:<role>] [staff_role:<role>] [players_role:<role>] [server_name:<name>] [tournament_bot_name:<name>] [player_info_link:<url>] [player_info_format:<format>] [tournament_name:<name>]",
-                "permissions": "organizer / owner",
-                "example": "`/settings edit server_name:\"Task Force Trident\"`"
-            },
-            {
-                "name": "/settings show",
-                "description": "Display current bot settings, roles, channels, and tournament branding/links",
-                "usage": "/settings show",
-                "permissions": "organizer / owner",
-                "example": "`/settings show`"
-            },
-            {
-                "name": "/settings clean",
-                "description": "Reset all configuration data and local cache for this server",
-                "usage": "/settings clean",
-                "permissions": "organizer / owner",
-                "example": "`/settings clean`"
-            },
-            {
-                "name": "/tournament add",
-                "description": "Register a tournament configuration (channels, roles, state)",
-                "usage": "/tournament add name:<name> id:<id> [challonge_api_key:<key>] [challonge_bracket_link:<url>] [captains_sheet_link:<url>] [thumbnail_url:<url>] [admin_role:<role>] [helper_role:<role>] [attendance_channel:<ch>] [transcript_channel:<ch>] [rules_channel:<ch>] [deadline_channel:<ch>] [result_channel:<ch>] [auto_room_creation:<true/false>]",
-                "permissions": "organizer / owner",
-                "example": "`/tournament add name:\"VCT S1\" id:VCT_S1 challonge_api_key:abc123`"
-            },
-            {
-                "name": "/tournament edit",
-                "description": "Edit an existing tournament configuration or change its state",
-                "usage": "/tournament edit tournament:<id> [state:<pending/active/completed>] [challonge_api_key:<key>] [challonge_bracket_link:<url>] [captains_sheet_link:<url>] [thumbnail_url:<url>] [...other roles/channels]",
-                "permissions": "organizer / owner",
-                "example": "`/tournament edit tournament:VCT_S1 state:active challonge_bracket_link:https://challonge.com/vct_s1`"
-            },
-            {
-                "name": "/tournament delete",
-                "description": "Delete a tournament configuration and its local JSON/Supabase record",
-                "usage": "/tournament delete tournament:<id>",
-                "permissions": "organizer / owner",
-                "example": "`/tournament delete tournament:VCT_S1`"
-            },
-            {
-                "name": "/tournament list",
-                "description": "Display all tournament configurations for this server",
-                "usage": "/tournament list",
-                "permissions": "organizer / owner",
-                "example": "`/tournament list`"
-            },
-            {
-                "name": "/tournament info",
-                "description": "Get detailed configuration for a specific tournament",
-                "usage": "/tournament info tournament:<id>",
-                "permissions": "organizer / owner",
-                "example": "`/tournament info tournament:VCT_S1`"
-            },
-            {
-                "name": "/auto_room run",
-                "description": "Manually trigger the match ticket room creation sweep immediately",
-                "usage": "/auto_room run [tournament:<id>]",
-                "permissions": "organizer / owner",
-                "example": "`/auto_room run`"
-            },
-            {
-                "name": "/auto_room stop",
-                "description": "Stop automatic match ticket room creation for a tournament",
-                "usage": "/auto_room stop [tournament:<id>]",
-                "permissions": "organizer / owner",
-                "example": "`/auto_room stop`"
-            },
-            {
-                "name": "/auto_room toggle",
-                "description": "Toggle automatic match ticket room creation loop status",
-                "usage": "/auto_room toggle [tournament:<id>]",
-                "permissions": "organizer / owner",
-                "example": "`/auto_room toggle`"
-            },
-            {
-                "name": "/registration",
-                "description": "Publish a Google Form registration embed with a direct button",
-                "usage": "/registration",
-                "permissions": "organizer / owner",
-                "example": "`/registration`"
-            },
-            {
-                "name": "/publish-rules",
-                "description": "Write and publish tournament rules directly to guidelines",
-                "usage": "/publish-rules",
-                "permissions": "organizer / owner",
-                "example": "`/publish-rules`"
-            },
-            {
-                "name": "/test_channels",
-                "description": "Run diagnostic check on bot permissions in configured channels",
-                "usage": "/test_channels",
-                "permissions": "organizer / owner",
-                "example": "`/test_channels`"
-            },
-            {
-                "name": "/staff-update",
-                "description": "Manually update staff stats/points on the leaderboard",
-                "usage": "/staff-update staff_member:<@user> role:[Judge/Recorder] action:[Add/Subtract/Set] amount:<number>",
-                "permissions": "organizer / owner",
-                "example": "`/staff-update staff_member:@Judge1 role:Judge action:Add amount:1`"
-            },
-            {
-                "name": "/clear category",
-                "description": "Deletes all ticket channels in a specified category",
-                "usage": "/clear category category:<category>",
-                "permissions": "organizer / owner",
-                "example": "`/clear category category:Closed-Tickets`"
-            },
-            {
-                "name": "/clear cache",
-                "description": "Clear bot configuration and Challonge bracket caches",
-                "usage": "/clear cache",
-                "permissions": "organizer / owner",
-                "example": "`/clear cache`"
-            }
-        ]
-    }
-}
-
 def get_user_permission_level(user_roles, user_id: int = None, guild_id: int = None) -> str:
     """Determine user's permission level based on their Discord roles and guild configuration"""
     try:
@@ -1991,181 +1698,6 @@ def get_user_permission_level(user_roles, user_id: int = None, guild_id: int = N
     except Exception as e:
         print(f"Error determining user permission level: {e}")
         return "user"  # Default to basic user permissions
-
-def filter_commands_by_permission(permission_level: str) -> dict:
-    """Filter command data based on user's permission level"""
-    try:
-        filtered_data = {}
-        
-        # Everyone gets system and player commands
-        filtered_data["system"] = COMMAND_DATA["system"]
-        filtered_data["player"] = COMMAND_DATA["player"]
-        
-        # Role-specific commands
-        if permission_level in ["owner", "organizer"]:
-            # Bot Owner and Organizers get EVERYTHING
-            filtered_data["judge"] = COMMAND_DATA["judge"]
-            filtered_data["event_management"] = COMMAND_DATA["event_management"]
-            filtered_data["admin"] = COMMAND_DATA["admin"]
-        elif permission_level == "helper":
-            # Helpers get Event Management and Judge commands, but not admin
-            filtered_data["judge"] = COMMAND_DATA["judge"]
-            filtered_data["event_management"] = COMMAND_DATA["event_management"]
-        elif permission_level == "judge":
-            # Judges get Judge commands, and a customized version of Event Management
-            filtered_data["judge"] = COMMAND_DATA["judge"]
-            # Filter event management to show only what a judge can use
-            judge_event = {
-                "title": "🏆 Event Management (Judge)",
-                "description": "Event management commands available to judges",
-                "commands": [
-                    cmd for cmd in COMMAND_DATA["event_management"]["commands"]
-                    if cmd["name"] in ["/event-result", "/exchange"]
-                ]
-            }
-            if judge_event["commands"]:
-                filtered_data["event_management"] = judge_event
-                
-        return filtered_data
-    except Exception as e:
-        print(f"Error filtering commands by permission: {e}")
-        return {
-            "system": COMMAND_DATA["system"],
-            "player": COMMAND_DATA["player"]
-        }
-
-def build_help_embed(permission_level: str, user_name: str, guild: Optional[discord.Guild], bot_icon_url: str = None, user_icon_url: str = None, category_key: str = None) -> discord.Embed:
-    """Build a comprehensive help embed based on user's permission level"""
-    try:
-        filtered_commands = filter_commands_by_permission(permission_level)
-
-        if not category_key and filtered_commands:
-            category_key = list(filtered_commands.keys())[0]
-            
-        category_data = filtered_commands.get(category_key)
-        if not category_data:
-            raise ValueError(f"Category {category_key} not found")
-
-        # Permission-level badge with emoji
-        badge_map = {
-            "owner":     "👑 Bot Owner",
-            "organizer": "🏛️ Organiser",
-            "helper":    "🛡️ Helper",
-            "judge":     "⚖️ Judge",
-            "recorder":  "🎥 Recorder",
-            "user":      "👤 Member",
-        }
-        badge = badge_map.get(permission_level, "👤 Member")
-
-        org_name = get_org_name(guild)
-
-        embed = discord.Embed(
-            title=f"{category_data['title']}",
-            description=(
-                f"⚓ **{org_name} — Command Hub**\n"
-                f"══════════════════════════════════════\n"
-                f"🔰 **Access Level:** {badge}\n"
-                f"📌 **Bracket:** [View Live Bracket]({get_link_bracket(guild)})\n"
-                f"⏰ **Deadlines:** [View Schedule]({get_link_deadline(guild)})\n"
-                f"📜 **Rules:** [Read Rules]({get_link_rules(guild)})\n\n"
-                f"**Category Description:** *{category_data['description']}*\n"
-                f"══════════════════════════════════════"
-            ),
-            color=discord.Color(BRAND_COLOR),
-            timestamp=discord.utils.utcnow()
-        )
-
-        if bot_icon_url:
-            embed.set_thumbnail(url=bot_icon_url)
-
-        for cmd in category_data["commands"]:
-            desc = cmd['description']
-            perms = cmd['permissions']
-            usage = cmd.get('usage', cmd['name'])
-            example = cmd.get('example', '')
-
-            field_value = (
-                f"📖 *{desc}*\n"
-                f"🔑 **Permissions:** `{perms}`\n"
-                f"⚙️ **Usage:** `{usage}`"
-            )
-            if example:
-                field_value += f"\n💡 **Example:** `{example}`"
-                
-            if 'round_options' in cmd:
-                field_value += f"\n🔄 **Rounds:** {cmd['round_options']}"
-            if 'group_options' in cmd:
-                field_value += f"\n👥 **Groups:** {cmd['group_options']}"
-
-            embed.add_field(
-                name=f"🔹 {cmd['name']}",
-                value=field_value,
-                inline=False
-            )
-
-        footer_text = f"{org_name} • Help Hub • Requested by {user_name}"
-        if user_icon_url:
-            embed.set_footer(text=footer_text, icon_url=user_icon_url)
-        else:
-            embed.set_footer(text=footer_text)
-        return embed
-
-    except Exception as e:
-        print(f"Error building help embed: {e}")
-        org_name = get_org_name(guild)
-        embed = discord.Embed(
-            title="📖 Command Guide",
-            description="Error loading command information. Please try again.",
-            color=discord.Color(BRAND_COLOR),
-            timestamp=discord.utils.utcnow()
-        )
-        embed.set_footer(text=f"{org_name}")
-        return embed
-
-class HelpCategoryButton(discord.ui.Button):
-    def __init__(self, category_key: str, label: str, active: bool = False):
-        style = discord.ButtonStyle.primary if active else discord.ButtonStyle.secondary
-        super().__init__(style=style, label=label[:80], custom_id=f"help_cat_{category_key}")
-        self.category_key = category_key
-
-    async def callback(self, interaction: discord.Interaction):
-        if interaction.guild:
-            current_guild_id.set(interaction.guild.id)
-        await self.view.update_category(interaction, self.category_key)
-
-class HelpView(discord.ui.View):
-    def __init__(self, permission_level: str, user_name: str, guild: Optional[discord.Guild], bot_icon_url: str = None, user_icon_url: str = None):
-        super().__init__(timeout=300)
-        self.permission_level = permission_level
-        self.user_name = user_name
-        self.guild = guild
-        self.bot_icon_url = bot_icon_url
-        self.user_icon_url = user_icon_url
-        self.filtered_commands = filter_commands_by_permission(permission_level)
-        self.current_category = list(self.filtered_commands.keys())[0] if self.filtered_commands else "system"
-        self._add_buttons()
-
-    def _add_buttons(self):
-        self.clear_items()
-        for cat_key, cat_data in self.filtered_commands.items():
-            active = (cat_key == self.current_category)
-            title = cat_data.get("title", "Category")
-            self.add_item(HelpCategoryButton(cat_key, label=title, active=active))
-
-    async def update_category(self, interaction: discord.Interaction, category_key: str):
-        if interaction.guild:
-            current_guild_id.set(interaction.guild.id)
-        self.current_category = category_key
-        self._add_buttons()
-        embed = build_help_embed(
-            self.permission_level, 
-            self.user_name, 
-            interaction.guild,
-            self.bot_icon_url, 
-            self.user_icon_url,
-            self.current_category
-        )
-        await interaction.response.edit_message(embed=embed, view=self)
 
 def has_organizer_permission(interaction):
     """Check if user has organizer permissions for rule management"""
@@ -6681,6 +6213,152 @@ async def exchange(interaction: discord.Interaction, role: app_commands.Choice[s
         updated_count += 1
         
     await interaction.response.send_message(f"✅ {new_user.mention} is now the **{role.name}** for {updated_count} event(s), replacing {old_user.mention}.", ephemeral=True)
+
+
+# ===========================================================================================
+# ADD RECORD LINK COMMAND
+# ===========================================================================================
+
+@tree.command(name="add-record-link", description="Add a recording/VOD link for a match event (Recorder, Judge, or Helper)")
+@app_commands.describe(
+    link_type="Choose what type of link you are adding",
+    event_name="The event or match name this recording belongs to (e.g. TeamA vs TeamB R1)",
+    link="The recording link to paste (e.g. YouTube, Google Drive, etc.)"
+)
+@app_commands.choices(link_type=[
+    app_commands.Choice(name="Add Recorder Link", value="recorder"),
+    app_commands.Choice(name="Add Judge Link", value="judge"),
+])
+@with_guild_context
+async def add_record_link(
+    interaction: discord.Interaction,
+    link_type: app_commands.Choice[str],
+    event_name: str,
+    link: str
+):
+    """Allow Recorder, Judge, or Helper to submit a recording or VOD link for a match."""
+    if interaction.guild:
+        current_guild_id.set(interaction.guild.id)
+
+    # Permission check — Recorder, Judge, Helper, Organizer, or Bot Owner
+    is_owner = interaction.user.id == BOT_OWNER_ID
+    is_admin = interaction.guild and interaction.user.guild_permissions.administrator
+    cfg = get_guild_config(interaction.guild.id if interaction.guild else None)
+    role_ids = cfg.get("role_ids", DEFAULT_ROLE_IDS)
+
+    def safe_role_id(key):
+        val = role_ids.get(key)
+        try:
+            return int(val) if val is not None else None
+        except (ValueError, TypeError):
+            return None
+
+    user_role_ids = [r.id for r in interaction.user.roles] if hasattr(interaction.user, "roles") else []
+    allowed_roles = [
+        safe_role_id("recorder"),
+        safe_role_id("judge"),
+        safe_role_id("helper_team"),
+        safe_role_id("head_organizer"),
+        safe_role_id("organizer"),
+        safe_role_id("staff"),
+    ]
+    has_role = any(rid and rid in user_role_ids for rid in allowed_roles)
+
+    if not (is_owner or is_admin or has_role):
+        await interaction.response.send_message(
+            "❌ You need **Recorder**, **Judge**, **Helper**, or **Organizer** role to add a record link.",
+            ephemeral=True
+        )
+        return
+
+    # Basic URL validation
+    link_stripped = link.strip()
+    if not (link_stripped.startswith("http://") or link_stripped.startswith("https://")):
+        await interaction.response.send_message(
+            "❌ Please provide a valid URL starting with `http://` or `https://`.",
+            ephemeral=True
+        )
+        return
+
+    # Determine label and emoji based on link_type
+    if link_type.value == "recorder":
+        link_label = "🎥 Recorder Link"
+        link_emoji = "🎥"
+        role_label = "Recorder"
+    else:
+        link_label = "⚖️ Judge Link"
+        link_emoji = "⚖️"
+        role_label = "Judge"
+
+    # Try to find a matching event in scheduled_events to attach the link to
+    matched_event_id = None
+    for ev_id, ev_data in scheduled_events.items():
+        ev_name_stored = ev_data.get("tournament", "") + " " + ev_data.get("round", "")
+        t1 = ev_data.get("team1_captain")
+        t2 = ev_data.get("team2_captain")
+        t1_name = getattr(t1, "display_name", str(t1)) if t1 else ""
+        t2_name = getattr(t2, "display_name", str(t2)) if t2 else ""
+        # Match on any part of the event name provided
+        search_str = event_name.lower()
+        if (
+            search_str in ev_name_stored.lower()
+            or search_str in t1_name.lower()
+            or search_str in t2_name.lower()
+            or t1_name.lower() in search_str
+            or t2_name.lower() in search_str
+        ):
+            matched_event_id = ev_id
+            break
+
+    # Also try matching against current channel's event
+    if not matched_event_id and interaction.channel:
+        for ev_id, ev_data in scheduled_events.items():
+            if ev_data.get("channel_id") == interaction.channel.id:
+                matched_event_id = ev_id
+                break
+
+    # Store the link on the event if found
+    if matched_event_id and matched_event_id in scheduled_events:
+        key = "recorder_link" if link_type.value == "recorder" else "judge_link"
+        scheduled_events[matched_event_id][key] = link_stripped
+        save_scheduled_events()
+        event_saved_note = f"\n✅ Link saved to event record **`{matched_event_id}`**."
+    else:
+        event_saved_note = "\n⚠️ No matching event was found in schedule — link logged here only."
+
+    # Build embed response
+    embed = discord.Embed(
+        title=f"{link_emoji} {link_label} Added",
+        description=(
+            f"**Event / Match:** {event_name}\n"
+            f"**Submitted by:** {interaction.user.mention} ({role_label})\n"
+            f"**Link:** {link_stripped}"
+        ),
+        color=discord.Color.blurple() if link_type.value == "recorder" else discord.Color.orange(),
+        timestamp=discord.utils.utcnow()
+    )
+    embed.add_field(name="📋 Details", value=f"**Role:** {role_label}\n**Event Name:** {event_name}{event_saved_note}", inline=False)
+    embed.set_footer(text=f"{ORGANIZATION_NAME} • Record Link System • {interaction.user.display_name}")
+
+    # Post publicly in the current channel so all staff can see
+    await interaction.response.send_message(embed=embed)
+
+    # Also log to bot activity log
+    try:
+        log_embed = discord.Embed(
+            title=f"{link_emoji} Record Link Added",
+            description=(
+                f"**{role_label}** {interaction.user.display_name} submitted a {role_label.lower()} link.\n"
+                f"**Event:** {event_name}\n"
+                f"**Link:** {link_stripped}"
+            ),
+            color=discord.Color.blurple() if link_type.value == "recorder" else discord.Color.orange(),
+            timestamp=discord.utils.utcnow()
+        )
+        log_embed.set_footer(text=f"Submitted by {interaction.user.display_name}")
+        await log_bot_activity(interaction.guild, log_embed)
+    except Exception as log_err:
+        print(f"Error logging record link: {log_err}")
 
 
 @tree.command(name="event-edit", description="Edit the event in this ticket channel (Head Organizer/Head Helper/Helper Team only)")
