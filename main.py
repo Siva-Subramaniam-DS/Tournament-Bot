@@ -7142,6 +7142,7 @@ async def maps(interaction: discord.Interaction, count: int):
         "Two Samurai",
         "Stone Peaks",
         "Viking Bay",
+        "Rising Fortress",
         "Greenlands",
         "Old Storm"
     ]
