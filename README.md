@@ -1,4 +1,4 @@
-# ⚓ TASK FORCE TRIDENT — Discord Tournament Bot
+# ⚓ Discord Tournament Bot
 
 A premium, fully-featured Discord tournament management bot built for the **TASK FORCE TRIDENT** esports organisation. 
 Officiates events, synchronises schedules with Challonge brackets, records scores, tracks staff activity, and generates customized match event posters.
@@ -221,4 +221,4 @@ Use `/settings add` or `/settings edit` with parameters `player_info_link` and `
 
 ---
 
-*Built for **TASK FORCE TRIDENT** · Powered by discord.py and Supabase*
+*Built for **Discord Tournament Bot** · Powered by discord.py and Supabase*
