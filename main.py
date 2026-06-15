@@ -1685,13 +1685,22 @@ def get_user_permission_level(user_roles, user_id: int = None, guild_id: int = N
         
         member_role_ids = [role.id for role in user_roles]
         
-        if role_ids.get("head_organizer") in member_role_ids:
+        def has_role(role_key):
+            val = role_ids.get(role_key)
+            if not val:
+                return False
+            try:
+                return int(val) in member_role_ids
+            except (ValueError, TypeError):
+                return str(val) in [str(r) for r in member_role_ids]
+        
+        if has_role("head_organizer"):
             return "organizer"
-        elif role_ids.get("head_helper") in member_role_ids or role_ids.get("helper_team") in member_role_ids:
+        elif has_role("head_helper") or has_role("helper_team"):
             return "helper"
-        elif role_ids.get("judge") in member_role_ids:
+        elif has_role("judge"):
             return "judge"
-        elif role_ids.get("recorder") in member_role_ids:
+        elif has_role("recorder"):
             return "recorder"
         else:
             return "user"
@@ -2392,8 +2401,16 @@ class TakeScheduleButton(discord.ui.View):
                     if cdt == odt:
                         other_j = other_ev.get('judge')
                         other_r = other_ev.get('recorder')
-                        other_j_id = getattr(other_j, 'id', other_j) if other_j else None
-                        other_r_id = getattr(other_r, 'id', other_r) if other_r else None
+                        def safe_int_id(val):
+                            if not val:
+                                return None
+                            try:
+                                return int(getattr(val, 'id', val))
+                            except (ValueError, TypeError):
+                                return None
+
+                        other_j_id = safe_int_id(other_j)
+                        other_r_id = safe_int_id(other_r)
                         if user_id in (other_j_id, other_r_id):
                             await interaction.response.send_message("❌ You are already scheduled as staff (Judge/Recorder) for another match at this exact same time.", ephemeral=True)
                             return
@@ -2446,6 +2463,7 @@ class TakeScheduleButton(discord.ui.View):
 
             embed = interaction.message.embeds[0]
             embed.color = discord.Color.green()
+            update_embed_title_with_checkmark(embed)
             if not update_judge_field(embed, interaction.user):
                 # Restore button state on embed update failure
                 button.label = original_label
@@ -4662,7 +4680,8 @@ async def event_create(
     tournament: str,
     group: app_commands.Choice[str] = None,
     team_1_name: str = None,
-    team_2_name: str = None
+    team_2_name: str = None,
+    mode: str = None
 ):
     """Creates an event with the specified parameters"""
     if interaction.guild:
@@ -4720,6 +4739,7 @@ async def event_create(
         'group': group_label,
         'minutes_left': time_info['minutes_remaining'],
         'tournament': tournament,
+        'mode': mode,
         'judge': None,
         'channel_id': interaction.channel.id,
         'team1_captain': team_1_captain,
@@ -4886,6 +4906,8 @@ async def event_create(
     timestamp = int(event_datetime.replace(tzinfo=datetime.timezone.utc).timestamp())
     # Build event details text
     event_details = f"**Tournament:** {tournament}\n"
+    if mode:
+        event_details += f"**Mode:** {mode}\n"
     event_details += f"**UTC Time:** {time_info['utc_time']}\n"
     event_details += f"**Local Time:** <t:{timestamp}:F> (<t:{timestamp}:R>)\n"
     event_details += f"**Round:** {round_label}\n"
@@ -4907,14 +4929,14 @@ async def event_create(
     # Captains Section
     captains_text = f"**Captains**\n"
     if team_1_name:
-        captains_text += f"▪ Team 1: **{team_1_name}** ({team_1_captain.mention} @{team_1_captain.name})\n"
+        captains_text += f"- Team1 Captain: {team_1_captain.mention} @{team_1_captain.name} (Team: **{team_1_name}**)\n"
     else:
-        captains_text += f"▪ Team 1 Captain: {team_1_captain.mention} @{team_1_captain.name}\n"
+        captains_text += f"- Team1 Captain: {team_1_captain.mention} @{team_1_captain.name}\n"
         
     if team_2_name:
-        captains_text += f"▪ Team 2: **{team_2_name}** ({team_2_captain.mention} @{team_2_captain.name})"
+        captains_text += f"- Team2 Captain: {team_2_captain.mention} @{team_2_captain.name} (Team: **{team_2_name}**)"
     else:
-        captains_text += f"▪ Team 2 Captain: {team_2_captain.mention} @{team_2_captain.name}"
+        captains_text += f"- Team2 Captain: {team_2_captain.mention} @{team_2_captain.name}"
     embed.add_field(name="👑 Team Captains", value=captains_text, inline=False)
     
     # Add spacing
@@ -5147,9 +5169,18 @@ async def event_result(
         l_display_name = f"{l_name} (Disqualified)"
         l_display_mention = f"{l_mention} (Disqualified)"
 
+    # Try to find corresponding scheduled event to check if it had a mode
+    mode = None
+    for ev_id, ev_data in scheduled_events.items():
+        if ev_data.get('channel_id') == interaction.channel.id:
+            mode = ev_data.get('mode')
+            break
+
     # Create results embed matching the exact template format
     embed_description = f"🗓️ {w_display_name} Vs {l_display_name}\n"
     embed_description += f"**Tournament:** {tournament}\n"
+    if mode:
+        embed_description += f"**Mode:** {mode}\n"
     embed_description += f"**Round:** {round}"
     
     # Add group if specified
@@ -5167,8 +5198,8 @@ async def event_result(
 
     # Captains Section
     captains_text = f"**Captains**\n"
-    captains_text += f"▪ Team1 Captain: {w_display_mention}" + (f" `@{winner.name}`" if winner else "") + "\n"
-    captains_text += f"▪ Team2 Captain: {l_display_mention}" + (f" `@{loser.name}`" if loser else "")
+    captains_text += f"- Team1 Captain: {w_display_mention}" + (f" @{winner.name}" if winner else "") + "\n"
+    captains_text += f"- Team2 Captain: {l_display_mention}" + (f" @{loser.name}" if loser else "")
     embed.add_field(name="", value=captains_text, inline=False)
     
     # Results Section
@@ -5775,8 +5806,14 @@ async def reassign_command(interaction: discord.Interaction):
     user_events = []
     for event_id, event_data in scheduled_events.items():
         judge_val = event_data.get('judge')
-        if judge_val and getattr(judge_val, 'id', judge_val) == interaction.user.id:
-            user_events.append((event_id, event_data))
+        if judge_val:
+            try:
+                j_id = int(getattr(judge_val, 'id', judge_val))
+                if j_id == interaction.user.id:
+                    user_events.append((event_id, event_data))
+            except (ValueError, TypeError):
+                if str(getattr(judge_val, 'id', judge_val)) == str(interaction.user.id):
+                    user_events.append((event_id, event_data))
 
     if not user_events:
         await interaction.response.send_message("❌ You are not assigned to any events.", ephemeral=True)
@@ -5845,10 +5882,20 @@ async def reassign_command(interaction: discord.Interaction):
 
             t1 = event_data.get('team1_captain')
             t2 = event_data.get('team2_captain')
-            t1_id = getattr(t1, 'id', t1) if t1 else None
-            t2_id = getattr(t2, 'id', t2) if t2 else None
-            mem_1 = select_interaction.guild.get_member(int(t1_id)) if t1_id else t1
-            mem_2 = select_interaction.guild.get_member(int(t2_id)) if t2_id else t2
+            
+            def get_member_safe(val):
+                if not val:
+                    return None
+                if isinstance(val, discord.Member):
+                    return val
+                try:
+                    val_id = int(getattr(val, 'id', val))
+                    return select_interaction.guild.get_member(val_id)
+                except (ValueError, TypeError):
+                    return None
+                    
+            mem_1 = get_member_safe(t1)
+            mem_2 = get_member_safe(t2)
 
             if sched_channel and msg_id:
                 try:
@@ -5858,6 +5905,8 @@ async def reassign_command(interaction: discord.Interaction):
                         # Remove judge field so it shows as open again
                         remove_field_by_name(embed, "👨‍⚖️ Judge")
                         embed.color = discord.Color.blue()
+                        if embed.title and embed.title.startswith("✅"):
+                            embed.title = embed.title[1:]
                         # Restore Take Schedule + Record buttons
                         new_view = TakeScheduleButton(selected_event_id, mem_1 or t1, mem_2 or t2, sched_channel)
                         await msg.edit(embed=embed, view=new_view)
@@ -6427,7 +6476,8 @@ async def event_edit(
     tournament: str = None,
     group: app_commands.Choice[str] = None,
     team_1_name: str = None,
-    team_2_name: str = None
+    team_2_name: str = None,
+    mode: str = None
 ):
     """Edit the event in this ticket channel"""
     if interaction.guild:
@@ -6458,7 +6508,7 @@ async def event_edit(
         return
     
     # Check if at least one field is provided
-    if not any([team_1_captain, team_2_captain, hour is not None, minute is not None, date is not None, month is not None, round, tournament, group, team_1_name is not None, team_2_name is not None]):
+    if not any([team_1_captain, team_2_captain, hour is not None, minute is not None, date is not None, month is not None, round, tournament, group, team_1_name is not None, team_2_name is not None, mode is not None]):
         await interaction.followup.send("❌ Please provide at least one field to update.", ephemeral=True)
         return
     
@@ -6517,6 +6567,8 @@ async def event_edit(
             event_to_edit['tournament'] = tournament
         if group:
             event_to_edit['group'] = group.value
+        if mode is not None:
+            event_to_edit['mode'] = mode
         
         # Save updated events
         save_scheduled_events()
@@ -6695,6 +6747,8 @@ async def event_edit(
 
         timestamp_val = int(new_datetime.replace(tzinfo=datetime.timezone.utc).timestamp())
         event_details_text = f"**Tournament:** {tournament_info}\n"
+        if event_to_edit.get('mode'):
+            event_details_text += f"**Mode:** {event_to_edit.get('mode')}\n"
         event_details_text += f"**UTC Time:** {time_info['utc_time']}\n"
         event_details_text += f"**Local Time:** <t:{timestamp_val}:F> (<t:{timestamp_val}:R>)\n"
         event_details_text += f"**Round:** {round_info}\n"
@@ -6713,14 +6767,14 @@ async def event_edit(
         
         captains_text = f"**Captains**\n"
         if event_to_edit.get('team1_name'):
-            captains_text += f"▪ Team 1: **{event_to_edit.get('team1_name')}** ({t1_mention} `@{t1_name}`)\n"
+            captains_text += f"- Team1 Captain: {t1_mention} @{t1_name} (Team: **{event_to_edit.get('team1_name')}**)\n"
         else:
-            captains_text += f"▪ Team 1 Captain: {t1_mention} `@{t1_name}`\n"
+            captains_text += f"- Team1 Captain: {t1_mention} @{t1_name}\n"
             
         if event_to_edit.get('team2_name'):
-            captains_text += f"▪ Team 2: **{event_to_edit.get('team2_name')}** ({t2_mention} `@{t2_name}`)"
+            captains_text += f"- Team2 Captain: {t2_mention} @{t2_name} (Team: **{event_to_edit.get('team2_name')}**)"
         else:
-            captains_text += f"▪ Team 2 Captain: {t2_mention} `@{t2_name}`"
+            captains_text += f"- Team2 Captain: {t2_mention} @{t2_name}"
             
         schedule_embed.add_field(name="👑 Team Captains", value=captains_text, inline=False)
         schedule_embed.add_field(name="\u200b", value="\u200b", inline=False)
@@ -9181,7 +9235,28 @@ async def resolve_embed_thumbnail(guild_id: int, embed: discord.Embed, fallback_
             except Exception as e:
                 print(f"Error resolving thumbnail from channel {thumb_chan_id}: {e}")
                 
-    # 2. Try configured server logo
+    # 2. Try template image from Templates folder (random choice, resized to thumbnail)
+    template_path = get_random_template()
+    if template_path and os.path.exists(template_path):
+        try:
+            with Image.open(template_path) as img:
+                img.thumbnail((200, 200), Image.Resampling.LANCZOS)
+                thumb_bytes = io.BytesIO()
+                fmt = img.format if img.format else "PNG"
+                img.save(thumb_bytes, format=fmt)
+                thumb_bytes.seek(0)
+            ext = os.path.splitext(template_path)[1].lower() or ".png"
+            file_name = f"thumbnail{ext}"
+            embed.set_thumbnail(url=f"attachment://{file_name}")
+            file_obj = discord.File(
+                fp=thumb_bytes,
+                filename=file_name
+            )
+            return file_obj, True
+        except Exception as e:
+            print(f"Error processing template {template_path} for thumbnail: {e}")
+
+    # 3. Try configured server logo
     cfg = get_guild_config(guild_id)
     logo_filename = cfg.get('server_logo_path')
     if logo_filename and os.path.exists(logo_filename):
@@ -9197,7 +9272,7 @@ async def resolve_embed_thumbnail(guild_id: int, embed: discord.Embed, fallback_
         except Exception as e:
             print(f"Error loading server logo path {logo_filename}: {e}")
 
-    # 3. Try default bundled tournament logo
+    # 4. Try default bundled tournament logo
     default_logo_path = os.path.join(BASE_DIR, "tournament_bot_logo.png")
     if os.path.exists(default_logo_path):
         try:
@@ -9278,11 +9353,35 @@ async def build_tournament_embed(interaction: discord.Interaction, t_data: dict,
         embed.set_thumbnail(url=thumb_url)
         thumb_str = f"[Image Link]({thumb_url}) (from {chan_mention('thumbnail')})"
     else:
-        # Fall back to local file attachment
-        embed.set_thumbnail(url="attachment://tournament_bot_logo.png")
-        if os.path.exists("tournament_bot_logo.png"):
-            file = discord.File("tournament_bot_logo.png", filename="tournament_bot_logo.png")
-        thumb_str = f"Default Logo (Channel: {chan_mention('thumbnail')})"
+        # Try a template image from Templates folder
+        template_path = get_random_template()
+        if template_path and os.path.exists(template_path):
+            try:
+                from PIL import Image
+                with Image.open(template_path) as img:
+                    img.thumbnail((200, 200), Image.Resampling.LANCZOS)
+                    thumb_bytes = io.BytesIO()
+                    fmt = img.format if img.format else "PNG"
+                    img.save(thumb_bytes, format=fmt)
+                    thumb_bytes.seek(0)
+                ext = os.path.splitext(template_path)[1].lower() or ".png"
+                file_name = f"thumbnail{ext}"
+                embed.set_thumbnail(url=f"attachment://{file_name}")
+                file = discord.File(fp=thumb_bytes, filename=file_name)
+                thumb_str = f"Template: {os.path.basename(template_path)} (Channel: {chan_mention('thumbnail')})"
+            except Exception as e:
+                print(f"Error processing template {template_path} for config thumbnail: {e}")
+                # Fall back to local file attachment
+                embed.set_thumbnail(url="attachment://tournament_bot_logo.png")
+                if os.path.exists("tournament_bot_logo.png"):
+                    file = discord.File("tournament_bot_logo.png", filename="tournament_bot_logo.png")
+                thumb_str = f"Default Logo (Channel: {chan_mention('thumbnail')})"
+        else:
+            # Fall back to local file attachment
+            embed.set_thumbnail(url="attachment://tournament_bot_logo.png")
+            if os.path.exists("tournament_bot_logo.png"):
+                file = discord.File("tournament_bot_logo.png", filename="tournament_bot_logo.png")
+            thumb_str = f"Default Logo (Channel: {chan_mention('thumbnail')})"
 
     # Row 1: Tournament ID | State | Key
     embed.add_field(name="🆔 Tournament ID",   value=f"`{t_data['id']}`",    inline=True)
