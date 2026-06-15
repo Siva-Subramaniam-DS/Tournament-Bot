@@ -3331,6 +3331,9 @@ def get_font_with_fallbacks(font_name: str, size: int, font_style: str = "regula
         "C:/Windows/Fonts/impact.ttf",
         "C:/Windows/Fonts/consola.ttf",
         "C:/Windows/Fonts/trebucbd.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
     ]
     font_candidates.extend(system_fonts)
     
@@ -3376,16 +3379,24 @@ def sanitize_username_for_poster(username: str) -> str:
 def get_random_template():
     """Get a random template image from the Templates folder"""
     template_path = os.path.join(BASE_DIR, "Templates")
+    image_files = []
     if os.path.exists(template_path):
         # Get all image files
         image_extensions = ['*.jpg', '*.jpeg', '*.png', '*.gif']
-        image_files = []
         for ext in image_extensions:
             image_files.extend(glob.glob(os.path.join(template_path, ext)))
             image_files.extend(glob.glob(os.path.join(template_path, ext.upper())))
+            
+    # Fallback to root templates/banners if Templates folder is empty or missing
+    if not image_files:
+        fallback_banners = ["tournament_bot_banner.png", "banner.png"]
+        for fb in fallback_banners:
+            fb_path = os.path.join(BASE_DIR, fb)
+            if os.path.exists(fb_path):
+                image_files.append(fb_path)
         
-        if image_files:
-            return random.choice(image_files)
+    if image_files:
+        return random.choice(image_files)
     return None
 
 def create_event_poster(template_path: str, round_label: str, team1_captain: str, team2_captain: str, utc_time: str, date_str: str = None, server_name: str = "Tournament Organizer") -> str:
@@ -4867,14 +4878,7 @@ async def event_create(
         color=discord.Color.blue(),
         timestamp=discord.utils.utcnow()
     )
-    if team_1_captain and hasattr(team_1_captain, 'display_avatar'):
-        # Use tournament thumbnail if available, otherwise fall back to captain avatar
-        _t_cfg_schedule = get_active_tournament_config(interaction.guild_id)
-        _thumb_url = _t_cfg_schedule.get('thumbnail_url') if _t_cfg_schedule else None
-        if _thumb_url:
-            embed.set_thumbnail(url=_thumb_url)
-        else:
-            embed.set_thumbnail(url=team_1_captain.display_avatar.url)
+    thumb_file, is_local_thumb = await resolve_embed_thumbnail(interaction.guild_id, embed, fallback_to_captain_avatar=team_1_captain)
 
     
     # Tournament and Time Information
@@ -4919,13 +4923,22 @@ async def event_create(
     embed.add_field(name="👤 Created By", value=interaction.user.mention, inline=False)
     
     # Add poster image if available
-    if poster_image:
+    files_to_send = []
+    if poster_image and os.path.exists(poster_image):
         try:
             with open(poster_image, 'rb') as f:
-                file = discord.File(f, filename="event_poster.png")
-                embed.set_image(url="attachment://event_poster.png")
+                poster_data = f.read()
+            file_obj = discord.File(
+                fp=io.BytesIO(poster_data),
+                filename="event_poster.png"
+            )
+            embed.set_image(url="attachment://event_poster.png")
+            files_to_send.append(file_obj)
         except Exception as e:
             print(f"Error loading poster image: {e}")
+            
+    if is_local_thumb and thumb_file:
+        files_to_send.append(thumb_file)
     
     embed.set_footer(text=f"Powered by • {ORGANIZATION_NAME}")
     
@@ -4941,10 +4954,17 @@ async def event_create(
         if schedule_channel:
             staff_role_id = ROLE_IDS.get('staff')
             staff_ping = f"<@&{staff_role_id}>" if staff_role_id else ("<@&" + str(ROLE_IDS['judge']) + ">" if ROLE_IDS.get('judge') else "@Staff")
-            if poster_image:
-                with open(poster_image, 'rb') as f:
-                    file = discord.File(f, filename="event_poster.png")
-                    schedule_message = await schedule_channel.send(content=staff_ping, embed=embed, file=file, view=take_schedule_view)
+            if files_to_send:
+                # Create copies of files for schedule channel
+                schedule_files = []
+                for file_obj in files_to_send:
+                    file_obj.fp.seek(0)
+                    file_data = file_obj.fp.read()
+                    schedule_files.append(discord.File(
+                        fp=io.BytesIO(file_data),
+                        filename=file_obj.filename
+                    ))
+                schedule_message = await schedule_channel.send(content=staff_ping, embed=embed, files=schedule_files, view=take_schedule_view)
             else:
                 schedule_message = await schedule_channel.send(content=staff_ping, embed=embed, view=take_schedule_view)
             
@@ -4959,10 +4979,17 @@ async def event_create(
     
     # Post in the channel where command was used (without button)
     try:
-        if poster_image:
-            with open(poster_image, 'rb') as f:
-                file = discord.File(f, filename="event_poster.png")
-                await interaction.channel.send(embed=embed, file=file)
+        if files_to_send:
+            # Create copies of files for current channel
+            current_files = []
+            for file_obj in files_to_send:
+                file_obj.fp.seek(0)
+                file_data = file_obj.fp.read()
+                current_files.append(discord.File(
+                    fp=io.BytesIO(file_data),
+                    filename=file_obj.filename
+                ))
+            await interaction.channel.send(embed=embed, files=current_files)
         else:
             await interaction.channel.send(embed=embed)
 
@@ -5136,18 +5163,7 @@ async def event_result(
         timestamp=discord.utils.utcnow()
     )
 
-    # Add thumbnail from active tournament config or fallback to bot logo
-    use_fallback_logo = False
-    try:
-        _t_cfg_result = get_active_tournament_config(interaction.guild.id)
-        _thumb_url_result = _t_cfg_result.get('thumbnail_url') if _t_cfg_result else None
-        if _thumb_url_result:
-            embed.set_thumbnail(url=_thumb_url_result)
-        elif os.path.exists(os.path.join(BASE_DIR, "tournament_bot_logo.png")):
-            embed.set_thumbnail(url="attachment://tournament_bot_logo.png")
-            use_fallback_logo = True
-    except Exception:
-        pass
+    thumb_file, is_local_thumb = await resolve_embed_thumbnail(interaction.guild.id, embed)
 
     # Captains Section
     captains_text = f"**Captains**\n"
@@ -5187,18 +5203,9 @@ async def event_result(
     files_to_send = []
     screenshot_names = []
     
-    # Add fallback logo file if needed for embed thumbnail
-    if use_fallback_logo:
-        try:
-            with open(os.path.join(BASE_DIR, "tournament_bot_logo.png"), "rb") as logo_file:
-                logo_data = logo_file.read()
-                file_obj = discord.File(
-                    fp=io.BytesIO(logo_data),
-                    filename="tournament_bot_logo.png"
-                )
-                files_to_send.append(file_obj)
-        except Exception as e:
-            print(f"Error reading tournament_bot_logo.png for embed thumbnail: {e}")
+    # Add local logo file if needed for embed thumbnail
+    if is_local_thumb and thumb_file:
+        files_to_send.append(thumb_file)
             
     # Find matching scheduled event to fetch its poster
     matching_event = None
@@ -6684,14 +6691,7 @@ async def event_edit(
             color=discord.Color.blue(),
             timestamp=discord.utils.utcnow()
         )
-        if isinstance(t1_cap_member, discord.Member) and hasattr(t1_cap_member, 'display_avatar'):
-            # Use tournament thumbnail if available, otherwise fall back to captain avatar
-            _t_cfg_edit = get_active_tournament_config(interaction.guild.id)
-            _thumb_url_edit = _t_cfg_edit.get('thumbnail_url') if _t_cfg_edit else None
-            if _thumb_url_edit:
-                schedule_embed.set_thumbnail(url=_thumb_url_edit)
-            else:
-                schedule_embed.set_thumbnail(url=t1_cap_member.display_avatar.url)
+        thumb_file, is_local_thumb = await resolve_embed_thumbnail(interaction.guild.id, schedule_embed, fallback_to_captain_avatar=t1_cap_member)
 
         timestamp_val = int(new_datetime.replace(tzinfo=datetime.timezone.utc).timestamp())
         event_details_text = f"**Tournament:** {tournament_info}\n"
@@ -6726,6 +6726,24 @@ async def event_edit(
         schedule_embed.add_field(name="\u200b", value="\u200b", inline=False)
         schedule_embed.set_footer(text=f"Powered by • {ORGANIZATION_NAME}")
         
+        # Prepare files to send
+        files_to_send = []
+        if poster_image and os.path.exists(poster_image):
+            try:
+                with open(poster_image, 'rb') as f:
+                    poster_data = f.read()
+                file_obj = discord.File(
+                    fp=io.BytesIO(poster_data),
+                    filename="event_poster.png"
+                )
+                schedule_embed.set_image(url="attachment://event_poster.png")
+                files_to_send.append(file_obj)
+            except Exception as e:
+                print(f"Error loading poster image for schedule edit: {e}")
+                
+        if is_local_thumb and thumb_file:
+            files_to_send.append(thumb_file)
+        
         # Delete old message
         old_msg_id = event_to_edit.get('schedule_message_id')
         old_ch_id = event_to_edit.get('schedule_channel_id')
@@ -6749,11 +6767,17 @@ async def event_edit(
             schedule_channel = _sched_ch_edit
             if schedule_channel:
                 judge_ping = f"<@&{ROLE_IDS['judge']}>"
-                if poster_image:
-                    with open(poster_image, 'rb') as f:
-                        file = discord.File(f, filename="event_poster.png")
-                        schedule_embed.set_image(url="attachment://event_poster.png")
-                        schedule_message = await schedule_channel.send(content=judge_ping, embed=schedule_embed, file=file, view=take_schedule_view)
+                if files_to_send:
+                    # Create copies of files for schedule channel
+                    schedule_files = []
+                    for file_obj in files_to_send:
+                        file_obj.fp.seek(0)
+                        file_data = file_obj.fp.read()
+                        schedule_files.append(discord.File(
+                            fp=io.BytesIO(file_data),
+                            filename=file_obj.filename
+                        ))
+                    schedule_message = await schedule_channel.send(content=judge_ping, embed=schedule_embed, files=schedule_files, view=take_schedule_view)
                 else:
                     schedule_message = await schedule_channel.send(content=judge_ping, embed=schedule_embed, view=take_schedule_view)
                 
@@ -6785,13 +6809,9 @@ async def event_edit(
             color=discord.Color.blue(),
             timestamp=discord.utils.utcnow()
         )
-        # Thumbnail: tournament config > captain avatar
-        _t_cfg_edit2 = get_active_tournament_config(interaction.guild.id)
-        _thumb_url_edit2 = _t_cfg_edit2.get('thumbnail_url') if _t_cfg_edit2 else None
-        if _thumb_url_edit2:
-            embed.set_thumbnail(url=_thumb_url_edit2)
-        elif t1_cap_member and isinstance(t1_cap_member, discord.Member):
-            embed.set_thumbnail(url=t1_cap_member.display_avatar.url)
+        await resolve_embed_thumbnail(interaction.guild.id, embed, fallback_to_captain_avatar=t1_cap_member)
+        if poster_image:
+            embed.set_image(url="attachment://event_poster.png")
 
         # Event Details
         event_details = f"**Tournament:** {tournament_info}\n"
@@ -6812,20 +6832,21 @@ async def event_edit(
         embed.add_field(name="✏️ Updated By", value=interaction.user.mention, inline=False)
         embed.set_footer(text=f"Powered by • {ORGANIZATION_NAME}")
 
-        # Post with poster if available
-        if poster_image:
-            try:
-                with open(poster_image, 'rb') as f:
-                    file = discord.File(f, filename="event_poster.png")
-                    embed.set_image(url="attachment://event_poster.png")
-                    await interaction.channel.send(embed=embed, file=file)
-            except Exception as e:
-                print(f"Error sending updated poster to ticket channel: {e}")
-                await interaction.channel.send(embed=embed)
+        # Post in ticket channel (where command was run)
+        if files_to_send:
+            # Create copies of files for current channel
+            current_files = []
+            for file_obj in files_to_send:
+                file_obj.fp.seek(0)
+                file_data = file_obj.fp.read()
+                current_files.append(discord.File(
+                    fp=io.BytesIO(file_data),
+                    filename=file_obj.filename
+                ))
+            await interaction.channel.send(embed=embed, files=current_files)
         else:
             await interaction.channel.send(embed=embed)
 
-        
         # Send private confirmation to the user who edited
         await interaction.followup.send("✅ Event updated successfully, ticket channel renamed, and posted in the channel!", ephemeral=True)
         
@@ -7471,7 +7492,7 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                             overwrites[staff_r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
                             
                 cfg = get_guild_config(guild.id)
-                for role_key in ["head_organizer", "head_helper", "helper_team", "judge", "recorder", "staff"]:
+                for role_key in ["head_organizer", "organizer", "head_helper", "helper_team"]:
                     if r_id := cfg.get('role_ids', {}).get(role_key):
                         try:
                             r_id = int(r_id)
@@ -8191,19 +8212,21 @@ async def player_information(interaction: discord.Interaction, user: discord.Mem
     """
     await interaction.response.defer()
 
-    if not PLAYER_INFO_LINK:
+    # Convert DynamicString to actual string
+    link_str = str(PLAYER_INFO_LINK)
+    if not link_str:
         await interaction.followup.send(
             "❌ Player info sheet is not configured yet. Ask an organizer to configure it in `/settings`."
         )
         return
 
-    sheet_match = re.search(r'/d/([a-zA-Z0-9-_]+)', PLAYER_INFO_LINK)
+    sheet_match = re.search(r'/d/([a-zA-Z0-9-_]+)', link_str)
     if not sheet_match:
         await interaction.followup.send("❌ Invalid Google Sheet link in config.")
         return
 
     sheet_id = sheet_match.group(1)
-    gid_match = re.search(r'[#&?]gid=([0-9]+)', PLAYER_INFO_LINK)
+    gid_match = re.search(r'[#&?]gid=([0-9]+)', link_str)
     gid = gid_match.group(1) if gid_match else None
     url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
     if gid:
@@ -8241,14 +8264,16 @@ async def player_information(interaction: discord.Interaction, user: discord.Mem
             )
             return
 
-        is_1v1 = (PLAYER_INFO_FORMAT == "1 vs 1")
+        # Convert DynamicString to actual string
+        info_format = str(PLAYER_INFO_FORMAT)
+        is_1v1 = (info_format == "1 vs 1")
 
         # ── 1 vs 1 Layout ──────────────────────────────────────────────────────
         if is_1v1:
             text_lines = [
                 "🎮 **PLAYER INFORMATION**",
                 f"Player: {user.mention}",
-                f"**Format:** {PLAYER_INFO_FORMAT}",
+                f"**Format:** {info_format}",
                 "───────────────────────────"
             ]
 
@@ -8316,7 +8341,7 @@ async def player_information(interaction: discord.Interaction, user: discord.Mem
         else:
             try:
                 # Find the first number in the format string (e.g. "3 vs 3" -> 3, "4vs4" -> 4)
-                match = re.search(r'\d+', PLAYER_INFO_FORMAT)
+                match = re.search(r'\d+', info_format)
                 team_size = int(match.group()) if match else 5
             except Exception:
                 team_size = 5
@@ -8324,7 +8349,7 @@ async def player_information(interaction: discord.Interaction, user: discord.Mem
             text_lines = [
                 "🏆 **TEAM INFORMATION**",
                 f"Captain: {user.mention}",
-                f"**Format:** {PLAYER_INFO_FORMAT}",
+                f"**Format:** {info_format}",
                 "───────────────────────────"
             ]
 
@@ -9131,6 +9156,68 @@ async def get_thumbnail_url_from_channel(channel_id: Optional[int]) -> Optional[
     except Exception as e:
         print(f"Error fetching thumbnail from channel {channel_id}: {e}")
     return None
+
+async def resolve_embed_thumbnail(guild_id: int, embed: discord.Embed, fallback_to_captain_avatar: Optional[discord.Member] = None) -> tuple[Optional[discord.File], bool]:
+    """
+    Resolves the thumbnail for a tournament/match embed.
+    Order of precedence:
+    1. Active tournament's thumbnail (resolved from the configured thumbnail channel)
+    2. Configured server logo (server_logo_{guild_id}.png)
+    3. Bundled fallback logo (tournament_bot_logo.png)
+    4. Captain's avatar (if fallback_to_captain_avatar is provided)
+    
+    Returns a tuple: (discord.File if local image is used, bool indicating if a local image attachment was used)
+    """
+    # 1. Try active tournament's thumbnail channel
+    t_cfg = get_active_tournament_config(guild_id)
+    if t_cfg:
+        thumb_chan_id = t_cfg.get('thumbnail')
+        if thumb_chan_id:
+            try:
+                thumb_url = await get_thumbnail_url_from_channel(int(thumb_chan_id))
+                if thumb_url:
+                    embed.set_thumbnail(url=thumb_url)
+                    return None, False
+            except Exception as e:
+                print(f"Error resolving thumbnail from channel {thumb_chan_id}: {e}")
+                
+    # 2. Try configured server logo
+    cfg = get_guild_config(guild_id)
+    logo_filename = cfg.get('server_logo_path')
+    if logo_filename and os.path.exists(logo_filename):
+        try:
+            with open(logo_filename, "rb") as f:
+                logo_data = f.read()
+            embed.set_thumbnail(url="attachment://server_logo.png")
+            file_obj = discord.File(
+                fp=io.BytesIO(logo_data),
+                filename="server_logo.png"
+            )
+            return file_obj, True
+        except Exception as e:
+            print(f"Error loading server logo path {logo_filename}: {e}")
+
+    # 3. Try default bundled tournament logo
+    default_logo_path = os.path.join(BASE_DIR, "tournament_bot_logo.png")
+    if os.path.exists(default_logo_path):
+        try:
+            with open(default_logo_path, "rb") as f:
+                logo_data = f.read()
+            embed.set_thumbnail(url="attachment://tournament_bot_logo.png")
+            file_obj = discord.File(
+                fp=io.BytesIO(logo_data),
+                filename="tournament_bot_logo.png"
+            )
+            return file_obj, True
+        except Exception as e:
+            print(f"Error loading default logo {default_logo_path}: {e}")
+
+    # 4. Fallback to captain avatar
+    if fallback_to_captain_avatar and hasattr(fallback_to_captain_avatar, 'display_avatar'):
+        embed.set_thumbnail(url=fallback_to_captain_avatar.display_avatar.url)
+        return None, False
+
+    return None, False
 
 async def build_tournament_embed(interaction: discord.Interaction, t_data: dict, action_title: str) -> tuple[discord.Embed, Optional[discord.File]]:
     guild = interaction.guild
