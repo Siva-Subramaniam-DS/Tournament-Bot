@@ -4316,6 +4316,8 @@ async def upload_score(
         return
 
     # Parse selected winner option
+    # Value format (new): match_id:winner_participant_id:team_name:player1_id
+    # Value format (legacy): match_id:winner_participant_id:team_name
     try:
         parts = winner.split(":")
         if len(parts) < 3:
@@ -4324,6 +4326,8 @@ async def upload_score(
         match_id = parts[0]
         winner_participant_id = parts[1]
         winner_name = parts[2]
+        # 4th segment carries player1_id so we can order scores correctly
+        player1_id = str(parts[3]) if len(parts) >= 4 else None
     except Exception:
         await interaction.followup.send("❌ Error parsing the selection. Please use the autocomplete list.", ephemeral=True)
         return
@@ -4349,7 +4353,17 @@ async def upload_score(
         await interaction.followup.send("❌ No Challonge API key configured. Set one in the tournament configuration.", ephemeral=True)
         return
 
-    scores_csv = f"{winner_score}-{loser_score}"
+    # Challonge scores_csv must ALWAYS be "player1_score-player2_score"
+    # regardless of who won. Build it based on whether the winner is player1 or player2.
+    if player1_id and str(winner_participant_id) == str(player1_id):
+        # Winner is player1 → player1 has the higher score
+        scores_csv = f"{winner_score}-{loser_score}"
+    elif player1_id:
+        # Winner is player2 → player1 has the lower score
+        scores_csv = f"{loser_score}-{winner_score}"
+    else:
+        # Legacy fallback (no player1_id info): assume winner_score first
+        scores_csv = f"{winner_score}-{loser_score}"
 
     try:
         success, error = await update_challonge_match(
@@ -4525,13 +4539,15 @@ async def upload_score_winner_autocomplete(
             p2_id = target_match.get('player2_id')
             
             # Show simple team/player names
+            # Value format: match_id:winner_participant_id:team_name:player1_id
+            # The 4th segment (player1_id) lets upload_score build scores_csv in the correct order
             opt1_name = team1
-            opt1_val = f"{match_id}:{p1_id}:{team1}"
+            opt1_val = f"{match_id}:{p1_id}:{team1}:{p1_id}"
             if not current or current_lower in opt1_name.lower():
                 choices.append(app_commands.Choice(name=opt1_name[:100], value=opt1_val[:100]))
                 
             opt2_name = team2
-            opt2_val = f"{match_id}:{p2_id}:{team2}"
+            opt2_val = f"{match_id}:{p2_id}:{team2}:{p1_id}"
             if not current or current_lower in opt2_name.lower():
                 choices.append(app_commands.Choice(name=opt2_name[:100], value=opt2_val[:100]))
             
@@ -4547,12 +4563,13 @@ async def upload_score_winner_autocomplete(
         p2_id = m.get('player2_id')
         
         opt1_name = f"{team1} (vs {team2})"
-        opt1_val = f"{match_id}:{p1_id}:{team1}"
+        # Value format: match_id:winner_participant_id:team_name:player1_id
+        opt1_val = f"{match_id}:{p1_id}:{team1}:{p1_id}"
         if not current or current_lower in opt1_name.lower():
             choices.append(app_commands.Choice(name=opt1_name[:100], value=opt1_val[:100]))
             
         opt2_name = f"{team2} (vs {team1})"
-        opt2_val = f"{match_id}:{p2_id}:{team2}"
+        opt2_val = f"{match_id}:{p2_id}:{team2}:{p1_id}"
         if not current or current_lower in opt2_name.lower():
             choices.append(app_commands.Choice(name=opt2_name[:100], value=opt2_val[:100]))
             
