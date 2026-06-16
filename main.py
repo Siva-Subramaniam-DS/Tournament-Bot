@@ -606,6 +606,165 @@ def load_scheduled_events():
         print(f"Error loading scheduled events: {e}")
         scheduled_events = {}
 
+async def load_scheduled_events_from_supabase():
+    if not supabase_client:
+        return
+        
+    print("⏳ Loading scheduled events from Supabase...")
+    try:
+        res = await asyncio.to_thread(
+            lambda: supabase_client.table("Events").select("*").execute()
+        )
+        if res.data:
+            loaded_count = 0
+            for row in res.data:
+                event_id = row.get("Event_ID")
+                if not event_id:
+                    continue
+                    
+                # Reconstruct datetime
+                date_str = row.get("Date") or ""
+                utc_time_str = row.get("UTC_Time") or ""
+                event_datetime = None
+                if date_str and utc_time_str:
+                    try:
+                        day, month = map(int, date_str.split('/'))
+                        time_part = utc_time_str.split(' ')[0]
+                        hour, minute = map(int, time_part.split(':'))
+                        current_year = datetime.datetime.now().year
+                        event_datetime = datetime.datetime(current_year, month, day, hour, minute)
+                    except Exception:
+                        pass
+                
+                if not event_datetime:
+                    event_datetime = datetime.datetime.now()
+                
+                # Extract integer IDs
+                def parse_int_safe(val):
+                    if not val:
+                        return None
+                    try:
+                        return int(val)
+                    except ValueError:
+                        return None
+                        
+                g_id = parse_int_safe(row.get("Guild_ID"))
+                t1_id = parse_int_safe(row.get("Team1_Captain_ID"))
+                t2_id = parse_int_safe(row.get("Team2_Captain_ID"))
+                j_id = parse_int_safe(row.get("Judge_ID"))
+                
+                # If this event already exists in scheduled_events
+                if event_id not in scheduled_events:
+                    scheduled_events[event_id] = {
+                        'guild_id': g_id,
+                        'title': f"Round {row.get('Round')} Match",
+                        'datetime': event_datetime,
+                        'time_str': utc_time_str,
+                        'date_str': date_str,
+                        'round': row.get('Round'),
+                        'group': row.get('Group'),
+                        'minutes_left': 0,
+                        'tournament': row.get('Tournament'),
+                        'mode': None,
+                        'judge': j_id,
+                        'recorder': None,
+                        'channel_id': parse_int_safe(row.get("Channel_ID")),
+                        'team1_captain': t1_id,
+                        'team2_captain': t2_id,
+                        'team1_name': row.get('Team1_Captain_Name'),
+                        'team2_name': row.get('Team2_Captain_Name')
+                    }
+                    loaded_count += 1
+                else:
+                    # Sync fields from database if they are newer/assigned
+                    existing = scheduled_events[event_id]
+                    if j_id and not existing.get('judge'):
+                        existing['judge'] = j_id
+                    
+            print(f"✅ Loaded {loaded_count} scheduled event(s) from Supabase.")
+    except Exception as e:
+        print(f"❌ Error loading scheduled events from Supabase: {e}")
+
+async def save_event_to_supabase(event_id: str, event_data: dict):
+    if not supabase_client:
+        return
+        
+    try:
+        guild_id = event_data.get('guild_id')
+        t1_cap = event_data.get('team1_captain')
+        t2_cap = event_data.get('team2_captain')
+        judge_val = event_data.get('judge')
+        recorder_val = event_data.get('recorder')
+        
+        t1_id = getattr(t1_cap, 'id', t1_cap)
+        t2_id = getattr(t2_cap, 'id', t2_cap)
+        j_id = getattr(judge_val, 'id', judge_val) if judge_val else None
+        r_id = getattr(recorder_val, 'id', recorder_val) if recorder_val else None
+        
+        row = {
+            "Guild_ID": str(guild_id) if guild_id else "",
+            "Event_ID": event_id,
+            "Tournament": event_data.get('tournament', ''),
+            "Round": event_data.get('round', ''),
+            "Group": event_data.get('group', '') or '',
+            "Date": event_data.get('date_str', ''),
+            "UTC_Time": event_data.get('time_str', ''),
+            "Team1_Captain_ID": str(t1_id) if t1_id else '',
+            "Team1_Captain_Name": event_data.get('team1_name') or (t1_cap.name if hasattr(t1_cap, 'name') else ''),
+            "Team2_Captain_ID": str(t2_id) if t2_id else '',
+            "Team2_Captain_Name": event_data.get('team2_name') or (t2_cap.name if hasattr(t2_cap, 'name') else ''),
+            "Judge_ID": str(j_id) if j_id else '',
+            "Judge_Name": judge_val.name if hasattr(judge_val, 'name') else '',
+            "Channel_ID": str(event_data.get('channel_id', '')),
+            "Status": "Scheduled"
+        }
+        
+        res = await asyncio.to_thread(
+            lambda: supabase_client.table("Events").select("id").eq("Event_ID", event_id).execute()
+        )
+        if res.data and len(res.data) > 0:
+            row_id = res.data[0]["id"]
+            await asyncio.to_thread(
+                lambda: supabase_client.table("Events").update(row).eq("id", row_id).execute()
+            )
+        else:
+            row["Timestamp"] = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            await asyncio.to_thread(
+                lambda: supabase_client.table("Events").insert(row).execute()
+            )
+    except Exception as e:
+        print(f"[Supabase] Error saving event {event_id} to database: {e}")
+
+async def resolve_scheduled_event_members():
+    """Resolves member IDs in scheduled_events back to discord.Member/discord.User objects on startup."""
+    print("⏳ Resolving member IDs in scheduled events...")
+    resolved_count = 0
+    for ev_id, ev_data in scheduled_events.items():
+        g_id = ev_data.get('guild_id')
+        if not g_id:
+            continue
+        guild = bot.get_guild(g_id)
+        if not guild:
+            continue
+            
+        for key in ['team1_captain', 'team2_captain', 'judge', 'recorder']:
+            val = ev_data.get(key)
+            if val is not None and not isinstance(val, (discord.Member, discord.User)):
+                try:
+                    user_id = int(val)
+                    member = guild.get_member(user_id)
+                    if not member:
+                        try:
+                            member = await guild.fetch_member(user_id)
+                        except Exception:
+                            member = None
+                    if member:
+                        ev_data[key] = member
+                        resolved_count += 1
+                except (ValueError, TypeError):
+                    pass
+    print(f"✅ Resolved {resolved_count} member ID(s) to Member objects.")
+
 # Save scheduled events to file
 def save_scheduled_events():
     try:
@@ -635,6 +794,15 @@ def save_scheduled_events():
         
         with open('scheduled_events.json', 'w') as f:
             json.dump(data_to_save, f, indent=2)
+
+        # Sync with Supabase asynchronously in the background
+        if supabase_client:
+            try:
+                loop = asyncio.get_running_loop()
+                for event_id, event_data in scheduled_events.items():
+                    loop.create_task(save_event_to_supabase(event_id, event_data))
+            except RuntimeError:
+                pass
     except Exception as e:
         print(f"Error saving scheduled events: {e}")
 
@@ -3295,7 +3463,12 @@ def download_google_font(font_family: str, font_style: str = "regular", font_wei
 
 def get_font_with_fallbacks(font_name: str, size: int, font_style: str = "regular") -> ImageFont.FreeTypeFont:
     """Get a font using your local fonts first, then Google Fonts as fallback"""
-    fonts_dir = os.path.join(BASE_DIR, "Fonts")
+    fonts_dir = "/home/container/Fonts"
+    if not os.path.exists(fonts_dir):
+        if os.path.exists("/home/container/fonts"):
+            fonts_dir = "/home/container/fonts"
+        else:
+            fonts_dir = os.path.join(BASE_DIR, "Fonts")
     font_candidates = []
     
     # 1. Try your local fonts FIRST (from Fonts/ folder)
@@ -3396,7 +3569,12 @@ def sanitize_username_for_poster(username: str) -> str:
 
 def get_random_template():
     """Get a random template image from the Templates folder"""
-    template_path = os.path.join(BASE_DIR, "Templates")
+    template_path = "/home/container/templates"
+    if not os.path.exists(template_path):
+        if os.path.exists("/home/container/Templates"):
+            template_path = "/home/container/Templates"
+        else:
+            template_path = os.path.join(BASE_DIR, "Templates")
     image_files = []
     if os.path.exists(template_path):
         # Get all image files
@@ -3466,8 +3644,8 @@ def create_event_poster(template_path: str, round_label: str, team1_captain: str
             
             # Load fonts with Google Fonts fallback
             try:
-                # Use Square One font for server name, DS-Digital for round, date, and time
-                font_title = get_font_with_fallbacks("Square One", title_size, "bold")  # Server name
+                # Use Capture it font for server name, DS-Digital for round, date, and time
+                font_title = get_font_with_fallbacks("Capture it", title_size, "bold")  # Server name
                 font_round = get_font_with_fallbacks("DS-Digital", round_size, "bold")  # Round text
                 # Use a unique bundled font for player names so styling is consistent regardless of Discord nickname styling
                 font_vs = get_font_with_fallbacks("Capture it", vs_size, "bold")       # Unique display font from Fonts/capture_it
@@ -3523,7 +3701,7 @@ def create_event_poster(template_path: str, round_label: str, team1_captain: str
                 while server_width > width * 0.9 and temp_size > 10:
                     temp_size -= 2
                     try:
-                        temp_font = get_font_with_fallbacks("Square One", temp_size, "bold")
+                        temp_font = get_font_with_fallbacks("Capture it", temp_size, "bold")
                     except Exception as fe:
                         print(f"Error loading fallback font for title scaling: {fe}")
                         temp_font = ImageFont.load_default()
@@ -3970,6 +4148,18 @@ async def on_ready():
     
     # Load scheduled events from file
     load_scheduled_events()
+    
+    # Load/merge scheduled events from Supabase
+    try:
+        await load_scheduled_events_from_supabase()
+    except Exception as e:
+        print(f"Error loading events from Supabase on startup: {e}")
+        
+    # Resolve member IDs to Member objects
+    try:
+        await resolve_scheduled_event_members()
+    except Exception as e:
+        print(f"Error resolving event members on startup: {e}")
     
     # Load scheduled deadlines from Supabase/JSON fallback
     load_scheduled_deadlines()
@@ -5523,8 +5713,15 @@ async def event_result(
             if data.get('channel_id') == current_channel_id:
                 # Optional: further match by captains to be safer
                 try:
-                    t1 = getattr(data.get('team1_captain'), 'id', None)
-                    t2 = getattr(data.get('team2_captain'), 'id', None)
+                    t1_raw = data.get('team1_captain')
+                    t2_raw = data.get('team2_captain')
+                    
+                    t1 = getattr(t1_raw, 'id', t1_raw)
+                    if isinstance(t1, str) and t1.isdigit():
+                        t1 = int(t1)
+                    t2 = getattr(t2_raw, 'id', t2_raw)
+                    if isinstance(t2, str) and t2.isdigit():
+                        t2 = int(t2)
                     
                     w_id = getattr(winner, 'id', None)
                     l_id = getattr(loser, 'id', None)
@@ -5534,8 +5731,32 @@ async def event_result(
                         if w_id in (t1, t2) and l_id in (t1, t2):
                             matches_captains = True
                     elif w_name and l_name:
-                        t1_name = data.get('team1_name') or (data.get('team1_captain').name if hasattr(data.get('team1_captain'), 'name') else "")
-                        t2_name = data.get('team2_name') or (data.get('team2_captain').name if hasattr(data.get('team2_captain'), 'name') else "")
+                        t1_cap_name = ""
+                        if t1_raw:
+                            if hasattr(t1_raw, 'name'):
+                                t1_cap_name = t1_raw.name
+                            elif isinstance(t1_raw, int) or (isinstance(t1_raw, str) and t1_raw.isdigit()):
+                                try:
+                                    t1_mem = interaction.guild.get_member(int(t1_raw))
+                                    if t1_mem:
+                                        t1_cap_name = t1_mem.name
+                                except:
+                                    pass
+                        t1_name = data.get('team1_name') or t1_cap_name
+                        
+                        t2_cap_name = ""
+                        if t2_raw:
+                            if hasattr(t2_raw, 'name'):
+                                t2_cap_name = t2_raw.name
+                            elif isinstance(t2_raw, int) or (isinstance(t2_raw, str) and t2_raw.isdigit()):
+                                try:
+                                    t2_mem = interaction.guild.get_member(int(t2_raw))
+                                    if t2_mem:
+                                        t2_cap_name = t2_mem.name
+                                except:
+                                    pass
+                        t2_name = data.get('team2_name') or t2_cap_name
+                        
                         if (w_name.lower() in (t1_name.lower(), t2_name.lower())) or (l_name.lower() in (t1_name.lower(), t2_name.lower())):
                             matches_captains = True
                             
@@ -5896,6 +6117,8 @@ async def reassign_command(interaction: discord.Interaction):
                     
             mem_1 = get_member_safe(t1)
             mem_2 = get_member_safe(t2)
+            t1_id = getattr(mem_1, 'id', None) or (int(t1) if isinstance(t1, (int, str)) and str(t1).isdigit() else None)
+            t2_id = getattr(mem_2, 'id', None) or (int(t2) if isinstance(t2, (int, str)) and str(t2).isdigit() else None)
 
             if sched_channel and msg_id:
                 try:
@@ -6202,9 +6425,11 @@ async def exchange(interaction: discord.Interaction, role: app_commands.Choice[s
     
     for ev_id, data in scheduled_events.items():
         if data.get('channel_id') == current_channel_id:
-            if role.value == 'judge' and getattr(data.get('judge'), 'id', None) == old_user.id:
-                target_event_ids.append(ev_id)
-            elif role.value == 'recorder' and getattr(data.get('recorder'), 'id', None) == old_user.id:
+            assigned_val = data.get('judge') if role.value == 'judge' else data.get('recorder')
+            assigned_id = getattr(assigned_val, 'id', assigned_val)
+            if isinstance(assigned_id, str) and assigned_id.isdigit():
+                assigned_id = int(assigned_id)
+            if assigned_id == old_user.id:
                 target_event_ids.append(ev_id)
 
     if not target_event_ids:
@@ -6239,13 +6464,20 @@ async def exchange(interaction: discord.Interaction, role: app_commands.Choice[s
         team2 = data.get('team2_captain')
         current_judge = data.get('judge')
         
-        pings = ""
-        if team1:
-            pings += f"{team1.mention} "
-        if team2:
-            pings += f"{team2.mention} "
-        if current_judge:
-            pings += f"{current_judge.mention} "
+        def get_mention_str(val):
+            if not val:
+                return ""
+            val_id = getattr(val, 'id', val)
+            if isinstance(val_id, (int, str)) and str(val_id).isdigit():
+                return f"<@{val_id}> "
+            if hasattr(val, 'mention'):
+                return f"{val.mention} "
+            return ""
+            
+        t1_ping = get_mention_str(team1)
+        t2_ping = get_mention_str(team2)
+        j_ping = get_mention_str(current_judge)
+        pings = f"{t1_ping}{t2_ping}{j_ping}".strip()
             
         notify_embed = discord.Embed(
             title="🔄 Staff Exchange Notification",
@@ -9215,48 +9447,15 @@ async def resolve_embed_thumbnail(guild_id: int, embed: discord.Embed, fallback_
     """
     Resolves the thumbnail for a tournament/match embed.
     Order of precedence:
-    1. Active tournament's thumbnail (resolved from the configured thumbnail channel)
-    2. Configured server logo (server_logo_{guild_id}.png)
-    3. Bundled fallback logo (tournament_bot_logo.png)
-    4. Captain's avatar (if fallback_to_captain_avatar is provided)
+    1. Configured server logo (server_logo_{guild_id}.png)
+    2. Guild icon (guild.icon.url)
+    3. Active tournament's thumbnail (resolved from the configured thumbnail channel)
+    4. Default bundled logo (tournament_bot_logo.png)
+    5. Captain's avatar (if fallback_to_captain_avatar is provided)
     
     Returns a tuple: (discord.File if local image is used, bool indicating if a local image attachment was used)
     """
-    # 1. Try active tournament's thumbnail channel
-    t_cfg = get_active_tournament_config(guild_id)
-    if t_cfg:
-        thumb_chan_id = t_cfg.get('thumbnail')
-        if thumb_chan_id:
-            try:
-                thumb_url = await get_thumbnail_url_from_channel(int(thumb_chan_id))
-                if thumb_url:
-                    embed.set_thumbnail(url=thumb_url)
-                    return None, False
-            except Exception as e:
-                print(f"Error resolving thumbnail from channel {thumb_chan_id}: {e}")
-                
-    # 2. Try template image from Templates folder (random choice, resized to thumbnail)
-    template_path = get_random_template()
-    if template_path and os.path.exists(template_path):
-        try:
-            with Image.open(template_path) as img:
-                img.thumbnail((200, 200), Image.Resampling.LANCZOS)
-                thumb_bytes = io.BytesIO()
-                fmt = img.format if img.format else "PNG"
-                img.save(thumb_bytes, format=fmt)
-                thumb_bytes.seek(0)
-            ext = os.path.splitext(template_path)[1].lower() or ".png"
-            file_name = f"thumbnail{ext}"
-            embed.set_thumbnail(url=f"attachment://{file_name}")
-            file_obj = discord.File(
-                fp=thumb_bytes,
-                filename=file_name
-            )
-            return file_obj, True
-        except Exception as e:
-            print(f"Error processing template {template_path} for thumbnail: {e}")
-
-    # 3. Try configured server logo
+    # 1. Try configured server logo
     cfg = get_guild_config(guild_id)
     logo_filename = cfg.get('server_logo_path')
     if logo_filename and os.path.exists(logo_filename):
@@ -9272,6 +9471,28 @@ async def resolve_embed_thumbnail(guild_id: int, embed: discord.Embed, fallback_
         except Exception as e:
             print(f"Error loading server logo path {logo_filename}: {e}")
 
+    # 2. Try guild icon
+    guild = bot.get_guild(guild_id)
+    if guild and guild.icon:
+        try:
+            embed.set_thumbnail(url=guild.icon.url)
+            return None, False
+        except Exception as e:
+            print(f"Error setting guild icon thumbnail: {e}")
+
+    # 3. Try active tournament's thumbnail channel
+    t_cfg = get_active_tournament_config(guild_id)
+    if t_cfg:
+        thumb_chan_id = t_cfg.get('thumbnail')
+        if thumb_chan_id:
+            try:
+                thumb_url = await get_thumbnail_url_from_channel(int(thumb_chan_id))
+                if thumb_url:
+                    embed.set_thumbnail(url=thumb_url)
+                    return None, False
+            except Exception as e:
+                print(f"Error resolving thumbnail from channel {thumb_chan_id}: {e}")
+                
     # 4. Try default bundled tournament logo
     default_logo_path = os.path.join(BASE_DIR, "tournament_bot_logo.png")
     if os.path.exists(default_logo_path):
@@ -9287,7 +9508,7 @@ async def resolve_embed_thumbnail(guild_id: int, embed: discord.Embed, fallback_
         except Exception as e:
             print(f"Error loading default logo {default_logo_path}: {e}")
 
-    # 4. Fallback to captain avatar
+    # 5. Fallback to captain avatar
     if fallback_to_captain_avatar and hasattr(fallback_to_captain_avatar, 'display_avatar'):
         embed.set_thumbnail(url=fallback_to_captain_avatar.display_avatar.url)
         return None, False
