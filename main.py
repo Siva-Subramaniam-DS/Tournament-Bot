@@ -7691,7 +7691,55 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
         
         created_count = 0
         total_matches = len(matches)
-        
+
+        # ── Retroactive MatchID stamping ─────────────────────────────────────
+        # Channels created by older bot versions have no MatchID in their topic.
+        # Scan all guild channels and tag any untagged ones that belong to a
+        # current open match, so duplicate detection works on the next loop run.
+        STATUS_PREFIXES_STAMP = ("sh-", "dq-", "dd-", "ho-", "closed-", "done-")
+        all_guild_channels = list(guild._channels.values()) if hasattr(guild, '_channels') else list(guild.text_channels)
+        for match in matches:
+            m_id   = match['id']
+            m_t1   = match['team1']
+            m_t2   = match['team2']
+            m_rnd  = match['round']
+            tag    = f"MatchID:{m_id}"
+
+            # Build every plausible name variant for this match
+            name_variants = set()
+            for trunc in [8, 10, 12, 14, 16, 20, 25]:
+                s1 = re.sub(r'[^a-zA-Z0-9]', '', m_t1).lower()[:trunc]
+                s2 = re.sub(r'[^a-zA-Z0-9]', '', m_t2).lower()[:trunc]
+                name_variants.add(f"r{m_rnd}-{s1}-vs-{s2}")
+                # also swapped order
+                name_variants.add(f"r{m_rnd}-{s2}-vs-{s1}")
+
+            for ch in all_guild_channels:
+                if not isinstance(ch, discord.TextChannel):
+                    continue
+                # Skip if already tagged
+                if ch.topic and tag in ch.topic:
+                    break
+
+                # Strip status prefix to get base name
+                base = ch.name
+                for pfx in STATUS_PREFIXES_STAMP:
+                    if base.startswith(pfx):
+                        base = base[len(pfx):]
+                        break
+
+                if base in name_variants:
+                    # Stamp the MatchID into the topic silently
+                    try:
+                        new_topic = f"{tag}"
+                        if ch.topic and ch.topic.strip():
+                            new_topic = f"{ch.topic.strip()} | {tag}"
+                        await ch.edit(topic=new_topic, reason="Auto-stamping MatchID for duplicate detection")
+                    except Exception:
+                        pass
+                    break
+        # ─────────────────────────────────────────────────────────────────────
+
         for idx, match in enumerate(matches):
             team1, team2 = match['team1'], match['team2']
             p1_id, p2_id = match['player1_id'], match['player2_id']
