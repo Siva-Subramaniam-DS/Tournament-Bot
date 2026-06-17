@@ -796,11 +796,19 @@ def save_scheduled_events():
             json.dump(data_to_save, f, indent=2)
 
         # Sync with Supabase asynchronously in the background
+        # Use a single throttled task instead of blasting all events at once,
+        # which caused SSL/EOF errors from too many simultaneous connections.
         if supabase_client:
             try:
                 loop = asyncio.get_running_loop()
-                for event_id, event_data in scheduled_events.items():
-                    loop.create_task(save_event_to_supabase(event_id, event_data))
+                async def _throttled_save_all_events():
+                    for ev_id, ev_data in list(scheduled_events.items()):
+                        try:
+                            await save_event_to_supabase(ev_id, ev_data)
+                        except Exception as _e:
+                            print(f"[Supabase] Error saving event {ev_id}: {_e}")
+                        await asyncio.sleep(0.3)  # 300ms gap between each save
+                loop.create_task(_throttled_save_all_events())
             except RuntimeError:
                 pass
     except Exception as e:
