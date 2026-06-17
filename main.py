@@ -7755,14 +7755,31 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                 
             chan_name = re.sub(r'[^a-zA-Z0-9\-]', '-', chan_name)
             chan_name = re.sub(r'-+', '-', chan_name).strip('-')[:100].lower()
-            topic = f"MatchID:{match_id} | P1:{p1_id} | P2:{p2_id} | Team1:{team1} | Team2:{team2}"
+            topic = f"MatchID:{match_id}"
             
             already_exists = False
-            for channel in guild.text_channels:
+            # Use guild._channels to check ALL channels including ones in restricted/closed
+            # categories that may not be visible to the bot via guild.text_channels cache.
+            STATUS_PREFIXES = ("sh-", "dq-", "dd-", "ho-", "closed-", "done-")
+            all_channels = list(guild._channels.values()) if hasattr(guild, '_channels') else list(guild.text_channels)
+            for channel in all_channels:
+                if not isinstance(channel, discord.TextChannel):
+                    continue
+                # Check by MatchID in topic (most reliable)
+                if channel.topic and f"MatchID:{match_id}" in channel.topic:
+                    already_exists = True
+                    break
+                # Check by channel name (exact match)
                 if channel.name == chan_name:
                     already_exists = True
                     break
-                if channel.topic and f"MatchID:{match_id}" in channel.topic:
+                # Check by channel name after stripping status prefixes (e.g. "sh-r2-team-vs-team")
+                stripped_name = channel.name
+                for pfx in STATUS_PREFIXES:
+                    if stripped_name.startswith(pfx):
+                        stripped_name = stripped_name[len(pfx):]
+                        break
+                if stripped_name == chan_name:
                     already_exists = True
                     break
             if already_exists:
