@@ -995,29 +995,51 @@ async def run_deadline_reminder_task(dl_id: str, target_dt: datetime.datetime, r
                 print(f"Failed to fetch deadline channel {channel_id} in guild {guild_id}")
                 return
                 
-        # Find unscheduled players for this round
-        players_to_ping = await get_unscheduled_players_for_round(guild, round_name)
-        
-        pings_str = " ".join(players_to_ping) if players_to_ping else "@Player"
-        
+        # Ping the players role instead of individual player IDs
+        # Priority: tournament config players_role_id -> guild config Players_Role_ID
+        cfg = get_guild_config(guild_id)
+        t_cfg_dl = get_active_tournament_config(guild_id)
+        players_role_ping = "@Player"
+        players_r_id = None
+        # 1. Check tournament config first
+        if t_cfg_dl:
+            raw = t_cfg_dl.get('players_role_id')
+            if raw:
+                try:
+                    players_r_id = int(raw)
+                except (ValueError, TypeError):
+                    players_r_id = None
+        # 2. Fall back to guild config Players_Role_ID
+        if not players_r_id:
+            raw = cfg.get('role_ids', {}).get('players')
+            if raw:
+                try:
+                    players_r_id = int(raw)
+                except (ValueError, TypeError):
+                    players_r_id = None
+        if players_r_id:
+            players_role_obj = guild.get_role(players_r_id)
+            if players_role_obj:
+                players_role_ping = players_role_obj.mention
+
         deadline_date_str = deadline_dt.strftime("%d/%m/%Y")
         deadline_time_str = deadline_dt.strftime("%H:%M UTC")
-        
+
         if reminder_type == "one_day_before":
             message = (
-                f"Hello Tournament Player ID {pings_str}!\n"
-                f" Tomorrow ({deadline_date_str}) is the deadline for Round {round_name}. If you have not opened your ticket and scheduled your match time, please do so. Otherwise, the bot will randomly assign a time based on the UTC time you provided.\n"
+                f"Hello {players_role_ping}!\n"
+                f"Tomorrow ({deadline_date_str}) is the deadline for Round {round_name}. If you have not opened your ticket and scheduled your match time, please do so. Otherwise, the bot will randomly assign a time based on the UTC time you provided.\n"
                 f"**Deadline: {deadline_time_str}**\n\n"
                 f"Good luck!"
             )
         else: # "deadline_day"
             message = (
-                f"Hello Tournament Player ID {pings_str}!\n"
+                f"Hello {players_role_ping}!\n"
                 f"Today ({deadline_date_str}) is the deadline for Round {round_name}. If you have not opened your ticket and scheduled your match time, please do so immediately. Otherwise, the bot will randomly assign a time based on the UTC time you provided.\n"
                 f"**Deadline: {deadline_time_str}**\n\n"
                 f"Good luck!"
             )
-            
+
         await channel.send(message)
         
     except Exception as e:
@@ -1427,6 +1449,7 @@ def _sync_save_tournament_to_supabase(guild_id: int, tournament_id: str, t_data:
         "Open_Category_3_ID": str(t_data.get('ticket_open_category_3') or ""),
         
         "Auto_Room_Creation": str(t_data.get('auto_room_creation', True)),
+        "Players_Role_ID": str(t_data.get('players_role_id') or ""),
         "Updated_At": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     }
 
@@ -1449,6 +1472,7 @@ def _sync_save_tournament_to_supabase(guild_id: int, tournament_id: str, t_data:
         "Open_Category_2_ID": str(t_data.get('ticket_open_category_2') or ""),
         "Open_Category_3_ID": str(t_data.get('ticket_open_category_3') or ""),
         "Auto_Room_Creation": str(t_data.get('auto_room_creation', True)),
+        "Players_Role_ID": str(t_data.get('players_role_id') or ""),
         "Updated_At": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     }
 
@@ -7850,14 +7874,17 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                 break
                 
             try:
-                overwrites = dict(target_category.overwrites) if target_category and target_category.overwrites else {}
-                if guild.default_role not in overwrites:
-                    overwrites[guild.default_role] = discord.PermissionOverwrite(view_channel=False)
-                else:
-                    overwrites[guild.default_role].view_channel = False
-                    
+                overwrites = {}
+                # @everyone is always denied — only explicitly allowed roles/members can see this channel
+                overwrites[guild.default_role] = discord.PermissionOverwrite(view_channel=False)
+
+                # Bot itself
                 overwrites[guild.me] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_channels=True, manage_permissions=True)
-                
+
+                # Track which role IDs are explicitly allowed
+                allowed_role_ids = set()
+
+                # From tournament config: admin_role_id, helper_role_id
                 for role_key in ["admin_role_id", "helper_role_id"]:
                     if r_id := t_cfg.get(role_key):
                         try:
@@ -7866,7 +7893,9 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                             pass
                         if staff_r := discord.utils.get(guild.roles, id=r_id):
                             overwrites[staff_r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-                            
+                            allowed_role_ids.add(staff_r.id)
+
+                # From global guild config: head_organizer, organizer, head_helper, helper_team
                 cfg = get_guild_config(guild.id)
                 for role_key in ["head_organizer", "organizer", "head_helper", "helper_team"]:
                     if r_id := cfg.get('role_ids', {}).get(role_key):
@@ -7876,7 +7905,28 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                             pass
                         if staff_r := discord.utils.get(guild.roles, id=r_id):
                             overwrites[staff_r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-                            
+                            allowed_role_ids.add(staff_r.id)
+
+                # players role — read-only access so they can view the ticket
+                if players_r_id := cfg.get('role_ids', {}).get('players'):
+                    try:
+                        players_r_id = int(players_r_id)
+                    except (ValueError, TypeError):
+                        pass
+                    if players_role_obj := discord.utils.get(guild.roles, id=players_r_id):
+                        overwrites[players_role_obj] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+                        allowed_role_ids.add(players_role_obj.id)
+
+                # Explicitly deny every other role that is not in allowed_role_ids
+                for role in guild.roles:
+                    if role.id == guild.default_role.id:
+                        continue  # already handled above
+                    if role.id in allowed_role_ids:
+                        continue  # already granted above
+                    # Deny all other roles from viewing the channel
+                    overwrites[role] = discord.PermissionOverwrite(view_channel=False)
+
+                # Individual captain overrides (specific member access)
                 if captain1:
                     overwrites[captain1] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
                 if captain2:
@@ -9440,6 +9490,14 @@ def load_guild_tournaments(guild_id: int) -> dict:
                         db_val = row.get("Auto_Room_Creation")
                         if db_val not in (None, "", "None"):
                             existing["auto_room_creation"] = (str(db_val).lower() == 'true')
+
+                        # Players role ID (tournament-level override of guild Players_Role_ID)
+                        db_val = row.get("Players_Role_ID")
+                        if db_val not in (None, "", "None"):
+                            try:
+                                existing["players_role_id"] = int(db_val)
+                            except:
+                                pass
                                     
                         tournaments[t_id] = existing
                 print(f"Merged tournaments for guild {guild_id} with Supabase.")
@@ -9840,7 +9898,7 @@ async def tournament_add(
         'ticket_open_category_1': ticket_open_category_1.id if ticket_open_category_1 else None,
         'ticket_open_category_2': ticket_open_category_2.id if ticket_open_category_2 else None,
         'ticket_open_category_3': ticket_open_category_3.id if ticket_open_category_3 else None,
-        
+
         'auto_room_creation': auto_room_creation if auto_room_creation is not None else True,
         'state': 'pending'
     })
@@ -9982,7 +10040,7 @@ async def tournament_edit(
         
     if auto_room_creation is not None:
         t_data['auto_room_creation'] = auto_room_creation
-        
+
     if state is not None:
         new_state = state.value
         t_data['state'] = new_state
