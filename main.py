@@ -7917,15 +7917,6 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                         overwrites[players_role_obj] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
                         allowed_role_ids.add(players_role_obj.id)
 
-                # Explicitly deny every other role that is not in allowed_role_ids
-                for role in guild.roles:
-                    if role.id == guild.default_role.id:
-                        continue  # already handled above
-                    if role.id in allowed_role_ids:
-                        continue  # already granted above
-                    # Deny all other roles from viewing the channel
-                    overwrites[role] = discord.PermissionOverwrite(view_channel=False)
-
                 # Individual captain overrides (specific member access)
                 if captain1:
                     overwrites[captain1] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)

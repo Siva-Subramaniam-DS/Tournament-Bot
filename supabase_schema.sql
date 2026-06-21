@@ -85,7 +85,8 @@ CREATE TABLE "Tournaments" (
     "Updated_At" text,
     "Captains_Sheet_Link" text,
     "Open_Category_4_ID" text,
-    "Auto_Room_Creation" text
+    "Auto_Room_Creation" text,
+    "Players_Role_ID" text
 );
 
 -- TABLE 3: Events
@@ -359,7 +360,8 @@ CREATE TABLE "Tournaments" (
     "Updated_At" text,
     "Captains_Sheet_Link" text,
     "Open_Category_4_ID" text,
-    "Auto_Room_Creation" text
+    "Auto_Room_Creation" text,
+    "Players_Role_ID" text
 );
 
 -- Events
