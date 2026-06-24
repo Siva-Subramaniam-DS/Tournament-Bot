@@ -1045,6 +1045,26 @@ async def run_deadline_reminder_task(dl_id: str, target_dt: datetime.datetime, r
     except Exception as e:
         print(f"Error running deadline reminder task for {dl_id}: {e}")
 
+def format_round_heading(round_val) -> str:
+    if not round_val:
+        return "Round Not Set"
+    
+    round_str = str(round_val).strip()
+    
+    # Strip leading 'R' or 'r' if followed by numbers or negatives
+    match = re.match(r'^[Rr](-?\d+)$', round_str)
+    if match:
+        round_str = match.group(1)
+        
+    try:
+        r_int = int(round_str)
+        if r_int < 0:
+            return f"Losers Round {abs(r_int)}"
+        else:
+            return f"Winners Round {r_int}"
+    except (ValueError, TypeError):
+        return round_str
+
 # Helper to map round name selection to Challonge round numbers
 def map_round_name_to_challonge_rounds(round_name: str, matches: list) -> list[int]:
     if round_name.startswith("D"):
@@ -5086,7 +5106,7 @@ async def event_create(
         description_str = f"🏆 Tournament: {tournament}\n"
         if group_label:
             description_str += f"{group_emoji} Group: {group_label}\n"
-        description_str += f"🔄 Round: {round_label}"
+        description_str += f"🔄 Round: {format_round_heading(round_label)}"
         
         t1_disp = team_1_name if team_1_name else team_1_captain.name
         t2_disp = team_2_name if team_2_name else team_2_captain.name
@@ -5149,7 +5169,7 @@ async def event_create(
         event_details += f"**Mode:** {mode}\n"
     event_details += f"**UTC Time:** {time_info['utc_time']}\n"
     event_details += f"**Local Time:** <t:{timestamp}:F> (<t:{timestamp}:R>)\n"
-    event_details += f"**Round:** {round_label}\n"
+    event_details += f"**Round:** {format_round_heading(round_label)}\n"
     
     # Add group if specified
     if group_label:
@@ -5420,7 +5440,7 @@ async def event_result(
     embed_description += f"**Tournament:** {tournament}\n"
     if mode:
         embed_description += f"**Mode:** {mode}\n"
-    embed_description += f"**Round:** {round}"
+    embed_description += f"**Round:** {format_round_heading(round)}"
     
     # Add group if specified
     if group_label:
@@ -5563,6 +5583,26 @@ async def event_result(
     if matching_event:
         poster_image = matching_event.get('poster_path')
         
+        # Check for recorder_link/judge_link
+        rec_link = matching_event.get('recorder_link')
+        jdg_link = matching_event.get('judge_link')
+        if rec_link or jdg_link:
+            links_text = []
+            if rec_link:
+                links_text.append(f"🎥 **Recorder VOD:** [Link]({rec_link})")
+            if jdg_link:
+                links_text.append(f"⚖️ **Judge VOD:** [Link]({jdg_link})")
+            
+            remarks_idx = -1
+            for idx, field in enumerate(embed.fields):
+                if field.name == "📝 Remarks":
+                    remarks_idx = idx
+                    break
+            if remarks_idx != -1:
+                embed.insert_field_at(remarks_idx, name="🎥 Recordings / VODs", value="\n".join(links_text), inline=False)
+            else:
+                embed.add_field(name="🎥 Recordings / VODs", value="\n".join(links_text), inline=False)
+        
     if poster_image and os.path.exists(poster_image):
         try:
             with open(poster_image, 'rb') as f:
@@ -5625,6 +5665,8 @@ async def event_result(
     
     # Post in Results channel with screenshots as attachments
     results_posted = False
+    results_msg = None
+    current_msg = None
     try:
         t_cfg_res = get_active_tournament_config(interaction.guild.id)
         results_channel = None
@@ -5646,9 +5688,9 @@ async def event_result(
                         fp=io.BytesIO(file_data),
                         filename=file_obj.filename
                     ))
-                await results_channel.send(embed=embed, files=results_files)
+                results_msg = await results_channel.send(embed=embed, files=results_files)
             else:
-                await results_channel.send(embed=embed)
+                results_msg = await results_channel.send(embed=embed)
             results_posted = True
         else:
             await interaction.followup.send("⚠️ Could not find Results channel.", ephemeral=True)
@@ -5670,15 +5712,15 @@ async def event_result(
                         fp=io.BytesIO(file_data),
                         filename=file_obj.filename
                     ))
-                await current_channel.send(embed=embed, files=current_files)
+                current_msg = await current_channel.send(embed=embed, files=current_files)
             else:
-                await current_channel.send(embed=embed)
+                current_msg = await current_channel.send(embed=embed)
         elif current_channel and current_channel.id == res_ch_id_val and not results_posted:
             # If we're in results channel but posting failed above, try again
             if files_to_send:
-                await current_channel.send(embed=embed, files=files_to_send)
+                results_msg = await current_channel.send(embed=embed, files=files_to_send)
             else:
-                await current_channel.send(embed=embed)
+                results_msg = await current_channel.send(embed=embed)
     except Exception as e:
         await interaction.followup.send(f"⚠️ Could not post in current channel: {e}", ephemeral=True)
 
@@ -5821,6 +5863,13 @@ async def event_result(
                         scheduled_events[ev_id]['result_judge'] = interaction.user
                         scheduled_events[ev_id]['result_group'] = group_label
                         scheduled_events[ev_id]['result_remarks'] = remarks
+                        
+                        if results_msg:
+                            scheduled_events[ev_id]['results_message_id'] = results_msg.id
+                            scheduled_events[ev_id]['results_channel_id'] = results_msg.channel.id
+                        if current_msg:
+                            scheduled_events[ev_id]['match_results_message_id'] = current_msg.id
+                            scheduled_events[ev_id]['match_results_channel_id'] = current_msg.channel.id
                         
                         print(f"Updated event {ev_id} with result data")
                 except Exception as e:
@@ -6552,6 +6601,89 @@ async def exchange(interaction: discord.Interaction, role: app_commands.Choice[s
     await interaction.response.send_message(f"✅ {new_user.mention} is now the **{role.name}** for {updated_count} event(s), replacing {old_user.mention}.", ephemeral=True)
 
 
+async def update_results_embed_with_links(guild: discord.Guild, event_data: dict):
+    rec_link = event_data.get('recorder_link')
+    jdg_link = event_data.get('judge_link')
+    if not rec_link and not jdg_link:
+        return
+        
+    links_text = []
+    if rec_link:
+        links_text.append(f"🎥 **Recorder VOD:** [Link]({rec_link})")
+    if jdg_link:
+        links_text.append(f"⚖️ **Judge VOD:** [Link]({jdg_link})")
+        
+    value_text = "\n".join(links_text)
+    
+    # 1. Update results channel message
+    res_ch_id = event_data.get('results_channel_id')
+    res_msg_id = event_data.get('results_message_id')
+    if res_ch_id and res_msg_id:
+        try:
+            channel = guild.get_channel(int(res_ch_id))
+            if not channel:
+                channel = await guild.fetch_channel(int(res_ch_id))
+            if channel:
+                msg = await channel.fetch_message(int(res_msg_id))
+                if msg and msg.embeds:
+                    embed = msg.embeds[0]
+                    # Update embed fields
+                    recording_field_index = -1
+                    for idx, field in enumerate(embed.fields):
+                        if field.name == "🎥 Recordings / VODs":
+                            recording_field_index = idx
+                            break
+                    if recording_field_index != -1:
+                        embed.set_field_at(recording_field_index, name="🎥 Recordings / VODs", value=value_text, inline=False)
+                    else:
+                        remarks_field_index = -1
+                        for idx, field in enumerate(embed.fields):
+                            if field.name == "📝 Remarks":
+                                remarks_field_index = idx
+                                break
+                        if remarks_field_index != -1:
+                            embed.insert_field_at(remarks_field_index, name="🎥 Recordings / VODs", value=value_text, inline=False)
+                        else:
+                            embed.add_field(name="🎥 Recordings / VODs", value=value_text, inline=False)
+                    await msg.edit(embed=embed)
+        except Exception as e:
+            print(f"Error updating results channel message with links: {e}")
+            
+    # 2. Update match channel results message
+    match_ch_id = event_data.get('match_results_channel_id')
+    match_msg_id = event_data.get('match_results_message_id')
+    if match_ch_id and match_msg_id:
+        try:
+            channel = guild.get_channel(int(match_ch_id))
+            if not channel:
+                channel = await guild.fetch_channel(int(match_ch_id))
+            if channel:
+                msg = await channel.fetch_message(int(match_msg_id))
+                if msg and msg.embeds:
+                    embed = msg.embeds[0]
+                    # Update embed fields
+                    recording_field_index = -1
+                    for idx, field in enumerate(embed.fields):
+                        if field.name == "🎥 Recordings / VODs":
+                            recording_field_index = idx
+                            break
+                    if recording_field_index != -1:
+                        embed.set_field_at(recording_field_index, name="🎥 Recordings / VODs", value=value_text, inline=False)
+                    else:
+                        remarks_field_index = -1
+                        for idx, field in enumerate(embed.fields):
+                            if field.name == "📝 Remarks":
+                                remarks_field_index = idx
+                                break
+                        if remarks_field_index != -1:
+                            embed.insert_field_at(remarks_field_index, name="🎥 Recordings / VODs", value=value_text, inline=False)
+                        else:
+                            embed.add_field(name="🎥 Recordings / VODs", value=value_text, inline=False)
+                    await msg.edit(embed=embed)
+        except Exception as e:
+            print(f"Error updating match channel results message with links: {e}")
+
+
 # ===========================================================================================
 # ADD RECORD LINK COMMAND
 # ===========================================================================================
@@ -6660,6 +6792,14 @@ async def add_record_link(
         scheduled_events[matched_event_id][key] = link_stripped
         save_scheduled_events()
         event_saved_note = f"\n✅ Link saved to event record **`{matched_event_id}`**."
+        
+        # Edit already posted result messages if results were already added
+        if scheduled_events[matched_event_id].get('result_added'):
+            try:
+                await update_results_embed_with_links(interaction.guild, scheduled_events[matched_event_id])
+                event_saved_note += "\n✅ Posted result embeds have been updated with the new link."
+            except Exception as e:
+                print(f"Error updating result embeds with links in add_record_link: {e}")
     else:
         event_saved_note = "\n⚠️ No matching event was found in schedule — link logged here only."
 
@@ -6966,7 +7106,7 @@ async def event_edit(
                     description_str = f"🏆 Tournament: {tournament_info}\n"
                     if group_info:
                         description_str += f"{group_emoji} Group: {group_info}\n"
-                    description_str += f"🔄 Round: {round_info}"
+                    description_str += f"🔄 Round: {format_round_heading(round_info)}"
                     
                     event_datetime_aware = new_datetime.replace(tzinfo=datetime.timezone.utc)
                     now_aware = datetime.datetime.now(datetime.timezone.utc)
@@ -7032,7 +7172,7 @@ async def event_edit(
             event_details_text += f"**Mode:** {event_to_edit.get('mode')}\n"
         event_details_text += f"**UTC Time:** {time_info['utc_time']}\n"
         event_details_text += f"**Local Time:** <t:{timestamp_val}:F> (<t:{timestamp_val}:R>)\n"
-        event_details_text += f"**Round:** {round_info}\n"
+        event_details_text += f"**Round:** {format_round_heading(round_info)}\n"
         
         if group_info:
             event_details_text += f"**Group:** {group_info}\n"
@@ -7907,15 +8047,6 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                             overwrites[staff_r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
                             allowed_role_ids.add(staff_r.id)
 
-                # players role — read-only access so they can view the ticket
-                if players_r_id := cfg.get('role_ids', {}).get('players'):
-                    try:
-                        players_r_id = int(players_r_id)
-                    except (ValueError, TypeError):
-                        pass
-                    if players_role_obj := discord.utils.get(guild.roles, id=players_r_id):
-                        overwrites[players_role_obj] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-                        allowed_role_ids.add(players_role_obj.id)
 
                 # Individual captain overrides (specific member access)
                 if captain1:
@@ -7929,6 +8060,33 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                     topic=topic,
                     overwrites=overwrites
                 )
+                
+                # Register the auto-created match in scheduled_events and Supabase
+                event_id = f"challonge_{match_id}"
+                scheduled_events[event_id] = {
+                    'guild_id': guild.id,
+                    'title': f"{format_round_heading(mod_round)} Match",
+                    'datetime': datetime.datetime.utcnow(),
+                    'time_str': "Live",
+                    'date_str': "Live",
+                    'round': str(mod_round),
+                    'group': None,
+                    'minutes_left': 0,
+                    'tournament': t_cfg.get('name', 'Tournament'),
+                    'mode': None,
+                    'judge': None,
+                    'recorder': None,
+                    'channel_id': new_ch.id,
+                    'team1_captain': captain1.id if captain1 else None,
+                    'team2_captain': captain2.id if captain2 else None,
+                    'team1_name': team1,
+                    'team2_name': team2
+                }
+                save_scheduled_events()
+                try:
+                    await save_event_to_supabase(event_id, scheduled_events[event_id])
+                except Exception as db_err:
+                    print(f"Error syncing auto-room event to Supabase: {db_err}")
                 
                 org_name = cfg.get('organization_name', 'Tournament Organizer')
                 rules_embed = discord.Embed(
@@ -7948,10 +8106,11 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                     inline=False
                 )
                 
+                round_display = format_round_heading(mod_round)
                 if is_1v1:
-                    pval = f"**Round:** R{mod_round}\n**Captain 1:** {captain1.mention if captain1 else c1_raw or team1}\n**Captain 2:** {captain2.mention if captain2 else c2_raw or team2}"
+                    pval = f"**Round:** {round_display}\n**Captain 1:** {captain1.mention if captain1 else c1_raw or team1}\n**Captain 2:** {captain2.mention if captain2 else c2_raw or team2}"
                 else:
-                    pval = f"**Round:** R{mod_round}\n**Team 1:** {team1} — Captain: {captain1.mention if captain1 else c1_raw or 'Not Found'}\n**Team 2:** {team2} — Captain: {captain2.mention if captain2 else c2_raw or 'Not Found'}"
+                    pval = f"**Round:** {round_display}\n**Team 1:** {team1} — Captain: {captain1.mention if captain1 else c1_raw or 'Not Found'}\n**Team 2:** {team2} — Captain: {captain2.mention if captain2 else c2_raw or 'Not Found'}"
                     
                 rules_embed.add_field(name="👥 Match Participants", value=pval, inline=False)
                 rules_embed.add_field(
