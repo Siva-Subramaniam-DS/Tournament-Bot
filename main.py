@@ -1562,31 +1562,93 @@ def _sync_fetch_challonge_open_matches(bracket_link: str, api_key: str):
     """Synchronous version — call via asyncio.to_thread"""
     t_id = extract_challonge_id(bracket_link)
     headers = {"Accept": "application/json", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    
+    # 1. Fetch tournament type
+    t_url = f"https://api.challonge.com/v1/tournaments/{t_id}.json"
+    t_type = "single elimination"
+    try:
+        t_req = requests.get(t_url, params={"api_key": api_key}, headers=headers, timeout=15)
+        if t_req.status_code == 200:
+            t_type = t_req.json().get('tournament', {}).get('tournament_type', 'single elimination')
+    except Exception as e:
+        print(f"Error fetching tournament type from Challonge: {e}")
+        
+    # 2. Fetch participants
     p_url = f"https://api.challonge.com/v1/tournaments/{t_id}/participants.json"
     p_req = requests.get(p_url, params={"api_key": api_key}, headers=headers, timeout=15)
     if p_req.status_code != 200:
         return None, f"Failed to fetch participants (HTTP {p_req.status_code}): {p_req.text[:300]}"
     pts = {p['participant']['id']: p['participant']['name'] for p in p_req.json()}
+    
+    # 3. Fetch all matches to build the round map
     m_url = f"https://api.challonge.com/v1/tournaments/{t_id}/matches.json"
-    m_req = requests.get(m_url, params={"api_key": api_key, "state": "open"}, headers=headers, timeout=15)
+    m_req = requests.get(m_url, params={"api_key": api_key}, headers=headers, timeout=15)
     if m_req.status_code != 200:
         return None, f"Failed to fetch matches (HTTP {m_req.status_code}): {m_req.text[:300]}"
+    
+    matches_json = m_req.json()
+    all_matches = [m['match'] for m in matches_json]
+    
+    winners_rounds = sorted(list(set(m.get('round') for m in all_matches if m.get('round', 0) > 0)))
+    losers_rounds = sorted(list(set(m.get('round') for m in all_matches if m.get('round', 0) < 0)), reverse=True)
+    
+    max_w = winners_rounds[-1] if winners_rounds else 0
+    round_mapping = {}
+    
+    # Map rounds depending on tournament type
+    if "swiss" in t_type or "robin" in t_type:
+        for r in winners_rounds:
+            round_mapping[r] = f"Round {r}"
+    elif "double" in t_type:
+        for r in winners_rounds:
+            if r == max_w:
+                round_mapping[r] = "Finals"
+            elif r == max_w - 1 and max_w >= 2:
+                round_mapping[r] = "Semifinals"
+            else:
+                round_mapping[r] = f"Round {r}"
+        if losers_rounds:
+            min_l = losers_rounds[-1]
+            for r in losers_rounds:
+                if r == min_l:
+                    round_mapping[r] = "Losers Finals"
+                elif r == min_l + 1:
+                    round_mapping[r] = "Losers Semifinals"
+                else:
+                    round_mapping[r] = f"Losers Round {abs(r)}"
+    else: # single elimination or other
+        for r in winners_rounds:
+            if r == max_w:
+                round_mapping[r] = "Finals"
+            elif r == max_w - 1 and max_w >= 2:
+                round_mapping[r] = "Semifinals"
+            elif r == max_w - 2 and max_w >= 3:
+                round_mapping[r] = "Quarterfinals"
+            else:
+                round_mapping[r] = f"Round {r}"
+                
     matches_info = []
-    for m in m_req.json():
-        match = m['match']
-        if not match.get('player1_id') or not match.get('player2_id'):
+    for m in all_matches:
+        if m.get('state') != 'open':
             continue
-        p1 = pts.get(match['player1_id'], "TBD")
-        p2 = pts.get(match['player2_id'], "TBD")
+        if not m.get('player1_id') or not m.get('player2_id'):
+            continue
+        p1 = pts.get(m['player1_id'], "TBD")
+        p2 = pts.get(m['player2_id'], "TBD")
+        r_val = m.get('round')
+        r_name = round_mapping.get(r_val, f"Round {r_val}")
+        
         matches_info.append({
-            'id': match['id'],
-            'round': match['round'],
+            'id': m['id'],
+            'round': r_val,
+            'round_name': r_name,
             'team1': p1,
             'team2': p2,
-            'player1_id': match['player1_id'],
-            'player2_id': match['player2_id']
+            'player1_id': m['player1_id'],
+            'player2_id': m['player2_id']
         })
     return matches_info, None
+
 
 async def fetch_challonge_open_matches(bracket_link: str, api_key: str):
     """Async wrapper — runs the HTTP call in a thread so the event loop stays free."""
@@ -4589,16 +4651,17 @@ async def upload_score_winner_autocomplete(
             match_id = target_match.get('id')
             p1_id = target_match.get('player1_id')
             p2_id = target_match.get('player2_id')
+            round_name = target_match.get('round_name', f"Round {target_match.get('round')}")
             
             # Show simple team/player names
             # Value format: match_id:winner_participant_id:team_name:player1_id
             # The 4th segment (player1_id) lets upload_score build scores_csv in the correct order
-            opt1_name = team1
+            opt1_name = f"{team1} ({round_name})"
             opt1_val = f"{match_id}:{p1_id}:{team1}:{p1_id}"
             if not current or current_lower in opt1_name.lower():
                 choices.append(app_commands.Choice(name=opt1_name[:100], value=opt1_val[:100]))
                 
-            opt2_name = team2
+            opt2_name = f"{team2} ({round_name})"
             opt2_val = f"{match_id}:{p2_id}:{team2}:{p1_id}"
             if not current or current_lower in opt2_name.lower():
                 choices.append(app_commands.Choice(name=opt2_name[:100], value=opt2_val[:100]))
@@ -4606,26 +4669,28 @@ async def upload_score_winner_autocomplete(
             if choices:
                 return choices
 
-    # Fallback/General search: show teams with opponents in parenthesis
+    # Fallback/General search: show teams with opponents and round
     for m in matches:
         team1 = m.get('team1') or "TBD"
         team2 = m.get('team2') or "TBD"
         match_id = m.get('id')
         p1_id = m.get('player1_id')
         p2_id = m.get('player2_id')
+        round_name = m.get('round_name', f"Round {m.get('round')}")
         
-        opt1_name = f"{team1} (vs {team2})"
+        opt1_name = f"{team1} (vs {team2}) - {round_name}"
         # Value format: match_id:winner_participant_id:team_name:player1_id
         opt1_val = f"{match_id}:{p1_id}:{team1}:{p1_id}"
         if not current or current_lower in opt1_name.lower():
             choices.append(app_commands.Choice(name=opt1_name[:100], value=opt1_val[:100]))
             
-        opt2_name = f"{team2} (vs {team1})"
+        opt2_name = f"{team2} (vs {team1}) - {round_name}"
         opt2_val = f"{match_id}:{p2_id}:{team2}:{p1_id}"
         if not current or current_lower in opt2_name.lower():
             choices.append(app_commands.Choice(name=opt2_name[:100], value=opt2_val[:100]))
             
     return choices[:25]
+
 
 
 NOTION_HELP_URL = "https://elated-chartreuse-9a7.notion.site/Tournament-Bot-Help-Guide-37c8a2e4cbdf80af8e87d6a03b7db8e5"
@@ -7495,10 +7560,11 @@ async def add_captain(
             return
         
         # Validate round parameter
-        valid_rounds = ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "Q", "SF", "Final"]
+        valid_rounds = ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "Q", "SF", "3rd Place", "Final"]
         if round not in valid_rounds:
-            await interaction.response.send_message("❌ Invalid round. Please select R1-R10, Q, SF, or Final.", ephemeral=True)
+            await interaction.response.send_message("❌ Invalid round. Please select R1-R10, Q, SF, 3rd Place, or Final.", ephemeral=True)
             return
+        
         
         # Get current channel
         channel = interaction.channel
@@ -7875,16 +7941,52 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
             m_t1   = match['team1']
             m_t2   = match['team2']
             m_rnd  = match['round']
+            round_name = match.get('round_name', f"Round {m_rnd}")
             tag    = f"MatchID:{m_id}"
+
+            # Map round_name to potential prefixes for matching manual / old channels
+            round_prefixes = []
+            r_name_lower = round_name.lower()
+            if "semi" in r_name_lower:
+                if "loser" in r_name_lower:
+                    round_prefixes.extend(["lsf", "lsemi", "lsemifinal", f"r{m_rnd}", f"r-{abs(m_rnd)}"])
+                else:
+                    round_prefixes.extend(["sf", "semi", "semifinal", "rsemi", f"r{m_rnd}", f"r-{abs(m_rnd)}"])
+            elif "quarter" in r_name_lower:
+                if "loser" in r_name_lower:
+                    round_prefixes.extend(["lq", "lquarter", "lquarterfinal", f"r{m_rnd}", f"r-{abs(m_rnd)}"])
+                else:
+                    round_prefixes.extend(["q", "quarter", "quarterfinal", "rquarter", f"r{m_rnd}", f"r-{abs(m_rnd)}"])
+            elif "final" in r_name_lower:
+                if "loser" in r_name_lower:
+                    round_prefixes.extend(["lfinal", f"r{m_rnd}", f"r-{abs(m_rnd)}"])
+                else:
+                    round_prefixes.extend(["final", "f", "rfinal", f"r{m_rnd}", f"r-{abs(m_rnd)}"])
+            elif "losers round" in r_name_lower:
+                m_num = re.search(r'\d+', r_name_lower)
+                if m_num:
+                    num_str = m_num.group(0)
+                    round_prefixes.extend([f"lr{num_str}", f"l{num_str}", f"r{m_rnd}", f"r-{abs(m_rnd)}"])
+                else:
+                    round_prefixes.extend([f"lr{abs(m_rnd)}", f"r{m_rnd}", f"r-{abs(m_rnd)}"])
+            elif "round" in r_name_lower:
+                m_num = re.search(r'\d+', r_name_lower)
+                if m_num:
+                    num_str = m_num.group(0)
+                    round_prefixes.extend([f"r{num_str}", f"rd{num_str}", f"r-{abs(m_rnd)}"])
+                else:
+                    round_prefixes.extend([f"r{m_rnd}", f"r-{abs(m_rnd)}"])
+            else:
+                round_prefixes.extend([f"r{m_rnd}", f"r-{abs(m_rnd)}", re.sub(r'[^a-zA-Z0-9]', '', r_name_lower)])
 
             # Build every plausible name variant for this match
             name_variants = set()
-            for trunc in [8, 10, 12, 14, 16, 20, 25]:
-                s1 = re.sub(r'[^a-zA-Z0-9]', '', m_t1).lower()[:trunc]
-                s2 = re.sub(r'[^a-zA-Z0-9]', '', m_t2).lower()[:trunc]
-                name_variants.add(f"r{m_rnd}-{s1}-vs-{s2}")
-                # also swapped order
-                name_variants.add(f"r{m_rnd}-{s2}-vs-{s1}")
+            for prefix in round_prefixes:
+                for trunc in [8, 10, 12, 14, 16, 20, 25]:
+                    s1 = re.sub(r'[^a-zA-Z0-9]', '', m_t1).lower()[:trunc]
+                    s2 = re.sub(r'[^a-zA-Z0-9]', '', m_t2).lower()[:trunc]
+                    name_variants.add(f"{prefix}-{s1}-vs-{s2}")
+                    name_variants.add(f"{prefix}-{s2}-vs-{s1}")
 
             for ch in all_guild_channels:
                 if not isinstance(ch, discord.TextChannel):
@@ -7916,6 +8018,7 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
             team1, team2 = match['team1'], match['team2']
             p1_id, p2_id = match['player1_id'], match['player2_id']
             match_id, mod_round = match['id'], match['round']
+            round_name = match.get('round_name', f"Round {mod_round}")
             
             loop_percent = 40 + int((idx / total_matches) * 55)
             await report(loop_percent, f"Processing match {idx+1}/{total_matches}: {team1} vs {team2}...")
@@ -7964,19 +8067,108 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
             captain1 = await resolve_member(c1_raw)
             captain2 = await resolve_member(c2_raw)
             
+            # Map round_name to a standardized short prefix
+            round_lbl = str(mod_round)
+            r_name_lower = round_name.lower()
+            if "semi" in r_name_lower:
+                if "loser" in r_name_lower:
+                    round_lbl = "lsf"
+                else:
+                    round_lbl = "sf"
+            elif "quarter" in r_name_lower:
+                if "loser" in r_name_lower:
+                    round_lbl = "lq"
+                else:
+                    round_lbl = "q"
+            elif "final" in r_name_lower:
+                if "loser" in r_name_lower:
+                    round_lbl = "lfinal"
+                else:
+                    round_lbl = "final"
+            elif "losers round" in r_name_lower:
+                m_num = re.search(r'\d+', r_name_lower)
+                if m_num:
+                    round_lbl = f"lr{m_num.group(0)}"
+                else:
+                    round_lbl = f"lr{abs(mod_round)}"
+            elif "round" in r_name_lower:
+                m_num = re.search(r'\d+', r_name_lower)
+                if m_num:
+                    round_lbl = f"r{m_num.group(0)}"
+                else:
+                    round_lbl = f"r{mod_round}"
+            else:
+                round_lbl = re.sub(r'[^a-zA-Z0-9]', '', r_name_lower)
+
             if is_1v1:
                 n1 = (captain1.name if captain1 else re.sub(r'[^a-zA-Z0-9]', '', team1))[:12].lower()
                 n2 = (captain2.name if captain2 else re.sub(r'[^a-zA-Z0-9]', '', team2))[:12].lower()
-                chan_name = f"r{mod_round}-{n1}-vs-{n2}"
+                chan_name = f"{round_lbl}-{n1}-vs-{n2}"
             else:
                 safe_t1 = re.sub(r'[^a-zA-Z0-9]', '', team1).lower()[:8]
                 safe_t2 = re.sub(r'[^a-zA-Z0-9]', '', team2).lower()[:8]
-                chan_name = f"r{mod_round}-{safe_t1}-vs-{safe_t2}"
+                chan_name = f"{round_lbl}-{safe_t1}-vs-{safe_t2}"
                 
             chan_name = re.sub(r'[^a-zA-Z0-9\-]', '-', chan_name)
             chan_name = re.sub(r'-+', '-', chan_name).strip('-')[:100].lower()
             topic = f"MatchID:{match_id}"
             
+            # Map round_name to potential prefixes for duplicate detection checking
+            round_prefixes = []
+            if "semi" in r_name_lower:
+                if "loser" in r_name_lower:
+                    round_prefixes.extend(["lsf", "lsemi", "lsemifinal", f"r{mod_round}", f"r-{abs(mod_round)}"])
+                else:
+                    round_prefixes.extend(["sf", "semi", "semifinal", "rsemi", f"r{mod_round}", f"r-{abs(mod_round)}"])
+            elif "quarter" in r_name_lower:
+                if "loser" in r_name_lower:
+                    round_prefixes.extend(["lq", "lquarter", "lquarterfinal", f"r{mod_round}", f"r-{abs(mod_round)}"])
+                else:
+                    round_prefixes.extend(["q", "quarter", "quarterfinal", "rquarter", f"r{mod_round}", f"r-{abs(mod_round)}"])
+            elif "final" in r_name_lower:
+                if "loser" in r_name_lower:
+                    round_prefixes.extend(["lfinal", f"r{mod_round}", f"r-{abs(mod_round)}"])
+                else:
+                    round_prefixes.extend(["final", "f", "rfinal", f"r{mod_round}", f"r-{abs(mod_round)}"])
+            elif "losers round" in r_name_lower:
+                m_num = re.search(r'\d+', r_name_lower)
+                if m_num:
+                    num_str = m_num.group(0)
+                    round_prefixes.extend([f"lr{num_str}", f"l{num_str}", f"r{mod_round}", f"r-{abs(mod_round)}"])
+                else:
+                    round_prefixes.extend([f"lr{abs(mod_round)}", f"r{mod_round}", f"r-{abs(mod_round)}"])
+            elif "round" in r_name_lower:
+                m_num = re.search(r'\d+', r_name_lower)
+                if m_num:
+                    num_str = m_num.group(0)
+                    round_prefixes.extend([f"r{num_str}", f"rd{num_str}", f"r-{abs(mod_round)}"])
+                else:
+                    round_prefixes.extend([f"r{mod_round}", f"r-{abs(mod_round)}"])
+            else:
+                round_prefixes.extend([f"r{mod_round}", f"r-{abs(mod_round)}", re.sub(r'[^a-zA-Z0-9]', '', r_name_lower)])
+
+            # Build every plausible name variant for duplicate checks
+            name_variants = set()
+            for prefix in round_prefixes:
+                for trunc in [8, 10, 12, 14, 16, 20, 25]:
+                    s1 = re.sub(r'[^a-zA-Z0-9]', '', team1).lower()[:trunc]
+                    s2 = re.sub(r'[^a-zA-Z0-9]', '', team2).lower()[:trunc]
+                    name_variants.add(f"{prefix}-{s1}-vs-{s2}")
+                    name_variants.add(f"{prefix}-{s2}-vs-{s1}")
+                    if captain1:
+                        c1_name = captain1.name.lower()[:trunc]
+                        name_variants.add(f"{prefix}-{c1_name}-vs-{s2}")
+                        name_variants.add(f"{prefix}-{s2}-vs-{c1_name}")
+                    if captain2:
+                        c2_name = captain2.name.lower()[:trunc]
+                        name_variants.add(f"{prefix}-{s1}-vs-{c2_name}")
+                        name_variants.add(f"{prefix}-{c2_name}-vs-{s1}")
+                    if captain1 and captain2:
+                        c1_name = captain1.name.lower()[:trunc]
+                        c2_name = captain2.name.lower()[:trunc]
+                        name_variants.add(f"{prefix}-{c1_name}-vs-{c2_name}")
+                        name_variants.add(f"{prefix}-{c2_name}-vs-{c1_name}")
+
             already_exists = False
             # Use guild._channels to check ALL channels including ones in restricted/closed
             # categories that may not be visible to the bot via guild.text_channels cache.
@@ -7989,17 +8181,13 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                 if channel.topic and f"MatchID:{match_id}" in channel.topic:
                     already_exists = True
                     break
-                # Check by channel name (exact match)
-                if channel.name == chan_name:
-                    already_exists = True
-                    break
-                # Check by channel name after stripping status prefixes (e.g. "sh-r2-team-vs-team")
-                stripped_name = channel.name
+                # Strip status prefix to get base name
+                base_name = channel.name
                 for pfx in STATUS_PREFIXES:
-                    if stripped_name.startswith(pfx):
-                        stripped_name = stripped_name[len(pfx):]
+                    if base_name.startswith(pfx):
+                        base_name = base_name[len(pfx):]
                         break
-                if stripped_name == chan_name:
+                if base_name in name_variants:
                     already_exists = True
                     break
             if already_exists:
@@ -8065,11 +8253,11 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                 event_id = f"challonge_{match_id}"
                 scheduled_events[event_id] = {
                     'guild_id': guild.id,
-                    'title': f"{format_round_heading(mod_round)} Match",
+                    'title': f"{round_name} Match",
                     'datetime': datetime.datetime.utcnow(),
                     'time_str': "Live",
                     'date_str': "Live",
-                    'round': str(mod_round),
+                    'round': round_name,
                     'group': None,
                     'minutes_left': 0,
                     'tournament': t_cfg.get('name', 'Tournament'),
@@ -8106,7 +8294,7 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                     inline=False
                 )
                 
-                round_display = format_round_heading(mod_round)
+                round_display = round_name
                 if is_1v1:
                     pval = f"**Round:** {round_display}\n**Captain 1:** {captain1.mention if captain1 else c1_raw or team1}\n**Captain 2:** {captain2.mention if captain2 else c2_raw or team2}"
                 else:
