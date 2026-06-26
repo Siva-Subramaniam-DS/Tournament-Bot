@@ -1705,11 +1705,19 @@ def _sync_fetch_google_sheet_captains(sheet_link: str):
                 
         # Find which column contains the discord developer ID or mention (Value)
         val_col = -1
+        # Try more specific ID terms first, avoiding usernames
         for i, h in enumerate(h_lower):
-            if any(x in h for x in ['developer id', 'discord id', 'discord_id', 'mention', 'discord', 'uid', 'id']):
-                if i != key_col:
+            if i != key_col:
+                if any(x in h for x in ['developer id', 'developers id', 'developers i\'d', 'discord id', 'discord_id', 'mention', 'uid', 'id']) and not any(x in h for x in ['username', 'user name', 'display name']):
                     val_col = i
                     break
+        # Fallback to any column with discord if not found
+        if val_col == -1:
+            for i, h in enumerate(h_lower):
+                if i != key_col:
+                    if 'discord' in h:
+                        val_col = i
+                        break
                 
         # Default to columns 0 and 1 if nothing found
         if key_col == -1: key_col = 0
@@ -8438,6 +8446,112 @@ def _build_team_fields(format_str: str) -> list:
             fields.append(tmpl.format(n=n))
     return fields
 
+def get_ordinals(n: int) -> list:
+    suffixes = {1: "st", 2: "nd", 3: "rd"}
+    suffix = suffixes.get(n, "th")
+    num_str = f"{n}{suffix}" # e.g. "2nd", "3rd", "4th"
+    
+    words = {
+        1: ["first", "1st"],
+        2: ["second", "2nd"],
+        3: ["third", "3rd"],
+        4: ["fourth", "4th"],
+        5: ["fifth", "5th"],
+        6: ["sixth", "6th"],
+        7: ["seventh", "7th"],
+        8: ["eighth", "8th"],
+        9: ["ninth", "9th"],
+        10: ["tenth", "10th"]
+    }
+    
+    result = [num_str, f"{n}"]
+    if n in words:
+        result.extend(words[n])
+    return list(dict.fromkeys(result)) # remove duplicates
+
+def get_player_aliases(n: int, attr_type: str) -> list:
+    ordinals = get_ordinals(n)
+    
+    # Generate prefixes
+    prefixes = []
+    for ord_val in ordinals:
+        prefixes.extend([
+            f"{ord_val} player",
+            f"{ord_val}player",
+            f"player {ord_val}",
+            f"player{ord_val}",
+            f"p{ord_val}",
+            f"p {ord_val}"
+        ])
+    prefixes = list(dict.fromkeys(prefixes)) # deduplicate
+    
+    # Suffixes based on attribute type
+    if attr_type == "Discord ID":
+        suffixes = [
+            "discord developers i'd",
+            "discord developers id",
+            "discord developer id",
+            "developer id",
+            "discord id",
+            "discord",
+            "discord tag",
+            "discord username",
+            "discord user name",
+            "username",
+            "user name"
+        ]
+    elif attr_type == "Game Name":
+        suffixes = [
+            "in game name",
+            "in-game name",
+            "ign",
+            "game name",
+            "name",
+            "in-game name (for example",
+            "ign (for example"
+        ]
+    elif attr_type == "Game ID":
+        suffixes = [
+            "game i'd",
+            "game id",
+            "in game id",
+            "in-game id",
+            "uid",
+            "id",
+            "riot id",
+            "in-game id (for example",
+            "uid (for example"
+        ]
+    elif attr_type == "Title":
+        suffixes = [
+            "in game title",
+            "in-game title",
+            "title",
+            "rank",
+            "role"
+        ]
+    else:
+        suffixes = []
+        
+    aliases = []
+    # 1. Combine prefixes and suffixes
+    for p in prefixes:
+        for s in suffixes:
+            aliases.append(f"{p} {s}")
+            aliases.append(f"{p}{s}")
+            
+    # 2. Add original templates as fallback
+    if attr_type == "Discord ID":
+        aliases.extend([f"player{n} discord developer id", f"player {n} discord developer id", f"player {n} developer id", f"player{n} developer id", f"p{n} discord developer id", f"p{n} developer id", f"player{n} discord id", f"player {n} discord", f"player {n} id", f"player{n} id", f"p{n} discord id", f"p{n} discord", f"player {n}"])
+    elif attr_type == "Game Name":
+        aliases.extend([f"player{n} in-game name", f"player {n} in-game name", f"p{n} in-game name", f"player{n} game name", f"player {n} ign", f"player {n} name", f"player{n} ign", f"p{n} game name", f"p{n} ign", f"p{n} name"])
+    elif attr_type == "Game ID":
+        aliases.extend([f"player{n} in-game id", f"player {n} in-game id", f"p{n} in-game id", f"player{n} game id", f"player {n} game id", f"player {n} uid", f"player{n} uid", f"p{n} game id", f"p{n} uid"])
+    elif attr_type == "Title":
+        aliases.extend([f"player{n} in-game title", f"player {n} in-game title", f"p{n} in-game title", f"player{n} title", f"player {n} rank", f"player{n} rank", f"p{n} title", f"p{n} rank"])
+        
+    return list(dict.fromkeys(aliases))
+
 def _col_index(header: list, name: str) -> int:
     """Return the column index for name (case-insensitive, normalized spaces), or -1 if not found."""
     if not name:
@@ -8668,14 +8782,14 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
             if is_1v1:
                 search_col = _col_index(header, "Player Discord ID")
                 if search_col == -1:
-                    for alias in ["player discord developer id", "discord developer id", "developer id", "player discord id", "discord id", "player discord", "discord tag", "discord name", "discord"]:
+                    for alias in ["player discord developers i'd", "player discord developers id", "player discord developer id", "discord developer id", "developer id", "player discord id", "discord id", "player discord", "discord tag", "discord name", "discord", "discord developers i'd", "discord developers id", "discord developer id", "player discord username", "discord username"]:
                         search_col = _col_index(header, alias)
                         if search_col != -1:
                             break
             else:
                 search_col = _col_index(header, "Captain Discord ID")
                 if search_col == -1:
-                    for alias in ["captain discord developer id", "captain developer id", "discord developer id", "developer id", "captain discord id", "captain discord", "captain id", "discord id", "captain", "captain's discord", "discord tag", "captain discord name", "discord name"]:
+                    for alias in ["captain discord developers i'd", "captain discord developers id", "captain discord developer id", "captain developer id", "discord developer id", "developer id", "captain discord id", "captain discord", "captain id", "discord id", "captain", "captain's discord", "discord tag", "captain discord name", "discord name", "captain discord username", "discord username"]:
                         search_col = _col_index(header, alias)
                         if search_col != -1:
                             break
@@ -8701,10 +8815,10 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
                 text_lines.append("───────────────────────────")
                 
                 aliases_map_1v1 = {
-                    "Player Discord ID": ["player discord developer id", "discord developer id", "developer id", "player discord id", "discord id", "player discord", "discord tag", "discord name", "discord"],
-                    "Player Game Name": ["game name", "player name", "ign", "in-game name", "player ign", "player in-game name", "in-game name (for example"],
-                    "Player Game ID": ["game id", "player game id", "player id", "uid", "riot id", "player in-game id", "in-game id (for example"],
-                    "Player Title": ["title", "player title", "rank", "role", "player in-game title", "in-game title"]
+                    "Player Discord ID": ["player discord developers i'd", "player discord developers id", "player discord developer id", "discord developer id", "developer id", "player discord id", "discord id", "player discord", "discord tag", "discord name", "discord", "discord developers i'd", "discord developers id", "discord developer id", "player discord username", "discord username"],
+                    "Player Game Name": ["player in game name", "player in-game name", "game name", "player name", "ign", "in-game name", "player ign", "player in-game name", "in-game name (for example"],
+                    "Player Game ID": ["player game i'd", "player game id", "game i'd", "game id", "player game id", "player id", "uid", "riot id", "player in-game id", "in-game id (for example"],
+                    "Player Title": ["player title", "title", "rank", "role", "player in-game title", "in-game title"]
                 }
                 
                 found_any = False
@@ -8777,10 +8891,10 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
                 # Captain block
                 cap_block = []
                 aliases_map_captain = {
-                    "Captain Discord ID": ["captain discord developer id", "captain developer id", "discord developer id", "developer id", "captain discord id", "captain discord", "captain id", "discord id", "captain", "captain's discord", "discord tag"],
-                    "Captain Game Name": ["captain in-game name", "captain ign", "captain game name", "captain name", "captain's ign", "captain's name", "game name", "ign"],
-                    "Captain Game ID": ["captain in-game id", "captain game id", "captain uid", "captain's game id", "game id", "uid"],
-                    "Captain Title": ["captain in-game title", "captain title", "captain rank", "captain's title", "title", "rank"]
+                    "Captain Discord ID": ["captain discord developers i'd", "captain discord developers id", "captain discord developer id", "captain developer id", "discord developer id", "developer id", "captain discord id", "captain discord", "captain id", "discord id", "captain", "captain's discord", "discord tag", "captain discord username", "discord username", "captain discord user name"],
+                    "Captain Game Name": ["captain in game name", "captain in-game name", "captain ign", "captain game name", "captain name", "captain's ign", "captain's name", "game name", "ign"],
+                    "Captain Game ID": ["captain game i'd", "captain game id", "captain in-game id", "captain uid", "captain's game id", "game id", "uid", "game i'd"],
+                    "Captain Title": ["captain title", "captain in-game title", "captain rank", "captain's title", "title", "rank"]
                 }
                 
                 for fname in ["Captain Discord ID", "Captain Game Name", "Captain Game ID", "Captain Title"]:
@@ -8834,15 +8948,8 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
                     player_block = []
                     for tmpl in _TEAM_PLAYER_FIELDS_TEMPLATE:
                         fname = tmpl.format(n=n)
-                        aliases = []
-                        if "Discord ID" in fname:
-                            aliases = [f"player{n} discord developer id", f"player {n} discord developer id", f"player {n} developer id", f"player{n} developer id", f"p{n} discord developer id", f"p{n} developer id", f"player{n} discord id", f"player {n} discord", f"player {n} id", f"player{n} id", f"p{n} discord id", f"p{n} discord", f"player {n}"]
-                        elif "Game Name" in fname:
-                            aliases = [f"player{n} in-game name", f"player {n} in-game name", f"p{n} in-game name", f"player{n} game name", f"player {n} ign", f"player {n} name", f"player{n} ign", f"p{n} game name", f"p{n} ign", f"p{n} name"]
-                        elif "Game ID" in fname:
-                            aliases = [f"player{n} in-game id", f"player {n} in-game id", f"p{n} in-game id", f"player{n} game id", f"player {n} game id", f"player {n} uid", f"player{n} uid", f"p{n} game id", f"p{n} uid"]
-                        elif "Title" in fname:
-                            aliases = [f"player{n} in-game title", f"player {n} in-game title", f"p{n} in-game title", f"player{n} title", f"player {n} rank", f"player{n} rank", f"p{n} title", f"p{n} rank"]
+                        attr_type = fname.replace(f"Player {n} ", "")
+                        aliases = get_player_aliases(n, attr_type)
                             
                         col = _col_index(header, fname)
                         if col == -1:
@@ -9043,10 +9150,10 @@ async def player_information(interaction: discord.Interaction, user: discord.Mem
 
             found_any = False
             aliases_map_1v1 = {
-                "Player Discord ID": ["player discord developer id", "discord developer id", "developer id", "player discord id", "discord id", "player discord", "discord tag", "discord name", "discord"],
-                "Player Game Name": ["game name", "player name", "ign", "in-game name", "player ign", "player in-game name", "in-game name (for example"],
-                "Player Game ID": ["game id", "player game id", "player id", "uid", "riot id", "player in-game id", "in-game id (for example"],
-                "Player Title": ["title", "player title", "rank", "role", "player in-game title", "in-game title"]
+                "Player Discord ID": ["player discord developers i'd", "player discord developers id", "player discord developer id", "discord developer id", "developer id", "player discord id", "discord id", "player discord", "discord tag", "discord name", "discord", "discord developers i'd", "discord developers id", "discord developer id", "player discord username", "discord username"],
+                "Player Game Name": ["player in game name", "player in-game name", "game name", "player name", "ign", "in-game name", "player ign", "player in-game name", "in-game name (for example"],
+                "Player Game ID": ["player game i'd", "player game id", "game i'd", "game id", "player game id", "player id", "uid", "riot id", "player in-game id", "in-game id (for example"],
+                "Player Title": ["player title", "title", "rank", "role", "player in-game title", "in-game title"]
             }
 
             for field_name in _1V1_FIELDS:
@@ -9135,10 +9242,10 @@ async def player_information(interaction: discord.Interaction, user: discord.Mem
             # Captain block
             cap_block = []
             aliases_map_captain = {
-                "Captain Discord ID": ["captain discord developer id", "captain developer id", "discord developer id", "developer id", "captain discord id", "captain discord", "captain id", "discord id", "captain", "captain's discord", "discord tag"],
-                "Captain Game Name": ["captain in-game name", "captain ign", "captain game name", "captain name", "captain's ign", "captain's name", "game name", "ign"],
-                "Captain Game ID": ["captain in-game id", "captain game id", "captain uid", "captain's game id", "game id", "uid"],
-                "Captain Title": ["captain in-game title", "captain title", "captain rank", "captain's title", "title", "rank"]
+                "Captain Discord ID": ["captain discord developers i'd", "captain discord developers id", "captain discord developer id", "captain developer id", "discord developer id", "developer id", "captain discord id", "captain discord", "captain id", "discord id", "captain", "captain's discord", "discord tag", "captain discord username", "discord username", "captain discord user name"],
+                "Captain Game Name": ["captain in game name", "captain in-game name", "captain ign", "captain game name", "captain name", "captain's ign", "captain's name", "game name", "ign"],
+                "Captain Game ID": ["captain game i'd", "captain game id", "captain in-game id", "captain uid", "captain's game id", "game id", "uid", "game i'd"],
+                "Captain Title": ["captain title", "captain in-game title", "captain rank", "captain's title", "title", "rank"]
             }
 
             for fname in ["Captain Discord ID", "Captain Game Name", "Captain Game ID", "Captain Title"]:
@@ -9196,15 +9303,8 @@ async def player_information(interaction: discord.Interaction, user: discord.Mem
                 player_block = []
                 for tmpl in _TEAM_PLAYER_FIELDS_TEMPLATE:
                     fname = tmpl.format(n=n)
-                    aliases = []
-                    if "Discord ID" in fname:
-                        aliases = [f"player{n} discord developer id", f"player {n} discord developer id", f"player {n} developer id", f"player{n} developer id", f"p{n} discord developer id", f"p{n} developer id", f"player{n} discord id", f"player {n} discord", f"player {n} id", f"player{n} id", f"p{n} discord id", f"p{n} discord", f"player {n}"]
-                    elif "Game Name" in fname:
-                        aliases = [f"player{n} in-game name", f"player {n} in-game name", f"p{n} in-game name", f"player{n} game name", f"player {n} ign", f"player {n} name", f"player{n} ign", f"p{n} game name", f"p{n} ign", f"p{n} name"]
-                    elif "Game ID" in fname:
-                        aliases = [f"player{n} in-game id", f"player {n} in-game id", f"p{n} in-game id", f"player{n} game id", f"player {n} game id", f"player {n} uid", f"player{n} uid", f"p{n} game id", f"p{n} uid"]
-                    elif "Title" in fname:
-                        aliases = [f"player{n} in-game title", f"player {n} in-game title", f"p{n} in-game title", f"player{n} title", f"player {n} rank", f"player{n} rank", f"p{n} title", f"p{n} rank"]
+                    attr_type = fname.replace(f"Player {n} ", "")
+                    aliases = get_player_aliases(n, attr_type)
 
                     col = _col_index(header, fname)
                     if col == -1:
