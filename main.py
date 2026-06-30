@@ -327,7 +327,7 @@ CHANNEL_IDS = GuildDictProxy(DEFAULT_CHANNEL_IDS, "channel_ids")
 ROLE_IDS = GuildDictProxy(DEFAULT_ROLE_IDS, "role_ids")
 
 # Bot Owner ID for special permissions
-BOT_OWNER_ID = 1251442077561131059
+BOT_OWNER_ID = int(os.getenv("BOT_OWNER_ID", "1251442077561131059"))
 
 # Legacy loads for global scope variables
 class DynamicString:
@@ -2178,7 +2178,9 @@ class StaffConfirmationView(discord.ui.View):
             
             btn = discord.ui.Button(label=btn_label, style=btn_style, custom_id=f"confirm_judge_{self.event_id}")
             btn.callback = self.confirm_judge_callback
-            if is_too_late and not is_confirmed:
+            if is_confirmed:
+                btn.disabled = True
+            elif is_too_late:
                 btn.disabled = True
                 btn.label = "❌ Too Late to Confirm"
             self.add_item(btn)
@@ -2191,7 +2193,9 @@ class StaffConfirmationView(discord.ui.View):
             
             btn = discord.ui.Button(label=btn_label, style=btn_style, custom_id=f"confirm_recorder_{self.event_id}")
             btn.callback = self.confirm_recorder_callback
-            if is_too_late and not is_confirmed:
+            if is_confirmed:
+                btn.disabled = True
+            elif is_too_late:
                 btn.disabled = True
                 btn.label = "❌ Too Late to Confirm"
             self.add_item(btn)
@@ -2615,19 +2619,17 @@ class TakeScheduleButton(discord.ui.View):
             if child.custom_id == "take_schedule_btn" or (child.custom_id and child.custom_id.startswith("take_schedule_")):
                 child.custom_id = f"take_schedule_{event_id}"
                 if self.judge:
-                    j_name = getattr(self.judge, 'display_name', str(self.judge))
-                    child.label = f"Taken by {j_name}"
-                    child.style = discord.ButtonStyle.gray
+                    child.label = "🙋 Assigned"
+                    child.style = discord.ButtonStyle.green
                     child.disabled = True
-                    child.emoji = "✅"
+                    child.emoji = None
             elif child.custom_id == "record_btn" or (child.custom_id and child.custom_id.startswith("record_")):
                 child.custom_id = f"record_{event_id}"
                 if self.recorder:
-                    r_name = getattr(self.recorder, 'display_name', str(self.recorder))
-                    child.label = f"Recording: {r_name}"
-                    child.style = discord.ButtonStyle.gray
+                    child.label = "📹 Assigned"
+                    child.style = discord.ButtonStyle.green
                     child.disabled = True
-                    child.emoji = "✅"
+                    child.emoji = None
 
     def _is_event_started(self) -> bool:
         """Returns True if the event datetime has passed (event started)."""
@@ -2746,10 +2748,10 @@ class TakeScheduleButton(discord.ui.View):
             self.judge = interaction.user
             add_judge_assignment(interaction.user.id, self.event_id)
 
-            button.label = f"Taken by {interaction.user.display_name}"
-            button.style = discord.ButtonStyle.secondary
+            button.label = "🙋 Assigned"
+            button.style = discord.ButtonStyle.green
             button.disabled = True
-            button.emoji = "✅"
+            button.emoji = None
 
             embed = interaction.message.embeds[0]
             embed.color = discord.Color.green()
@@ -2900,10 +2902,10 @@ class TakeScheduleButton(discord.ui.View):
                 return
 
             self.recorder = interaction.user
-            button.label = f"Recording: {interaction.user.display_name}"
-            button.style = discord.ButtonStyle.secondary
+            button.label = "📹 Assigned"
+            button.style = discord.ButtonStyle.green
             button.disabled = True
-            button.emoji = "✅"
+            button.emoji = None
 
             if self.event_id in scheduled_events:
                 scheduled_events[self.event_id]['recorder'] = interaction.user
@@ -5225,8 +5227,7 @@ async def event_create(
     t1_disp = team_1_name if team_1_name else team_1_captain.name
     t2_disp = team_2_name if team_2_name else team_2_captain.name
     embed = discord.Embed(
-        title="Schedule",
-        description=f"🗓️ {t1_disp} VS {t2_disp}",
+        title=f"🏆 {t1_disp} 🆚 {t2_disp}",
         color=discord.Color.blue(),
         timestamp=discord.utils.utcnow()
     )
@@ -5509,7 +5510,12 @@ async def event_result(
             break
 
     # Create results embed matching the exact template format
-    embed_description = f"🗓️ {w_display_name} Vs {l_display_name}\n"
+    now_utc = datetime.datetime.now(pytz.UTC)
+    utc_str = now_utc.strftime("%Y-%m-%d %H:%M")
+    timestamp = int(now_utc.timestamp())
+    
+    embed_description = f"**Result UTC Time:** {utc_str}\n"
+    embed_description += f"**Result Local Time:** <t:{timestamp}:f> (<t:{timestamp}:R>)\n\n"
     embed_description += f"**Tournament:** {tournament}\n"
     if mode:
         embed_description += f"**Mode:** {mode}\n"
@@ -5520,7 +5526,7 @@ async def event_result(
         embed_description += f"\n**Group:** {group_label}"
     
     embed = discord.Embed(
-        title="Results",
+        title=f"🏆 {w_display_name} 🆚 {l_display_name}",
         description=embed_description,
         color=discord.Color.gold(),
         timestamp=discord.utils.utcnow()
@@ -5656,15 +5662,22 @@ async def event_result(
     if matching_event:
         poster_image = matching_event.get('poster_path')
         
-        # Check for recorder_link/judge_link
+        # Check for recorder_link/judge_link/recording_link
         rec_link = matching_event.get('recorder_link')
         jdg_link = matching_event.get('judge_link')
-        if rec_link or jdg_link:
-            links_text = []
-            if rec_link:
-                links_text.append(f"🎥 **Recorder VOD:** [Link]({rec_link})")
-            if jdg_link:
-                links_text.append(f"⚖️ **Judge VOD:** [Link]({jdg_link})")
+        recording_link = matching_event.get('recording_link')
+        if recording_link or rec_link or jdg_link:
+            if recording_link:
+                value_text = f"[Link 1]({recording_link})"
+                field_title = "🎥 Recording Link"
+            else:
+                links_text = []
+                if rec_link:
+                    links_text.append(f"🎥 **Recorder VOD:** [Link]({rec_link})")
+                if jdg_link:
+                    links_text.append(f"⚖️ **Judge VOD:** [Link]({jdg_link})")
+                value_text = "\n".join(links_text)
+                field_title = "🎥 Recordings / VODs"
             
             remarks_idx = -1
             for idx, field in enumerate(embed.fields):
@@ -5672,9 +5685,9 @@ async def event_result(
                     remarks_idx = idx
                     break
             if remarks_idx != -1:
-                embed.insert_field_at(remarks_idx, name="🎥 Recordings / VODs", value="\n".join(links_text), inline=False)
+                embed.insert_field_at(remarks_idx, name=field_title, value=value_text, inline=False)
             else:
-                embed.add_field(name="🎥 Recordings / VODs", value="\n".join(links_text), inline=False)
+                embed.add_field(name=field_title, value=value_text, inline=False)
         
     if poster_image and os.path.exists(poster_image):
         try:
@@ -6677,16 +6690,21 @@ async def exchange(interaction: discord.Interaction, role: app_commands.Choice[s
 async def update_results_embed_with_links(guild: discord.Guild, event_data: dict):
     rec_link = event_data.get('recorder_link')
     jdg_link = event_data.get('judge_link')
-    if not rec_link and not jdg_link:
+    recording_link = event_data.get('recording_link')
+    if not rec_link and not jdg_link and not recording_link:
         return
         
-    links_text = []
-    if rec_link:
-        links_text.append(f"🎥 **Recorder VOD:** [Link]({rec_link})")
-    if jdg_link:
-        links_text.append(f"⚖️ **Judge VOD:** [Link]({jdg_link})")
-        
-    value_text = "\n".join(links_text)
+    if recording_link:
+        value_text = f"[Link 1]({recording_link})"
+        field_title = "🎥 Recording Link"
+    else:
+        links_text = []
+        if rec_link:
+            links_text.append(f"🎥 **Recorder VOD:** [Link]({rec_link})")
+        if jdg_link:
+            links_text.append(f"⚖️ **Judge VOD:** [Link]({jdg_link})")
+        value_text = "\n".join(links_text)
+        field_title = "🎥 Recordings / VODs"
     
     # 1. Update results channel message
     res_ch_id = event_data.get('results_channel_id')
@@ -6703,11 +6721,11 @@ async def update_results_embed_with_links(guild: discord.Guild, event_data: dict
                     # Update embed fields
                     recording_field_index = -1
                     for idx, field in enumerate(embed.fields):
-                        if field.name == "🎥 Recordings / VODs":
+                        if field.name in ("🎥 Recordings / VODs", "🎥 Recording Link"):
                             recording_field_index = idx
                             break
                     if recording_field_index != -1:
-                        embed.set_field_at(recording_field_index, name="🎥 Recordings / VODs", value=value_text, inline=False)
+                        embed.set_field_at(recording_field_index, name=field_title, value=value_text, inline=False)
                     else:
                         remarks_field_index = -1
                         for idx, field in enumerate(embed.fields):
@@ -6715,9 +6733,9 @@ async def update_results_embed_with_links(guild: discord.Guild, event_data: dict
                                 remarks_field_index = idx
                                 break
                         if remarks_field_index != -1:
-                            embed.insert_field_at(remarks_field_index, name="🎥 Recordings / VODs", value=value_text, inline=False)
+                            embed.insert_field_at(remarks_field_index, name=field_title, value=value_text, inline=False)
                         else:
-                            embed.add_field(name="🎥 Recordings / VODs", value=value_text, inline=False)
+                            embed.add_field(name=field_title, value=value_text, inline=False)
                     await msg.edit(embed=embed)
         except Exception as e:
             print(f"Error updating results channel message with links: {e}")
@@ -6737,11 +6755,11 @@ async def update_results_embed_with_links(guild: discord.Guild, event_data: dict
                     # Update embed fields
                     recording_field_index = -1
                     for idx, field in enumerate(embed.fields):
-                        if field.name == "🎥 Recordings / VODs":
+                        if field.name in ("🎥 Recordings / VODs", "🎥 Recording Link"):
                             recording_field_index = idx
                             break
                     if recording_field_index != -1:
-                        embed.set_field_at(recording_field_index, name="🎥 Recordings / VODs", value=value_text, inline=False)
+                        embed.set_field_at(recording_field_index, name=field_title, value=value_text, inline=False)
                     else:
                         remarks_field_index = -1
                         for idx, field in enumerate(embed.fields):
@@ -6749,9 +6767,9 @@ async def update_results_embed_with_links(guild: discord.Guild, event_data: dict
                                 remarks_field_index = idx
                                 break
                         if remarks_field_index != -1:
-                            embed.insert_field_at(remarks_field_index, name="🎥 Recordings / VODs", value=value_text, inline=False)
+                            embed.insert_field_at(remarks_field_index, name=field_title, value=value_text, inline=False)
                         else:
-                            embed.add_field(name="🎥 Recordings / VODs", value=value_text, inline=False)
+                            embed.add_field(name=field_title, value=value_text, inline=False)
                     await msg.edit(embed=embed)
         except Exception as e:
             print(f"Error updating match channel results message with links: {e}")
@@ -7232,8 +7250,7 @@ async def event_edit(
         t2_disp = event_to_edit.get('team2_name') or t2_name
         
         schedule_embed = discord.Embed(
-            title="Schedule",
-            description=f"🗓️ {t1_disp} VS {t2_disp}",
+            title=f"🏆 {t1_disp} 🆚 {t2_disp}",
             color=discord.Color.blue(),
             timestamp=discord.utils.utcnow()
         )
@@ -7352,8 +7369,7 @@ async def event_edit(
         # Create public embed matching event_create format
         timestamp_val = int(new_datetime.replace(tzinfo=datetime.timezone.utc).timestamp())
         embed = discord.Embed(
-            title="Schedule",
-            description=f"🗓️ {t1_disp} VS {t2_disp}",
+            title=f"🏆 {t1_disp} 🆚 {t2_disp}",
             color=discord.Color.blue(),
             timestamp=discord.utils.utcnow()
         )
@@ -9710,7 +9726,7 @@ async def settings_clean(interaction: discord.Interaction):
             
         # 2. Delete from Supabase tables
         if supabase_client:
-            tables = ["GuildConfig", "Tournaments", "Events", "JudgeAssignments", "StaffStats", "Results", "Challonge_Uploads"]
+            tables = ["GuildConfig", "Tournaments", "Events", "JudgeAssignments", "StaffStats", "Results", "Challonge_Uploads", "Deadlines"]
             for table in tables:
                 try:
                     supabase_client.table(table).delete().eq("Guild_ID", guild_id_str).execute()
@@ -9769,6 +9785,30 @@ async def settings_clean(interaction: discord.Interaction):
             for ev_id in to_delete_events:
                 del scheduled_events[ev_id]
             save_scheduled_events()
+
+        # Cancel and delete scheduled deadlines for this guild
+        global scheduled_deadlines
+        to_delete_dl = [dl_id for dl_id, dl_data in scheduled_deadlines.items() if dl_data.get('guild_id') == guild_id]
+        for dl_id in to_delete_dl:
+            try:
+                cancel_deadline_tasks(dl_id)
+                del scheduled_deadlines[dl_id]
+            except Exception as e:
+                print(f"Error cancelling deadline {dl_id}: {e}")
+                
+        # Save scheduled deadlines local JSON
+        if to_delete_dl:
+            try:
+                data_to_save = {}
+                for d_id, d_data in scheduled_deadlines.items():
+                    copy_data = d_data.copy()
+                    if 'deadline_dt' in copy_data and isinstance(copy_data['deadline_dt'], datetime.datetime):
+                        copy_data['deadline_dt'] = copy_data['deadline_dt'].isoformat()
+                    data_to_save[d_id] = copy_data
+                with open('scheduled_deadlines.json', 'w', encoding='utf-8') as f:
+                    json.dump(data_to_save, f, indent=4)
+            except Exception as e:
+                print(f"Error saving scheduled_deadlines.json during clean: {e}")
 
         # Log bot activity
         log_embed = discord.Embed(
@@ -10245,6 +10285,198 @@ async def tournament_autocomplete(
     except Exception as e:
         print(f"Error in tournament_autocomplete: {e}")
         return []
+
+async def match_autocomplete(
+    interaction: discord.Interaction,
+    current: str
+) -> list[app_commands.Choice[str]]:
+    if not interaction.guild_id:
+        return []
+    try:
+        guild_id = interaction.guild_id
+        selected_tournament = getattr(interaction.namespace, "tournament", None)
+        
+        choices = []
+        current_lower = current.lower()
+        
+        for ev_id, ev_data in scheduled_events.items():
+            if ev_data.get('guild_id') != guild_id:
+                continue
+            
+            # If tournament is selected, filter by it
+            if selected_tournament:
+                ev_t = ev_data.get('tournament')
+                # Try matching both tournament ID and tournament name
+                t_cfg = load_guild_tournaments(guild_id).get(selected_tournament)
+                t_name = t_cfg.get('name') if t_cfg else None
+                
+                # Check match against selected tournament
+                if ev_t and selected_tournament.lower() not in ev_t.lower() and (not t_name or t_name.lower() not in ev_t.lower()):
+                    continue
+            
+            t1_val = ev_data.get('team1_name')
+            if not t1_val:
+                t1_cap = ev_data.get('team1_captain')
+                t1_val = getattr(t1_cap, 'name', str(t1_cap))
+            t2_val = ev_data.get('team2_name')
+            if not t2_val:
+                t2_cap = ev_data.get('team2_captain')
+                t2_val = getattr(t2_cap, 'name', str(t2_cap))
+                
+            rnd = ev_data.get('round', '')
+            
+            choice_name = f"[{ev_id}] {t1_val} vs {t2_val} ({rnd})"
+            if len(choice_name) > 100:
+                choice_name = choice_name[:97] + "..."
+                
+            if not current or current_lower in choice_name.lower():
+                choices.append(app_commands.Choice(name=choice_name, value=ev_id))
+                
+        return choices[:25]
+    except Exception as e:
+        print(f"Error in match_autocomplete: {e}")
+        return []
+
+link_group = app_commands.Group(name="link", description="Manage match links and VODs")
+
+@link_group.command(name="add", description="Add a recording/VOD link for a match event")
+@app_commands.describe(
+    tournament="Select the tournament",
+    match="Select the match event",
+    link="The URL of the recording/VOD link to add"
+)
+@app_commands.autocomplete(tournament=tournament_autocomplete, match=match_autocomplete)
+@with_guild_context
+async def link_add(
+    interaction: discord.Interaction,
+    tournament: str,
+    match: str,
+    link: str
+):
+    """Add a recording/VOD link for a match event."""
+    await interaction.response.defer(ephemeral=True)
+
+    if interaction.guild:
+        current_guild_id.set(interaction.guild.id)
+
+    # Permission check — Recorder, Judge, Helper, Organizer, or Bot Owner
+    is_owner = interaction.user.id == BOT_OWNER_ID
+    is_admin = interaction.guild and interaction.user.guild_permissions.administrator
+    cfg = get_guild_config(interaction.guild.id if interaction.guild else None)
+    role_ids = cfg.get("role_ids", DEFAULT_ROLE_IDS)
+
+    def safe_role_id(key):
+        val = role_ids.get(key)
+        try:
+            return int(val) if val is not None else None
+        except:
+            return None
+
+    user_role_ids = [r.id for r in interaction.user.roles] if hasattr(interaction.user, "roles") else []
+    allowed_roles = [
+        safe_role_id("recorder"),
+        safe_role_id("judge"),
+        safe_role_id("helper_team"),
+        safe_role_id("head_organizer"),
+        safe_role_id("organizer"),
+        safe_role_id("staff"),
+    ]
+    has_role = any(rid and rid in user_role_ids for rid in allowed_roles)
+
+    if not (is_owner or is_admin or has_role):
+        await interaction.followup.send(
+            "❌ You do not have permission to add links. Only staff and authorized roles can use this.",
+            ephemeral=True
+        )
+        return
+
+    link_stripped = link.strip()
+    if not (link_stripped.startswith("http://") or link_stripped.startswith("https://")):
+        await interaction.followup.send(
+            "❌ Please provide a valid URL starting with `http://` or `https://`.",
+            ephemeral=True
+        )
+        return
+
+    # Find the matching event
+    matched_event_id = None
+    if match in scheduled_events:
+        matched_event_id = match
+    else:
+        # Fallback substring search
+        for ev_id, ev_data in scheduled_events.items():
+            if ev_data.get('guild_id') != interaction.guild.id:
+                continue
+            ev_name_stored = ev_data.get("tournament", "") + " " + ev_data.get("round", "")
+            t1 = ev_data.get("team1_captain")
+            t2 = ev_data.get("team2_captain")
+            t1_name = getattr(t1, "display_name", str(t1)) if t1 else ""
+            t2_name = getattr(t2, "display_name", str(t2)) if t2 else ""
+            
+            search_str = match.lower()
+            if (
+                search_str in ev_name_stored.lower()
+                or search_str in t1_name.lower()
+                or search_str in t2_name.lower()
+                or t1_name.lower() in search_str
+                or t2_name.lower() in search_str
+                or search_str == ev_id.lower()
+            ):
+                matched_event_id = ev_id
+                break
+
+    if not matched_event_id:
+        await interaction.followup.send("❌ No matching scheduled event was found.", ephemeral=True)
+        return
+
+    # Save the link to the event dict
+    scheduled_events[matched_event_id]['recording_link'] = link_stripped
+    save_scheduled_events()
+
+    # Update result embeds if they were already posted
+    event_saved_note = f"\n✅ Link saved to event record **`{matched_event_id}`**."
+    if scheduled_events[matched_event_id].get('result_added'):
+        try:
+            await update_results_embed_with_links(interaction.guild, scheduled_events[matched_event_id])
+            event_saved_note += "\n✅ Posted result embeds have been updated with the new link."
+        except Exception as e:
+            print(f"Error updating result embeds with links in link_add: {e}")
+            event_saved_note += f"\n⚠️ Error updating results embeds: {e}"
+
+    embed = discord.Embed(
+        title="🎥 Recording Link Added",
+        description=(
+            f"**Tournament:** {tournament}\n"
+            f"**Event / Match:** {match}\n"
+            f"**Link:** {link_stripped}"
+        ),
+        color=discord.Color.green(),
+        timestamp=discord.utils.utcnow()
+    )
+    embed.add_field(name="📋 Details", value=event_saved_note, inline=False)
+    embed.set_footer(text=f"{ORGANIZATION_NAME} • Link System")
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+    # Log to bot activity log
+    try:
+        log_embed = discord.Embed(
+            title="🎥 Recording Link Added",
+            description=(
+                f"Staff member **{interaction.user.display_name}** added a recording link.\n"
+                f"**Event ID:** {matched_event_id}\n"
+                f"**Link:** {link_stripped}"
+            ),
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow()
+        )
+        log_embed.set_footer(text=f"Added by {interaction.user.display_name}")
+        await log_bot_activity(interaction.guild, log_embed)
+    except Exception as log_err:
+        print(f"Error logging record link: {log_err}")
+
+# Register link_group
+bot.tree.add_command(link_group)
 
 tournament_group = app_commands.Group(name="tournament", description="Manage tournaments configurations")
 
