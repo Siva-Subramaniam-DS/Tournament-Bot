@@ -4824,16 +4824,27 @@ async def staff_leaderboard(interaction: discord.Interaction):
             j_cnt   = stats.get('judge_count', 0)
             r_cnt   = stats.get('recorder_count', 0)
             total   = stats.get('total_count', 0)
-            line = f"{medal} **{name}**\n⚖️ {j_cnt}  🎥 {r_cnt}  ✅ {total}\n"
+            
+            # Role badge: show what this staff member has done
+            if j_cnt > 0 and r_cnt > 0:
+                role_badge = "⚖️🎥 Both"
+            elif j_cnt > 0:
+                role_badge = "⚖️ Judge-only"
+            elif r_cnt > 0:
+                role_badge = "🎥 Recorder-only"
+            else:
+                role_badge = "⬜ No Activity"
+            
+            line = f"{medal} **{name}** `{role_badge}`\n⚖️ {j_cnt}  🎥 {r_cnt}  ✅ {total}\n"
             if i % 2 == 1:
                 left_col += line
             else:
                 right_col += line
 
         if left_col:
-            embed.add_field(name="👥 Staff (odd)",  value=left_col,  inline=True)
+            embed.add_field(name="👥 Staff Rankings (1, 3, 5…)",  value=left_col,  inline=True)
         if right_col:
-            embed.add_field(name="👥 Staff (even)", value=right_col, inline=True)
+            embed.add_field(name="👥 Staff Rankings (2, 4, 6…)", value=right_col, inline=True)
 
         # Summary stats
         total_matches = sum(s.get('total_count', 0) for _, s in top_staff)
@@ -5862,25 +5873,56 @@ async def event_result(
     except Exception as e:
         print(f"⚠️ Could not post in Staff Attendance channel: {e}")
 
-    # Log event result activity
+    # ── CRUD Log: event_result ──
     try:
-        log_embed = discord.Embed(
+        res_log_embed = discord.Embed(
             title="🏆 Match Result Posted",
-            description=(
-                f"**Match:** {w_name} vs {l_name}\n"
-                f"**Score:** {winner_score} - {loser_score}\n"
-                f"**Tournament:** {tournament}\n"
-                f"**Round:** {round}"
-                + (f" ({group_label})" if group_label else "") + "\n"
-                f"**Remarks:** {remarks}"
-            ),
             color=discord.Color.gold(),
             timestamp=discord.utils.utcnow()
         )
-        log_embed.set_footer(text=f"Result posted by {interaction.user.display_name}")
-        await log_bot_activity(interaction.guild, log_embed)
+        res_log_embed.add_field(
+            name="🏆 Tournament",
+            value=f"`{tournament}`",
+            inline=True
+        )
+        res_log_embed.add_field(
+            name="🔁 Round",
+            value=f"`{round}`" + (f" • {group_label}" if group_label else ""),
+            inline=True
+        )
+        res_log_embed.add_field(
+            name="📋 Channel",
+            value=interaction.channel.mention,
+            inline=True
+        )
+        res_log_embed.add_field(
+            name="🥇 Winner",
+            value=f"{w_mention} — Score: **{winner_score}**" + (" ⚠️ DQ" if dq_status in ("Winner", "Both") else ""),
+            inline=True
+        )
+        res_log_embed.add_field(
+            name="❌ Loser",
+            value=f"{l_mention} — Score: **{loser_score}**" + (" ⚠️ DQ" if dq_status in ("Loser", "Both") else ""),
+            inline=True
+        )
+        res_log_embed.add_field(
+            name="📝 Remarks",
+            value=remarks or "—",
+            inline=False
+        )
+        staff_line = f"⚖️ **Judge:** {interaction.user.mention}"
+        if recorder:
+            staff_line += f"\n🎥 **Recorder:** {recorder.mention}"
+        res_log_embed.add_field(
+            name="👥 Staff on Duty",
+            value=staff_line,
+            inline=False
+        )
+        res_log_embed.set_footer(text=f"Result posted by {interaction.user.display_name} • ID: {interaction.user.id}")
+        await log_bot_activity(interaction.guild, res_log_embed)
     except Exception as log_err:
         print(f"Error logging event result: {log_err}")
+
 
     # Schedule auto-cleanup of matching events in this channel after 30 minutes
     try:
@@ -6504,6 +6546,43 @@ async def event_delete(interaction: discord.Interaction):
                 embed.set_footer(text=f"Event Management • {ORGANIZATION_NAME}")
                 
                 await select_interaction.response.edit_message(embed=embed, view=None)
+                
+                # ── CRUD Log: event_delete ──
+                try:
+                    t1_cap_raw = event_data.get('team1_captain')
+                    t2_cap_raw = event_data.get('team2_captain')
+                    t1_disp_del = event_data.get('team1_name') or getattr(t1_cap_raw, 'name', str(t1_cap_raw) if t1_cap_raw else 'Unknown')
+                    t2_disp_del = event_data.get('team2_name') or getattr(t2_cap_raw, 'name', str(t2_cap_raw) if t2_cap_raw else 'Unknown')
+                    
+                    del_log_embed = discord.Embed(
+                        title="🗑️ Event Deleted",
+                        color=discord.Color.red(),
+                        timestamp=discord.utils.utcnow()
+                    )
+                    del_log_embed.add_field(
+                        name="⚔️ Match",
+                        value=f"{t1_disp_del} vs {t2_disp_del}",
+                        inline=True
+                    )
+                    del_log_embed.add_field(
+                        name="🔁 Round",
+                        value=event_data.get('round', 'N/A'),
+                        inline=True
+                    )
+                    del_log_embed.add_field(
+                        name="🕒 Scheduled Time",
+                        value=f"{event_data.get('time_str', 'N/A')} on {event_data.get('date_str', 'N/A')}",
+                        inline=True
+                    )
+                    del_log_embed.add_field(
+                        name="🏆 Tournament",
+                        value=event_data.get('tournament', 'N/A'),
+                        inline=True
+                    )
+                    del_log_embed.set_footer(text=f"Deleted by {select_interaction.user.display_name} • ID: {select_interaction.user.id}")
+                    await log_bot_activity(select_interaction.guild, del_log_embed)
+                except Exception as log_err:
+                    print(f"Error logging event delete to bot_logs: {log_err}")
         
         # Create initial embed
         embed = discord.Embed(
@@ -6583,6 +6662,43 @@ async def staff_update(interaction: discord.Interaction, staff_member: discord.M
     }))
 
     await interaction.response.send_message(f"✅ Successfully updated **{staff_member.display_name}**'s {role.name} count from {current_count} to **{new_count}**.", ephemeral=False)
+    
+    # ── CRUD Log: staff-update ──
+    try:
+        action_symbol = "+" if action.value == "add" else ("-" if action.value == "subtract" else "=")
+        su_log_embed = discord.Embed(
+            title="📊 Staff Stats Updated",
+            color=discord.Color.blurple(),
+            timestamp=discord.utils.utcnow()
+        )
+        su_log_embed.add_field(
+            name="👤 Staff Member",
+            value=staff_member.mention,
+            inline=True
+        )
+        su_log_embed.add_field(
+            name="🏷️ Role",
+            value=role.name,
+            inline=True
+        )
+        su_log_embed.add_field(
+            name="🔧 Change",
+            value=f"`{action_symbol}{amount}` ({current_count} → **{new_count}**)",
+            inline=True
+        )
+        su_log_embed.add_field(
+            name="📊 New Totals",
+            value=(
+                f"⚖️ Judge: **{staff_stats[uid].get('judge_count', 0)}**\n"
+                f"🎥 Recorder: **{staff_stats[uid].get('recorder_count', 0)}**\n"
+                f"✅ Total: **{staff_stats[uid].get('judge_count', 0) + staff_stats[uid].get('recorder_count', 0)}**"
+            ),
+            inline=False
+        )
+        su_log_embed.set_footer(text=f"Updated by {interaction.user.display_name} • ID: {interaction.user.id}")
+        await log_bot_activity(interaction.guild, su_log_embed)
+    except Exception as log_err:
+        print(f"Error logging staff-update to bot_logs: {log_err}")
 
 
 
@@ -6685,6 +6801,44 @@ async def exchange(interaction: discord.Interaction, role: app_commands.Choice[s
         updated_count += 1
         
     await interaction.response.send_message(f"✅ {new_user.mention} is now the **{role.name}** for {updated_count} event(s), replacing {old_user.mention}.", ephemeral=True)
+    
+    # ── CRUD Log: exchange ──
+    try:
+        ex_log_embed = discord.Embed(
+            title="🔄 Staff Exchanged",
+            color=discord.Color.teal(),
+            timestamp=discord.utils.utcnow()
+        )
+        ex_log_embed.add_field(
+            name="🏷️ Role",
+            value=role.name,
+            inline=True
+        )
+        ex_log_embed.add_field(
+            name="📋 Channel",
+            value=interaction.channel.mention,
+            inline=True
+        )
+        ex_log_embed.add_field(
+            name="❌ Old Staff",
+            value=f"{old_user.mention} (`@{old_user.name}`)",
+            inline=True
+        )
+        ex_log_embed.add_field(
+            name="✅ New Staff",
+            value=f"{new_user.mention} (`@{new_user.name}`)",
+            inline=True
+        )
+        ex_log_embed.add_field(
+            name="🔢 Events Updated",
+            value=str(updated_count),
+            inline=True
+        )
+        ex_log_embed.set_footer(text=f"Exchanged by {interaction.user.display_name} • ID: {interaction.user.id}")
+        await log_bot_activity(interaction.guild, ex_log_embed)
+    except Exception as log_err:
+        print(f"Error logging exchange to bot_logs: {log_err}")
+
 
 
 async def update_results_embed_with_links(guild: discord.Guild, event_data: dict):
@@ -7042,12 +7196,19 @@ async def event_edit(
         return
 
     try:
-        # Get current event data
+        # Get current event data — capture OLD datetime BEFORE any edits
         current_datetime = event_to_edit.get('datetime', datetime.datetime.now())
+        old_datetime = current_datetime  # preserve for change notification
+        old_time_str = event_to_edit.get('time_str', '')
+        old_date_str = event_to_edit.get('date_str', '')
+        
         current_hour = hour if hour is not None else current_datetime.hour
         current_minute = minute if minute is not None else current_datetime.minute
         current_date = date if date is not None else current_datetime.day
         current_month = month if month is not None else current_datetime.month
+        
+        # Flag whether time was actually changed
+        time_was_changed = any([hour is not None, minute is not None, date is not None, month is not None])
         
         # Create new datetime
         current_year = datetime.datetime.now().year
@@ -7115,10 +7276,93 @@ async def event_edit(
             judge_cap_member = event_to_edit.get('judge')
             if judge_cap_member and not isinstance(judge_cap_member, discord.Member):
                 judge_cap_member = interaction.guild.get_member(int(judge_cap_member)) if isinstance(judge_cap_member, int) or (isinstance(judge_cap_member, str) and judge_cap_member.isdigit()) else None
+            
+            # Resolve recorder member too (pass to reminder so recorder is also pinged)
+            recorder_cap_member = event_to_edit.get('recorder')
+            if recorder_cap_member and not isinstance(recorder_cap_member, discord.Member):
+                recorder_cap_member = interaction.guild.get_member(int(recorder_cap_member)) if isinstance(recorder_cap_member, int) or (isinstance(recorder_cap_member, str) and recorder_cap_member.isdigit()) else None
+            
+            # Cancel old reminder task if it exists
+            if event_id in reminder_tasks:
+                reminder_tasks[event_id].cancel()
+                print(f"🔕 Cancelled old reminder task for event {event_id} due to edit")
                 
             await schedule_ten_minute_reminder(event_id, t1_cap_member, t2_cap_member, judge_cap_member, interaction.channel, new_datetime)
         except Exception as e:
             print(f"Error scheduling reminder for updated event {event_id}: {e}")
+        
+        # ── Send immediate "Time Changed" notification if time was updated ──
+        if time_was_changed:
+            try:
+                old_ts_val = int(old_datetime.replace(tzinfo=datetime.timezone.utc).timestamp()) if old_datetime else None
+                new_ts_val = int(new_datetime.replace(tzinfo=datetime.timezone.utc).timestamp())
+                
+                old_time_display = f"<t:{old_ts_val}:F>" if old_ts_val else (old_time_str or "Unknown")
+                new_time_display = f"<t:{new_ts_val}:F>"
+                
+                # Build list of people to ping
+                notify_pings = []
+                if t1_cap_member:
+                    notify_pings.append(t1_cap_member.mention)
+                elif t1_cap:
+                    notify_pings.append(f"<@{getattr(t1_cap, 'id', t1_cap)}>")
+                if t2_cap_member:
+                    notify_pings.append(t2_cap_member.mention)
+                elif t2_cap:
+                    notify_pings.append(f"<@{getattr(t2_cap, 'id', t2_cap)}>")
+                if judge_cap_member:
+                    notify_pings.append(judge_cap_member.mention)
+                elif event_to_edit.get('judge'):
+                    j_raw = event_to_edit['judge']
+                    notify_pings.append(f"<@{getattr(j_raw, 'id', j_raw)}>")
+                if recorder_cap_member:
+                    notify_pings.append(recorder_cap_member.mention)
+                elif event_to_edit.get('recorder'):
+                    r_raw = event_to_edit['recorder']
+                    notify_pings.append(f"<@{getattr(r_raw, 'id', r_raw)}>")
+                
+                ping_content = " ".join(notify_pings) if notify_pings else ""
+                
+                time_changed_embed = discord.Embed(
+                    title="⏰ Match Time Updated",
+                    description=(
+                        f"The scheduled time for this match has been **changed**.\n"
+                        f"Please update your availability accordingly."
+                    ),
+                    color=discord.Color.orange(),
+                    timestamp=discord.utils.utcnow()
+                )
+                time_changed_embed.add_field(
+                    name="🗓️ Old Time",
+                    value=old_time_display,
+                    inline=True
+                )
+                time_changed_embed.add_field(
+                    name="🆕 New Time",
+                    value=new_time_display + f" (<t:{new_ts_val}:R>)",
+                    inline=True
+                )
+                
+                t1_disp_notify = event_to_edit.get('team1_name') or t1_name
+                t2_disp_notify = event_to_edit.get('team2_name') or t2_name
+                time_changed_embed.add_field(
+                    name="⚔️ Match",
+                    value=f"{t1_disp_notify} vs {t2_disp_notify}",
+                    inline=False
+                )
+                time_changed_embed.add_field(
+                    name="✏️ Updated By",
+                    value=interaction.user.mention,
+                    inline=True
+                )
+                time_changed_embed.set_footer(text=f"{ORGANIZATION_NAME} • Match Rescheduled")
+                
+                if ping_content:
+                    await interaction.channel.send(content=f"📣 {ping_content}", embed=time_changed_embed)
+                else:
+                    await interaction.channel.send(embed=time_changed_embed)
+            except Exception as e:
+                print(f"Error sending time-changed notification for event {event_id}: {e}")
         
         round_info = event_to_edit.get('round', 'Unknown')
         tournament_info = event_to_edit.get('tournament', 'Unknown')
@@ -7413,6 +7657,53 @@ async def event_edit(
 
         # Send private confirmation to the user who edited
         await interaction.followup.send("✅ Event updated successfully, ticket channel renamed, and posted in the channel!", ephemeral=True)
+        
+        # ── CRUD Log: event_edit ──
+        try:
+            changed_fields = []
+            if team_1_captain:
+                changed_fields.append(f"Team 1 Captain → {t1_mention}")
+            if team_2_captain:
+                changed_fields.append(f"Team 2 Captain → {t2_mention}")
+            if team_1_name is not None:
+                changed_fields.append(f"Team 1 Name → `{team_1_name}`")
+            if team_2_name is not None:
+                changed_fields.append(f"Team 2 Name → `{team_2_name}`")
+            if time_was_changed:
+                changed_fields.append(f"Time → `{time_info_display}`")
+            if round:
+                changed_fields.append(f"Round → `{round_info}`")
+            if tournament:
+                changed_fields.append(f"Tournament → `{tournament_info}`")
+            if group:
+                changed_fields.append(f"Group → `{group_info}`")
+            if mode is not None:
+                changed_fields.append(f"Mode → `{mode}`")
+            
+            crud_log_embed = discord.Embed(
+                title="📝 Event Edited",
+                color=discord.Color.yellow(),
+                timestamp=discord.utils.utcnow()
+            )
+            crud_log_embed.add_field(
+                name="⚔️ Match",
+                value=f"{event_to_edit.get('team1_name') or t1_name} vs {event_to_edit.get('team2_name') or t2_name}",
+                inline=True
+            )
+            crud_log_embed.add_field(
+                name="📋 Channel",
+                value=interaction.channel.mention,
+                inline=True
+            )
+            crud_log_embed.add_field(
+                name="🔧 Changes Made",
+                value="\n".join(f"• {f}" for f in changed_fields) if changed_fields else "No fields changed",
+                inline=False
+            )
+            crud_log_embed.set_footer(text=f"Edited by {interaction.user.display_name} • ID: {interaction.user.id}")
+            await log_bot_activity(interaction.guild, crud_log_embed)
+        except Exception as log_err:
+            print(f"Error logging event edit to bot_logs: {log_err}")
         
     except Exception as e:
         await interaction.followup.send(f"❌ Error updating event: {str(e)}", ephemeral=True)
@@ -9157,14 +9448,6 @@ async def player_information(interaction: discord.Interaction, user: discord.Mem
 
         # ── 1 vs 1 Layout ──────────────────────────────────────────────────────
         if is_1v1:
-            text_lines = [
-                "🎮 **PLAYER INFORMATION**",
-                f"Player: {user.mention}",
-                f"**Format:** {info_format}",
-                "───────────────────────────"
-            ]
-
-            found_any = False
             aliases_map_1v1 = {
                 "Player Discord ID": ["player discord developers i'd", "player discord developers id", "player discord developer id", "discord developer id", "developer id", "player discord id", "discord id", "player discord", "discord tag", "discord name", "discord", "discord developers i'd", "discord developers id", "discord developer id", "player discord username", "discord username"],
                 "Player Game Name": ["player in game name", "player in-game name", "game name", "player name", "ign", "in-game name", "player ign", "player in-game name", "in-game name (for example"],
@@ -9172,6 +9455,17 @@ async def player_information(interaction: discord.Interaction, user: discord.Mem
                 "Player Title": ["player title", "title", "rank", "role", "player in-game title", "in-game title"]
             }
 
+            # Build embed
+            pi_embed = discord.Embed(
+                title=f"🎮 Player Information",
+                description=f"**Player:** {user.mention}\n**Format:** `{info_format}`",
+                color=discord.Color.blurple(),
+                timestamp=discord.utils.utcnow()
+            )
+            if user.avatar:
+                pi_embed.set_thumbnail(url=user.avatar.url)
+
+            found_any = False
             for field_name in _1V1_FIELDS:
                 aliases = aliases_map_1v1.get(field_name, [])
                 col = _col_index(header, field_name)
@@ -9198,31 +9492,35 @@ async def player_information(interaction: discord.Interaction, user: discord.Mem
                 elif val != "—":
                     val = f"`{val}`"
 
-                # Emoji and Label mapping for premium UI
+                # Emoji and Label mapping for embed fields
                 label = field_name.replace("Player ", "")
                 emoji = ""
                 if "discord id" in field_name.lower():
-                    emoji = "👤 "
+                    emoji = "👤"
                     label = "Discord ID"
                 elif "game name" in field_name.lower():
-                    emoji = "🎮 "
+                    emoji = "🎮"
                     label = "Game Name"
                 elif "game id" in field_name.lower():
-                    emoji = "🆔 "
+                    emoji = "🆔"
                     label = "Game ID"
                 elif "title" in field_name.lower():
-                    emoji = "🎖️ "
+                    emoji = "🎖️"
                     label = "Title"
 
-                text_lines.append(f"{emoji}**{label}:** {val}")
+                pi_embed.add_field(name=f"{emoji} {label}", value=val, inline=True)
                 found_any = True
 
             if not found_any:
-                text_lines.append(f"⚠️ **Column Mismatch:** Expected columns like `{'` | `'.join(_1V1_FIELDS)}`")
+                pi_embed.add_field(
+                    name="⚠️ Column Mismatch",
+                    value=f"Expected columns like `{'` | `'.join(_1V1_FIELDS)}`",
+                    inline=False
+                )
 
-            text_lines.append("───────────────────────────")
-            text_lines.append(f"*{ORGANIZATION_NAME} • Player Info • Requested by {interaction.user.display_name}*")
-            await interaction.followup.send("\n".join(text_lines))
+            pi_embed.set_footer(text=f"{ORGANIZATION_NAME} • Player Info • Requested by {interaction.user.display_name}")
+            await interaction.followup.send(embed=pi_embed)
+
 
         # ── Team Layout (2v2 – 5v5) ───────────────────────────────────────────
         else:
@@ -9233,16 +9531,10 @@ async def player_information(interaction: discord.Interaction, user: discord.Mem
             except Exception:
                 team_size = 5
 
-            text_lines = [
-                "🏆 **TEAM INFORMATION**",
-                f"Captain: {user.mention}",
-                f"**Format:** {info_format}",
-                "───────────────────────────"
-            ]
-
             found_any = False
 
-            # Team Name
+            # --- Resolve Team Name ---
+            tn_val = "—"
             tn_col = _col_index(header, "Team Name")
             if tn_col == -1:
                 for alias in ["teamname", "team", "clan name", "clan"]:
@@ -9251,12 +9543,22 @@ async def player_information(interaction: discord.Interaction, user: discord.Mem
                         break
             if tn_col != -1:
                 tn_val = found_row[tn_col].strip() if tn_col < len(found_row) else "—"
-                text_lines.append(f"🏷️ **Team Name:** {tn_val or '—'}")
-                text_lines.append("")
                 found_any = True
 
-            # Captain block
-            cap_block = []
+            # Build embed
+            ti_embed = discord.Embed(
+                title=f"🏆 Team Information",
+                description=(
+                    f"**Captain:** {user.mention}\n"
+                    f"**Team Name:** `{tn_val}`\n"
+                    f"**Format:** `{info_format}`"
+                ),
+                color=discord.Color.gold(),
+                timestamp=discord.utils.utcnow()
+            )
+            if user.avatar:
+                ti_embed.set_thumbnail(url=user.avatar.url)
+
             aliases_map_captain = {
                 "Captain Discord ID": ["captain discord developers i'd", "captain discord developers id", "captain discord developer id", "captain developer id", "discord developer id", "developer id", "captain discord id", "captain discord", "captain id", "discord id", "captain", "captain's discord", "discord tag", "captain discord username", "discord username", "captain discord user name"],
                 "Captain Game Name": ["captain in game name", "captain in-game name", "captain ign", "captain game name", "captain name", "captain's ign", "captain's name", "game name", "ign"],
@@ -9264,6 +9566,8 @@ async def player_information(interaction: discord.Interaction, user: discord.Mem
                 "Captain Title": ["captain title", "captain in-game title", "captain rank", "captain's title", "title", "rank"]
             }
 
+            # Captain fields
+            cap_lines = []
             for fname in ["Captain Discord ID", "Captain Game Name", "Captain Game ID", "Captain Title"]:
                 aliases = aliases_map_captain.get(fname, [])
                 col = _col_index(header, fname)
@@ -9278,7 +9582,6 @@ async def player_information(interaction: discord.Interaction, user: discord.Mem
                 if not val:
                     val = "—"
                 
-                # Format value properly (do not backtick-wrap if it's already a mention)
                 if ("discord id" in fname.lower() or "discord_id" in fname.lower()) and val != "—":
                     digits_match = re.search(r'\d+', val)
                     if digits_match:
@@ -9290,33 +9593,30 @@ async def player_information(interaction: discord.Interaction, user: discord.Mem
                 elif val != "—":
                     val = f"`{val}`"
 
-                # Emoji and Label mapping for premium UI
                 label = fname.replace("Captain ", "")
                 emoji = ""
                 if "discord id" in fname.lower():
-                    emoji = "👤 "
-                    label = "Discord ID"
+                    emoji = "👤"; label = "Discord ID"
                 elif "game name" in fname.lower():
-                    emoji = "🎮 "
-                    label = "Game Name"
+                    emoji = "🎮"; label = "Game Name"
                 elif "game id" in fname.lower():
-                    emoji = "🆔 "
-                    label = "Game ID"
+                    emoji = "🆔"; label = "Game ID"
                 elif "title" in fname.lower():
-                    emoji = "🎖️ "
-                    label = "Title"
+                    emoji = "🎖️"; label = "Title"
 
-                cap_block.append(f"{emoji}**{label}:** {val}")
+                cap_lines.append(f"{emoji} **{label}:** {val}")
                 found_any = True
-            
-            if cap_block:
-                text_lines.append("👑 **Captain**")
-                text_lines.extend(cap_block)
-                text_lines.append("")
 
-            # Each additional player
+            if cap_lines:
+                ti_embed.add_field(
+                    name="👑 Captain",
+                    value="\n".join(cap_lines),
+                    inline=False
+                )
+
+            # Each additional player as embed field
             for n in range(2, team_size + 1):
-                player_block = []
+                player_lines = []
                 for tmpl in _TEAM_PLAYER_FIELDS_TEMPLATE:
                     fname = tmpl.format(n=n)
                     attr_type = fname.replace(f"Player {n} ", "")
@@ -9334,7 +9634,6 @@ async def player_information(interaction: discord.Interaction, user: discord.Mem
                     if not val:
                         val = "—"
                     
-                    # Format value properly (do not backtick-wrap if it's already a mention)
                     if ("discord id" in fname.lower() or "discord_id" in fname.lower()) and val != "—":
                         digits_match = re.search(r'\d+', val)
                         if digits_match:
@@ -9346,40 +9645,36 @@ async def player_information(interaction: discord.Interaction, user: discord.Mem
                     elif val != "—":
                         val = f"`{val}`"
 
-                    # Emoji and Label mapping for premium UI
                     label = fname.replace(f"Player {n} ", "")
                     emoji = ""
                     if "discord id" in fname.lower():
-                        emoji = "👤 "
-                        label = "Discord ID"
+                        emoji = "👤"; label = "Discord ID"
                     elif "game name" in fname.lower():
-                        emoji = "🎮 "
-                        label = "Game Name"
+                        emoji = "🎮"; label = "Game Name"
                     elif "game id" in fname.lower():
-                        emoji = "🆔 "
-                        label = "Game ID"
+                        emoji = "🆔"; label = "Game ID"
                     elif "title" in fname.lower():
-                        emoji = "🎖️ "
-                        label = "Title"
+                        emoji = "🎖️"; label = "Title"
 
-                    player_block.append(f"{emoji}**{label}:** {val}")
+                    player_lines.append(f"{emoji} **{label}:** {val}")
                     found_any = True
-                
-                if player_block:
-                    text_lines.append(f"👥 **Player {n}**")
-                    text_lines.extend(player_block)
-                    text_lines.append("")
+
+                if player_lines:
+                    ti_embed.add_field(
+                        name=f"👥 Player {n}",
+                        value="\n".join(player_lines),
+                        inline=True
+                    )
 
             if not found_any:
-                text_lines.append("⚠️ **Column Mismatch:** Sheet headers don't match expected format.")
+                ti_embed.add_field(
+                    name="⚠️ Column Mismatch",
+                    value="Sheet headers don't match expected format.",
+                    inline=False
+                )
 
-            # Trim trailing empty lines
-            while text_lines and text_lines[-1] == "":
-                text_lines.pop()
-
-            text_lines.append("───────────────────────────")
-            text_lines.append(f"*{ORGANIZATION_NAME} • Player Info • Requested by {interaction.user.display_name}*")
-            await interaction.followup.send("\n".join(text_lines))
+            ti_embed.set_footer(text=f"{ORGANIZATION_NAME} • Player Info • Requested by {interaction.user.display_name}")
+            await interaction.followup.send(embed=ti_embed)
 
     except Exception as e:
         await interaction.followup.send(f"❌ Error fetching player info: {str(e)}")
