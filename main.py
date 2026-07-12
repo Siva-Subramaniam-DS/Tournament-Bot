@@ -2224,7 +2224,10 @@ class StaffConfirmationView(discord.ui.View):
                 
         ev['judge_confirmed'] = True
         save_scheduled_events()
-        self.update_buttons()
+        
+        # Disable all buttons after confirmation
+        for child in self.children:
+            child.disabled = True
         
         # Calculate overall status for the footer
         j_conf = ev.get('judge_confirmed', False)
@@ -2275,7 +2278,10 @@ class StaffConfirmationView(discord.ui.View):
                 
         ev['recorder_confirmed'] = True
         save_scheduled_events()
-        self.update_buttons()
+        
+        # Disable all buttons after confirmation
+        for child in self.children:
+            child.disabled = True
         
         # Calculate overall status for the footer
         j_conf = ev.get('judge_confirmed', False)
@@ -2369,8 +2375,10 @@ class StaffReplacementView(discord.ui.View):
                 )
             except Exception as e:
                 print(f"Error updating channel permissions for replacement judge: {e}")
-            
-        self.update_buttons()
+        
+        # Disable all buttons after successful replacement
+        for child in self.children:
+            child.disabled = True
         
         # Update schedule message in take schedule channel if it exists
         try:
@@ -2445,8 +2453,10 @@ class StaffReplacementView(discord.ui.View):
                 )
             except Exception as e:
                 print(f"Error updating channel permissions for replacement recorder: {e}")
-            
-        self.update_buttons()
+        
+        # Disable all buttons after successful replacement
+        for child in self.children:
+            child.disabled = True
         
         # Update schedule message in take schedule channel if it exists
         try:
