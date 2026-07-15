@@ -678,7 +678,30 @@ async def load_scheduled_events_from_supabase():
                 else:
                     # Sync fields from database if they are newer/assigned
                     existing = scheduled_events[event_id]
-                    if j_id and not existing.get('judge'):
+                    
+                    # Update datetime if different
+                    if event_datetime and existing.get('datetime') != event_datetime:
+                        existing['datetime'] = event_datetime
+                        existing['time_str'] = utc_time_str
+                        existing['date_str'] = date_str
+                    
+                    # Update channel if different
+                    supabase_ch = parse_int_safe(row.get("Channel_ID"))
+                    if supabase_ch and existing.get('channel_id') != supabase_ch:
+                        existing['channel_id'] = supabase_ch
+                        
+                    # Update captains if different
+                    if t1_id and existing.get('team1_captain') != t1_id:
+                        existing['team1_captain'] = t1_id
+                    if t2_id and existing.get('team2_captain') != t2_id:
+                        existing['team2_captain'] = t2_id
+                    if row.get('Team1_Captain_Name'):
+                        existing['team1_name'] = row.get('Team1_Captain_Name')
+                    if row.get('Team2_Captain_Name'):
+                        existing['team2_name'] = row.get('Team2_Captain_Name')
+                        
+                    # Update judge
+                    if j_id and existing.get('judge') != j_id:
                         existing['judge'] = j_id
                     
             print(f"✅ Loaded {loaded_count} scheduled event(s) from Supabase.")
@@ -743,9 +766,16 @@ async def resolve_scheduled_event_members():
         g_id = ev_data.get('guild_id')
         if not g_id:
             continue
-        guild = bot.get_guild(g_id)
-        if not guild:
+        try:
+            g_id_int = int(g_id)
+        except (ValueError, TypeError):
             continue
+        guild = bot.get_guild(g_id_int)
+        if not guild:
+            try:
+                guild = await bot.fetch_guild(g_id_int)
+            except Exception:
+                continue
             
         for key in ['team1_captain', 'team2_captain', 'judge', 'recorder']:
             val = ev_data.get(key)
@@ -2268,7 +2298,7 @@ class StaffConfirmationView(discord.ui.View):
             
         self.judge_member = ev.get('judge')
         assigned_judge_id = getattr(self.judge_member, 'id', self.judge_member)
-        if interaction.user.id != assigned_judge_id:
+        if str(interaction.user.id) != str(assigned_judge_id):
             await interaction.response.send_message("❌ You are not the assigned judge for this event.", ephemeral=True)
             return
             
@@ -2292,9 +2322,8 @@ class StaffConfirmationView(discord.ui.View):
         ev['judge_confirmation_time'] = datetime.datetime.utcnow().isoformat()
         save_scheduled_events()
         
-        # Disable all buttons after confirmation
-        for child in self.children:
-            child.disabled = True
+        # Update buttons based on the new confirmation state
+        self.update_buttons()
         
         # Calculate overall status for the footer
         j_conf = ev.get('judge_confirmed', False)
@@ -2331,7 +2360,7 @@ class StaffConfirmationView(discord.ui.View):
             
         self.recorder_member = ev.get('recorder')
         assigned_recorder_id = getattr(self.recorder_member, 'id', self.recorder_member)
-        if interaction.user.id != assigned_recorder_id:
+        if str(interaction.user.id) != str(assigned_recorder_id):
             await interaction.response.send_message("❌ You are not the assigned recorder for this event.", ephemeral=True)
             return
             
@@ -2355,9 +2384,8 @@ class StaffConfirmationView(discord.ui.View):
         ev['recorder_confirmation_time'] = datetime.datetime.utcnow().isoformat()
         save_scheduled_events()
         
-        # Disable all buttons after confirmation
-        for child in self.children:
-            child.disabled = True
+        # Update buttons based on the new confirmation state
+        self.update_buttons()
         
         # Calculate overall status for the footer
         j_conf = ev.get('judge_confirmed', False)
@@ -2453,9 +2481,8 @@ class StaffReplacementView(discord.ui.View):
             except Exception as e:
                 print(f"Error updating channel permissions for replacement judge: {e}")
         
-        # Disable all buttons after successful replacement
-        for child in self.children:
-            child.disabled = True
+        # Update buttons based on new replacement state
+        self.update_buttons()
         
         # Update schedule message in take schedule channel if it exists
         try:
@@ -2532,9 +2559,8 @@ class StaffReplacementView(discord.ui.View):
             except Exception as e:
                 print(f"Error updating channel permissions for replacement recorder: {e}")
         
-        # Disable all buttons after successful replacement
-        for child in self.children:
-            child.disabled = True
+        # Update buttons based on new replacement state
+        self.update_buttons()
         
         # Update schedule message in take schedule channel if it exists
         try:
@@ -4492,8 +4518,16 @@ async def on_ready():
             # Reconstruct and register StaffConfirmationView
             bot.add_view(StaffConfirmationView(ev_id, j, r))
             
+            j_confirmed = ev_data.get('judge_confirmed', False)
+            r_confirmed = ev_data.get('recorder_confirmed', False)
+            j_replaced = ev_data.get('judge_replaced', False)
+            r_replaced = ev_data.get('recorder_replaced', False)
+            
+            replace_j = bool(j and not j_confirmed) or j_replaced
+            replace_r = bool(r and not r_confirmed) or r_replaced
+            
             # Reconstruct and register StaffReplacementView
-            bot.add_view(StaffReplacementView(ev_id, True, True))
+            bot.add_view(StaffReplacementView(ev_id, replace_j, replace_r))
         except Exception as view_err:
             print(f"Error registering persistent views for event {ev_id} on startup: {view_err}")
             
@@ -4501,16 +4535,27 @@ async def on_ready():
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=pytz.UTC)
             if dt > now_utc:
-                channel = bot.get_channel(ch_id)
-                if channel:
-                    asyncio.create_task(schedule_ten_minute_reminder(
-                        ev_id, 
-                        ev_data.get('team1_captain'), 
-                        ev_data.get('team2_captain'), 
-                        ev_data.get('judge'), 
-                        channel, 
-                        dt
-                    ))
+                try:
+                    ch_id_int = int(ch_id)
+                except (ValueError, TypeError):
+                    ch_id_int = None
+                
+                if ch_id_int:
+                    channel = bot.get_channel(ch_id_int)
+                    if not channel:
+                        try:
+                            channel = await bot.fetch_channel(ch_id_int)
+                        except Exception:
+                            channel = None
+                    if channel:
+                        asyncio.create_task(schedule_ten_minute_reminder(
+                            ev_id, 
+                            ev_data.get('team1_captain'), 
+                            ev_data.get('team2_captain'), 
+                            ev_data.get('judge'), 
+                            channel, 
+                            dt
+                        ))
     
     # Reschedule cleanups for any events already marked finished_on if needed (optional)
     try:
@@ -5808,6 +5853,8 @@ async def event_result(
 
     # Loop to find the matching event
     for ev_id, ev_data in scheduled_events.items():
+        if str(ev_data.get('guild_id')) != str(interaction.guild.id):
+            continue
         if (ev_data.get('tournament') or "").strip().lower() != norm_tournament:
             continue
         if (ev_data.get('round') or "").strip().lower() != norm_round:
@@ -5855,6 +5902,8 @@ async def event_result(
     if not matching_event:
         candidates = []
         for ev_id, ev_data in scheduled_events.items():
+            if str(ev_data.get('guild_id')) != str(interaction.guild.id):
+                continue
             ev_t = ev_data.get('tournament') or ""
             ev_r = ev_data.get('round') or ""
             ev_g = ev_data.get('group')
@@ -6368,6 +6417,8 @@ async def available_events(interaction: discord.Interaction):
         # Build list of unassigned events (exclude completed ones)
         unassigned = []
         for event_id, data in scheduled_events.items():
+            if str(data.get('guild_id')) != str(interaction.guild.id):
+                continue
             # Skip completed events
             if data.get('status') == 'completed':
                 continue
@@ -6455,6 +6506,8 @@ async def reassign_command(interaction: discord.Interaction):
     # Find events the user is judging OR recording
     user_events = []
     for event_id, event_data in scheduled_events.items():
+        if str(event_data.get('guild_id')) != str(interaction.guild.id):
+            continue
         judge_val = event_data.get('judge')
         recorder_val = event_data.get('recorder')
         user_role = None
@@ -6676,21 +6729,35 @@ async def event_delete(interaction: discord.Interaction):
                 member = interaction.guild.get_member(int(cap)) if interaction.guild else None
                 return member.display_name if member else f"User#{cap}"
             return str(cap)
+
+        # Check if there are any scheduled events for the current guild
+        guild_events = [
+            discord.SelectOption(
+                label=f"{_safe_captain_label(event_data.get('team1_captain'), event_data.get('team1_name'))} VS {_safe_captain_label(event_data.get('team2_captain'), event_data.get('team2_name'))}",
+                description=f"{event_data.get('round', 'Unknown Round')} - {event_data.get('date_str', 'No date')} at {event_data.get('time_str', 'No time')}",
+                value=event_id
+            )
+            for event_id, event_data in scheduled_events.items()
+            if str(event_data.get('guild_id')) == str(interaction.guild.id)
+        ]
+        
+        if not guild_events:
+            await interaction.response.send_message("❌ No scheduled events found to delete for this server.", ephemeral=True)
+            return
         
         # Create dropdown with event names
         class EventDeleteView(View):
             def __init__(self):
                 super().__init__(timeout=60)
+                self.select_event.options = guild_events[:25]
                 
             @discord.ui.select(
                 placeholder="Select an event to delete...",
                 options=[
                     discord.SelectOption(
-                        label=f"{_safe_captain_label(event_data.get('team1_captain'), event_data.get('team1_name'))} VS {_safe_captain_label(event_data.get('team2_captain'), event_data.get('team2_name'))}",
-                        description=f"{event_data.get('round', 'Unknown Round')} - {event_data.get('date_str', 'No date')} at {event_data.get('time_str', 'No time')}",
-                        value=event_id
+                        label="Placeholder",
+                        value="placeholder"
                     )
-                    for event_id, event_data in list(scheduled_events.items())[:25]  # Discord limit of 25 options
                 ]
             )
             async def select_event(self, select_interaction: discord.Interaction, select: discord.ui.Select):
@@ -6839,7 +6906,7 @@ async def event_delete(interaction: discord.Interaction):
         
         embed.add_field(
             name="📋 Available Events",
-            value=f"Found {len(scheduled_events)} scheduled event(s)",
+            value=f"Found {len(guild_events)} scheduled event(s)",
             inline=False
         )
         
@@ -7174,158 +7241,7 @@ async def update_results_embed_with_links(guild: discord.Guild, event_data: dict
             print(f"Error updating match channel results message with links: {e}")
 
 
-# ===========================================================================================
-# ADD RECORD LINK COMMAND
-# ===========================================================================================
 
-@tree.command(name="add-record-link", description="Add a recording/VOD link for a match event (Recorder, Judge, or Helper)")
-@app_commands.describe(
-    link_type="Choose what type of link you are adding",
-    event_name="The event or match name this recording belongs to (e.g. TeamA vs TeamB R1)",
-    link="The recording link to paste (e.g. YouTube, Google Drive, etc.)"
-)
-@app_commands.choices(link_type=[
-    app_commands.Choice(name="Add Recorder Link", value="recorder"),
-    app_commands.Choice(name="Add Judge Link", value="judge"),
-])
-@with_guild_context
-async def add_record_link(
-    interaction: discord.Interaction,
-    link_type: app_commands.Choice[str],
-    event_name: str,
-    link: str
-):
-    """Allow Recorder, Judge, or Helper to submit a recording or VOD link for a match."""
-    if interaction.guild:
-        current_guild_id.set(interaction.guild.id)
-
-    # Permission check — Recorder, Judge, Helper, Organizer, or Bot Owner
-    is_owner = interaction.user.id == BOT_OWNER_ID
-    is_admin = interaction.guild and interaction.user.guild_permissions.administrator
-    cfg = get_guild_config(interaction.guild.id if interaction.guild else None)
-    role_ids = cfg.get("role_ids", DEFAULT_ROLE_IDS)
-
-    def safe_role_id(key):
-        val = role_ids.get(key)
-        try:
-            return int(val) if val is not None else None
-        except (ValueError, TypeError):
-            return None
-
-    user_role_ids = [r.id for r in interaction.user.roles] if hasattr(interaction.user, "roles") else []
-    allowed_roles = [
-        safe_role_id("recorder"),
-        safe_role_id("judge"),
-        safe_role_id("helper_team"),
-        safe_role_id("head_organizer"),
-        safe_role_id("organizer"),
-        safe_role_id("staff"),
-    ]
-    has_role = any(rid and rid in user_role_ids for rid in allowed_roles)
-
-    if not (is_owner or is_admin or has_role):
-        await interaction.response.send_message(
-            "❌ You need **Recorder**, **Judge**, **Helper**, or **Organizer** role to add a record link.",
-            ephemeral=True
-        )
-        return
-
-    # Basic URL validation
-    link_stripped = link.strip()
-    if not (link_stripped.startswith("http://") or link_stripped.startswith("https://")):
-        await interaction.response.send_message(
-            "❌ Please provide a valid URL starting with `http://` or `https://`.",
-            ephemeral=True
-        )
-        return
-
-    # Determine label and emoji based on link_type
-    if link_type.value == "recorder":
-        link_label = "🎥 Recorder Link"
-        link_emoji = "🎥"
-        role_label = "Recorder"
-    else:
-        link_label = "⚖️ Judge Link"
-        link_emoji = "⚖️"
-        role_label = "Judge"
-
-    # Try to find a matching event in scheduled_events to attach the link to
-    matched_event_id = None
-    for ev_id, ev_data in scheduled_events.items():
-        ev_name_stored = ev_data.get("tournament", "") + " " + ev_data.get("round", "")
-        t1 = ev_data.get("team1_captain")
-        t2 = ev_data.get("team2_captain")
-        t1_name = getattr(t1, "display_name", str(t1)) if t1 else ""
-        t2_name = getattr(t2, "display_name", str(t2)) if t2 else ""
-        # Match on any part of the event name provided
-        search_str = event_name.lower()
-        if (
-            search_str in ev_name_stored.lower()
-            or search_str in t1_name.lower()
-            or search_str in t2_name.lower()
-            or t1_name.lower() in search_str
-            or t2_name.lower() in search_str
-        ):
-            matched_event_id = ev_id
-            break
-
-    # Also try matching against current channel's event
-    if not matched_event_id and interaction.channel:
-        for ev_id, ev_data in scheduled_events.items():
-            if ev_data.get("channel_id") == interaction.channel.id:
-                matched_event_id = ev_id
-                break
-
-    # Store the link on the event if found
-    if matched_event_id and matched_event_id in scheduled_events:
-        key = "recorder_link" if link_type.value == "recorder" else "judge_link"
-        scheduled_events[matched_event_id][key] = link_stripped
-        save_scheduled_events()
-        event_saved_note = f"\n✅ Link saved to event record **`{matched_event_id}`**."
-        
-        # Edit already posted result messages if results were already added
-        if scheduled_events[matched_event_id].get('result_added'):
-            try:
-                await update_results_embed_with_links(interaction.guild, scheduled_events[matched_event_id])
-                event_saved_note += "\n✅ Posted result embeds have been updated with the new link."
-            except Exception as e:
-                print(f"Error updating result embeds with links in add_record_link: {e}")
-    else:
-        event_saved_note = "\n⚠️ No matching event was found in schedule — link logged here only."
-
-    # Build embed response
-    embed = discord.Embed(
-        title=f"{link_emoji} {link_label} Added",
-        description=(
-            f"**Event / Match:** {event_name}\n"
-            f"**Submitted by:** {interaction.user.mention} ({role_label})\n"
-            f"**Link:** {link_stripped}"
-        ),
-        color=discord.Color.blurple() if link_type.value == "recorder" else discord.Color.orange(),
-        timestamp=discord.utils.utcnow()
-    )
-    embed.add_field(name="📋 Details", value=f"**Role:** {role_label}\n**Event Name:** {event_name}{event_saved_note}", inline=False)
-    embed.set_footer(text=f"{ORGANIZATION_NAME} • Record Link System • {interaction.user.display_name}")
-
-    # Post publicly in the current channel so all staff can see
-    await interaction.response.send_message(embed=embed)
-
-    # Also log to bot activity log
-    try:
-        log_embed = discord.Embed(
-            title=f"{link_emoji} Record Link Added",
-            description=(
-                f"**{role_label}** {interaction.user.display_name} submitted a {role_label.lower()} link.\n"
-                f"**Event:** {event_name}\n"
-                f"**Link:** {link_stripped}"
-            ),
-            color=discord.Color.blurple() if link_type.value == "recorder" else discord.Color.orange(),
-            timestamp=discord.utils.utcnow()
-        )
-        log_embed.set_footer(text=f"Submitted by {interaction.user.display_name}")
-        await log_bot_activity(interaction.guild, log_embed)
-    except Exception as log_err:
-        print(f"Error logging record link: {log_err}")
 
 
 @tree.command(name="event-edit", description="Edit the event in this ticket channel (Head Organizer/Head Helper/Helper Team only)")
@@ -10883,14 +10799,21 @@ link_group = app_commands.Group(name="link", description="Manage match links and
 @app_commands.describe(
     tournament="Select the tournament",
     match="Select the match event",
+    link_type="Select what type of link you are adding",
     link="The URL of the recording/VOD link to add"
 )
+@app_commands.choices(link_type=[
+    app_commands.Choice(name="General Recording", value="general"),
+    app_commands.Choice(name="Recorder VOD", value="recorder"),
+    app_commands.Choice(name="Judge VOD", value="judge"),
+])
 @app_commands.autocomplete(tournament=tournament_autocomplete, match=match_autocomplete)
 @with_guild_context
 async def link_add(
     interaction: discord.Interaction,
     tournament: str,
     match: str,
+    link_type: app_commands.Choice[str],
     link: str
 ):
     """Add a recording/VOD link for a match event."""
@@ -10941,7 +10864,10 @@ async def link_add(
     # Find the matching event
     matched_event_id = None
     if match in scheduled_events:
-        matched_event_id = match
+        # Security check: Make sure event belongs to current guild
+        ev_data = scheduled_events[match]
+        if str(ev_data.get('guild_id')) == str(interaction.guild.id):
+            matched_event_id = match
     else:
         # Fallback substring search
         for ev_id, ev_data in scheduled_events.items():
@@ -10969,8 +10895,14 @@ async def link_add(
         await interaction.followup.send("❌ No matching scheduled event was found.", ephemeral=True)
         return
 
-    # Save the link to the event dict
-    scheduled_events[matched_event_id]['recording_link'] = link_stripped
+    # Save the link to the event dict based on link_type
+    key = "recording_link"
+    if link_type.value == "recorder":
+        key = "recorder_link"
+    elif link_type.value == "judge":
+        key = "judge_link"
+        
+    scheduled_events[matched_event_id][key] = link_stripped
     save_scheduled_events()
 
     # Update result embeds if they were already posted
@@ -10983,8 +10915,14 @@ async def link_add(
             print(f"Error updating result embeds with links in link_add: {e}")
             event_saved_note += f"\n⚠️ Error updating results embeds: {e}"
 
+    link_label = "General Recording"
+    if link_type.value == "recorder":
+        link_label = "Recorder VOD"
+    elif link_type.value == "judge":
+        link_label = "Judge VOD"
+
     embed = discord.Embed(
-        title="🎥 Recording Link Added",
+        title=f"🎥 {link_label} Added",
         description=(
             f"**Tournament:** {tournament}\n"
             f"**Event / Match:** {match}\n"
@@ -11001,9 +10939,9 @@ async def link_add(
     # Log to bot activity log
     try:
         log_embed = discord.Embed(
-            title="🎥 Recording Link Added",
+            title=f"🎥 {link_label} Added",
             description=(
-                f"Staff member **{interaction.user.display_name}** added a recording link.\n"
+                f"Staff member **{interaction.user.display_name}** added a {link_label.lower()}.\n"
                 f"**Event ID:** {matched_event_id}\n"
                 f"**Link:** {link_stripped}"
             ),
