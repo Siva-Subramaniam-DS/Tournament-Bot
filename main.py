@@ -2058,6 +2058,16 @@ def update_judge_field(embed: discord.Embed, judge_member: discord.Member) -> bo
             value=f"{judge_member.mention}", 
             inline=True
         )
+        
+        # Ensure Recorder field exists even if not assigned yet
+        # This prevents layout issues when only one staff is assigned
+        if not any(field.name == "🎥 Recorder" for field in embed.fields):
+            embed.add_field(
+                name="🎥 Recorder", 
+                value="⏳ Waiting...", 
+                inline=True
+            )
+        
         return True
     except Exception as e:
         print(f"Error updating judge field: {e}")
@@ -2933,6 +2943,16 @@ class TakeScheduleButton(discord.ui.View):
 
             embed = interaction.message.embeds[0]
             remove_field_by_name(embed, "🎥 Recorder")
+            
+            # Ensure Judge field exists even if not assigned yet
+            # This prevents layout issues when only one staff is assigned
+            if not any(field.name == "👨‍⚖️ Judge" for field in embed.fields):
+                embed.add_field(
+                    name="👨‍⚖️ Judge", 
+                    value="⏳ Waiting...", 
+                    inline=True
+                )
+            
             embed.add_field(name="🎥 Recorder", value=interaction.user.mention, inline=True)
             await interaction.message.edit(embed=embed, view=self)
 
@@ -3279,7 +3299,7 @@ async def schedule_ten_minute_reminder(event_id: str, team1_captain: discord.Mem
         if match_time.tzinfo is None:
             match_time = match_time.replace(tzinfo=pytz.UTC)
             
-        reminder_time_30 = match_time - datetime.timedelta(minutes=30)
+        reminder_time_30 = match_time - datetime.timedelta(minutes=20)
         reminder_time_20 = match_time - datetime.timedelta(minutes=20)
         reminder_time_10 = match_time - datetime.timedelta(minutes=10)
         
@@ -3290,7 +3310,7 @@ async def schedule_ten_minute_reminder(event_id: str, team1_captain: discord.Mem
                 if g_id:
                     current_guild_id.set(g_id)
                     
-            # Wait for 30-min reminder
+            # Wait for 20-min reminder
             delay_30 = (reminder_time_30 - datetime.datetime.now(pytz.UTC)).total_seconds()
             if delay_30 > 0:
                 await asyncio.sleep(delay_30)
@@ -3298,7 +3318,7 @@ async def schedule_ten_minute_reminder(event_id: str, team1_captain: discord.Mem
             if g_id:
                 current_guild_id.set(g_id)
                 
-            # Fire 30-min reminder / staff confirmation request
+            # Fire 20-min reminder / staff confirmation request
             if event_id in scheduled_events:
                 now_check = datetime.datetime.now(pytz.UTC)
                 if now_check < match_time:
@@ -3310,16 +3330,16 @@ async def schedule_ten_minute_reminder(event_id: str, team1_captain: discord.Mem
                     if not j:
                         try:
                             j_role = ROLE_IDS.get('judge', '')
-                            await event_channel.send(f"⚠️ <@&{j_role}> **URGENT:** A match is starting in 30 minutes and NO JUDGE is assigned! Please Take Schedule!")
+                            await event_channel.send(f"⚠️ <@&{j_role}> **URGENT:** A match is starting in 20 minutes and NO JUDGE is assigned! Please Take Schedule!")
                         except Exception as e:
-                            print(f"Failed to send 30 min judge warning: {e}")
+                            print(f"Failed to send 20 min judge warning: {e}")
                     
                     if not r:
                         try:
                             r_role = ROLE_IDS.get('recorder', '')
-                            await event_channel.send(f"⚠️ <@&{r_role}> **URGENT:** A match is starting in 30 minutes and NO RECORDER is assigned! Please Record!")
+                            await event_channel.send(f"⚠️ <@&{r_role}> **URGENT:** A match is starting in 20 minutes and NO RECORDER is assigned! Please Record!")
                         except Exception as e:
-                            print(f"Failed to send 30 min recorder warning: {e}")
+                            print(f"Failed to send 20 min recorder warning: {e}")
                     
                     # If Judge or Recorder are assigned, send presence confirmation view
                     if j or r:
@@ -3338,11 +3358,11 @@ async def schedule_ten_minute_reminder(event_id: str, team1_captain: discord.Mem
                             
                             embed = discord.Embed(
                                 title="Staff Confirmation Required",
-                                description="Please confirm your presence for the upcoming match.",
+                                description="Please confirm your presence for the upcoming match (within 20 minutes).",
                                 color=discord.Color.orange(),
                                 timestamp=discord.utils.utcnow()
                             )
-                            embed.set_footer(text=f"{ORGANIZATION_NAME} • Staff Confirmation Required | Confirm before the 20-minute staff check")
+                            embed.set_footer(text=f"{ORGANIZATION_NAME} • Staff Confirmation Required | Confirm within 20 minutes or staff will be auto-assigned")
                             
                             j_m = event_channel.guild.get_member(j) if isinstance(j, int) else j
                             r_m = event_channel.guild.get_member(r) if isinstance(r, int) else r
@@ -5074,6 +5094,22 @@ async def event_create(
     current_year = datetime.datetime.now().year
     event_datetime = datetime.datetime(current_year, month, date, hour, minute)
     
+    # Validate that event is not within 20 minutes
+    now_utc = datetime.datetime.now(pytz.UTC)
+    event_datetime_utc = event_datetime.replace(tzinfo=pytz.UTC)
+    time_until_event = (event_datetime_utc - now_utc).total_seconds() / 60  # in minutes
+    
+    if time_until_event < 20:
+        await interaction.followup.send(
+            "❌ **Cannot create event within 20 minutes of start time!**\n\n"
+            "⚠️ Events must be created **at least 20 minutes before** the scheduled time.\n"
+            "This allows staff members time to claim the judge/recorder roles.\n\n"
+            "**If you need to schedule an urgent match:**\n"
+            "Please manually assign staff members directly in the match channel instead.",
+            ephemeral=True
+        )
+        return
+    
     # Calculate time differences and format times
     time_info = calculate_time_difference(event_datetime)
     
@@ -5934,7 +5970,7 @@ async def event_result(
         print(f"Error logging event result: {log_err}")
 
 
-    # Schedule auto-cleanup of matching events in this channel after 30 minutes
+    # Schedule auto-cleanup of matching events in this channel after 20 minutes
     try:
         current_channel_id = interaction.channel.id if interaction.channel else None
         matching_event_ids = []
@@ -6109,7 +6145,7 @@ async def event_result(
             print(f"Error updating current channel schedule title: {e}")
 
         if scheduled_any:
-            await interaction.followup.send("🧹 Auto-cleanup scheduled: Related event(s) and match channel will be removed after 30 minutes.", ephemeral=True)
+            await interaction.followup.send("🧹 Auto-cleanup scheduled: Related event(s) and match channel will be removed after 20 minutes.", ephemeral=True)
     except Exception as e:
         print(f"Error scheduling auto-cleanup after results: {e}")
 
