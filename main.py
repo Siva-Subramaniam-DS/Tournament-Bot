@@ -2046,9 +2046,20 @@ def remove_field_by_name(embed: discord.Embed, field_name: str) -> bool:
         print(f"Error removing field by name '{field_name}': {e}")
         return False
 
-def update_judge_field(embed: discord.Embed, judge_member: discord.Member) -> bool:
+def update_judge_field(embed: discord.Embed, judge_member: discord.Member, existing_recorder: Optional[discord.Member] = None) -> bool:
     """Update or add judge field safely. Returns True if successful."""
     try:
+        # Check if recorder field already exists in the embed
+        has_recorder_field = any(field.name == "🎥 Recorder" for field in embed.fields)
+        recorder_value = None
+        
+        if has_recorder_field:
+            # Save existing recorder value before we modify fields
+            for field in embed.fields:
+                if field.name == "🎥 Recorder":
+                    recorder_value = field.value
+                    break
+        
         # Remove existing judge field if it exists
         remove_field_by_name(embed, "👨‍⚖️ Judge")
         
@@ -2059,12 +2070,27 @@ def update_judge_field(embed: discord.Embed, judge_member: discord.Member) -> bo
             inline=True
         )
         
-        # Ensure Recorder field exists even if not assigned yet
-        # This prevents layout issues when only one staff is assigned
-        if not any(field.name == "🎥 Recorder" for field in embed.fields):
+        # Only add/update Recorder field if it doesn't exist or needs updating
+        if not has_recorder_field:
+            # Recorder field doesn't exist, add placeholder
+            if existing_recorder:
+                embed.add_field(
+                    name="🎥 Recorder", 
+                    value=f"{existing_recorder.mention}", 
+                    inline=True
+                )
+            else:
+                embed.add_field(
+                    name="🎥 Recorder", 
+                    value="⏳ Waiting...", 
+                    inline=True
+                )
+        elif recorder_value and "Waiting" not in recorder_value:
+            # Recorder field exists with assigned recorder - preserve it
+            remove_field_by_name(embed, "🎥 Recorder")
             embed.add_field(
                 name="🎥 Recorder", 
-                value="⏳ Waiting...", 
+                value=recorder_value, 
                 inline=True
             )
         
@@ -2400,7 +2426,8 @@ class StaffReplacementView(discord.ui.View):
                     sched_msg = await sched_chan.fetch_message(sched_msg_id)
                     if sched_msg:
                         sched_embed = sched_msg.embeds[0]
-                        update_judge_field(sched_embed, interaction.user)
+                        current_recorder = ev.get('recorder')
+                        update_judge_field(sched_embed, interaction.user, current_recorder)
                         sched_view = TakeScheduleButton(self.event_id, ev.get('team1_captain'), ev.get('team2_captain'), event_ch)
                         await sched_msg.edit(embed=sched_embed, view=sched_view)
         except Exception as e:
@@ -2776,7 +2803,12 @@ class TakeScheduleButton(discord.ui.View):
             embed = interaction.message.embeds[0]
             embed.color = discord.Color.green()
             update_embed_title_with_checkmark(embed)
-            if not update_judge_field(embed, interaction.user):
+            
+            # Get current recorder from event data to preserve it
+            ev = scheduled_events.get(self.event_id, {})
+            current_recorder = ev.get('recorder')
+            
+            if not update_judge_field(embed, interaction.user, current_recorder):
                 # Restore button state on embed update failure
                 button.label = original_label
                 button.style = original_style
@@ -3442,8 +3474,8 @@ async def schedule_event_reminder_v2(event_id: str, team1_captain: discord.Membe
     except Exception as e:
         print(f"Error in schedule_event_reminder_v2 for event {event_id}: {e}")
 
-async def schedule_event_cleanup(event_id: str, delay_hours: int = 36, delay_minutes: int = None):
-    """Schedule cleanup to remove an event and its channel after delay (default 36h, or delay_minutes)."""
+async def schedule_event_cleanup(event_id: str, delay_hours: int = 36, delay_minutes: int = None, keep_event_data: bool = True):
+    """Schedule cleanup to remove an event's messages/channel after delay, optionally keeping event data for video links."""
     try:
         if event_id not in scheduled_events:
             return
@@ -3463,6 +3495,12 @@ async def schedule_event_cleanup(event_id: str, delay_hours: int = 36, delay_min
                 data = scheduled_events.get(event_id)
                 if not data:
                     return
+                
+                # Mark event as completed (for filtering in available_events, etc.)
+                if keep_event_data:
+                    data['status'] = 'completed'
+                    data['cleanup_timestamp'] = datetime.datetime.utcnow().isoformat()
+                
                 # Delete original schedule message if known
                 try:
                     guilds = bot.guilds
@@ -3545,13 +3583,20 @@ async def schedule_event_cleanup(event_id: str, delay_hours: int = 36, delay_min
                 except Exception:
                     pass
 
-                # Finally remove from scheduled events and persist
-                try:
-                    if event_id in scheduled_events:
-                        del scheduled_events[event_id]
-                        save_scheduled_events()
-                except Exception as e:
-                    print(f"Error removing event {event_id} in cleanup: {e}")
+                # If keep_event_data is False, remove from scheduled_events (old behavior)
+                # If True, keep the event data but mark as completed (for video link matching)
+                if not keep_event_data:
+                    try:
+                        if event_id in scheduled_events:
+                            del scheduled_events[event_id]
+                            save_scheduled_events()
+                    except Exception as e:
+                        print(f"Error removing event {event_id} in cleanup: {e}")
+                else:
+                    # Keep event data but save the updated status
+                    save_scheduled_events()
+                    print(f"📦 Event {event_id} data preserved for video link matching")
+                    
             except asyncio.CancelledError:
                 print(f"Cleanup task for event {event_id} was cancelled")
             except Exception as e:
@@ -3566,9 +3611,9 @@ async def schedule_event_cleanup(event_id: str, delay_hours: int = 36, delay_min
 
         cleanup_tasks[event_id] = asyncio.create_task(cleanup_task())
         if delay_minutes is not None:
-            print(f"Cleanup scheduled for event {event_id} in {delay_minutes} minutes")
+            print(f"Cleanup scheduled for event {event_id} in {delay_minutes} minutes (keep_data={keep_event_data})")
         else:
-            print(f"Cleanup scheduled for event {event_id} in {delay_hours} hours")
+            print(f"Cleanup scheduled for event {event_id} in {delay_hours} hours (keep_data={keep_event_data})")
     except Exception as e:
         print(f"Error scheduling cleanup for event {event_id}: {e}")
 
@@ -6110,7 +6155,7 @@ async def event_result(
             except Exception as e:
                 print(f"Error processing title update for event {ev_id}: {e}")
             
-            await schedule_event_cleanup(ev_id, delay_minutes=30)
+            await schedule_event_cleanup(ev_id, delay_minutes=30, keep_event_data=True)
             scheduled_any = True
         
         # Also update any schedule messages in the current channel
@@ -6217,9 +6262,13 @@ async def available_events(interaction: discord.Interaction):
             await interaction.response.send_message("❌ You need Organizer, Helper, Judge, or Staff role to view unassigned events.", ephemeral=True)
             return
 
-        # Build list of unassigned events
+        # Build list of unassigned events (exclude completed ones)
         unassigned = []
         for event_id, data in scheduled_events.items():
+            # Skip completed events
+            if data.get('status') == 'completed':
+                continue
+            # Only include events without a judge
             if not data.get('judge'):
                 unassigned.append((event_id, data))
 
@@ -6252,9 +6301,10 @@ async def available_events(interaction: discord.Interaction):
             msg_id = data.get('schedule_message_id')
             team1 = data.get('team1_captain')
             team2 = data.get('team2_captain')
-            team1_name = getattr(team1, 'name', 'Unknown') if team1 else 'Unknown'
-            team2_name = getattr(team2, 'name', 'Unknown') if team2 else 'Unknown'
+            team1_name = data.get('team1_name') or (getattr(team1, 'name', 'Unknown') if team1 else 'Unknown')
+            team2_name = data.get('team2_name') or (getattr(team2, 'name', 'Unknown') if team2 else 'Unknown')
 
+            # Create clickable Discord message link
             link = None
             try:
                 if interaction.guild and ch_id and msg_id:
@@ -6262,10 +6312,14 @@ async def available_events(interaction: discord.Interaction):
             except Exception:
                 link = None
 
+            # Format: "1. team1 vs team2 • R1 • 14:25 utc, 14/07 • 14/07"
+            match_info = f"**{team1_name}** vs **{team2_name}**"
+            
             if link:
-                line = f"{idx}. {team1_name} vs {team2_name} • {round_label} • {time_str} • {date_str}\n↪ {link}"
+                line = f"{idx}. {match_info} • {round_label} • {time_str}, {date_str}\n   [🔗 **Click here to take schedule**]({link})"
             else:
-                line = f"{idx}. {team1_name} vs {team2_name} • {round_label} • {time_str} • {date_str}"
+                line = f"{idx}. {match_info} • {round_label} • {time_str}, {date_str}\n   ⚠️ *No message link available*"
+            
             lines.append(line)
 
         embed.add_field(
@@ -6274,7 +6328,7 @@ async def available_events(interaction: discord.Interaction):
             inline=False
         )
 
-        embed.set_footer(text="Use the link to open the original schedule and press Take Schedule.")
+        embed.set_footer(text="Click the link to jump to the schedule message and press 'Take Schedule' button.")
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
     except Exception as e:
