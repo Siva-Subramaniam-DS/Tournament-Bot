@@ -2197,43 +2197,66 @@ class StaffConfirmationView(discord.ui.View):
         self.judge_member = ev.get('judge')
         self.recorder_member = ev.get('recorder')
         
-        # Check if within 20 mins
+        # Check if within confirmation window (T-20min to T-10min = 10-minute window)
         dt = ev.get('datetime')
         is_too_late = False
+        is_confirmation_window = False
+        
         if dt:
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=pytz.UTC)
             now = datetime.datetime.now(pytz.UTC)
-            is_too_late = (dt - now).total_seconds() < 1200
+            seconds_until = (dt - now).total_seconds()
+            
+            # Confirmation window: Between 20 mins and 10 mins before match
+            # After 10 mins before match = too late (replacement needed)
+            if seconds_until < 600:  # Less than 10 minutes
+                is_too_late = True
+            elif seconds_until <= 1200:  # Between 10-20 minutes
+                is_confirmation_window = True
         
         # Add Judge button if a judge is assigned
         if self.judge_member:
             is_confirmed = ev.get('judge_confirmed', False)
-            btn_label = "👨‍⚖️ Confirmed" if is_confirmed else "👨‍⚖️ Confirm Presence"
-            btn_style = discord.ButtonStyle.green if is_confirmed else discord.ButtonStyle.gray
+            
+            if is_confirmed:
+                btn_label = "👨‍⚖️ Confirmed"
+                btn_style = discord.ButtonStyle.green
+                btn_disabled = True
+            elif is_too_late:
+                btn_label = "❌ Too Late - Replacement Needed"
+                btn_style = discord.ButtonStyle.red
+                btn_disabled = True
+            else:
+                btn_label = "👨‍⚖️ Confirm Presence"
+                btn_style = discord.ButtonStyle.gray
+                btn_disabled = False
             
             btn = discord.ui.Button(label=btn_label, style=btn_style, custom_id=f"confirm_judge_{self.event_id}")
             btn.callback = self.confirm_judge_callback
-            if is_confirmed:
-                btn.disabled = True
-            elif is_too_late:
-                btn.disabled = True
-                btn.label = "❌ Too Late to Confirm"
+            btn.disabled = btn_disabled
             self.add_item(btn)
             
         # Add Recorder button if a recorder is assigned
         if self.recorder_member:
             is_confirmed = ev.get('recorder_confirmed', False)
-            btn_label = "🎥 Present" if is_confirmed else "🎥 Confirm Presence"
-            btn_style = discord.ButtonStyle.blurple if is_confirmed else discord.ButtonStyle.gray
+            
+            if is_confirmed:
+                btn_label = "🎥 Present"
+                btn_style = discord.ButtonStyle.blurple
+                btn_disabled = True
+            elif is_too_late:
+                btn_label = "❌ Too Late - Replacement Needed"
+                btn_style = discord.ButtonStyle.red
+                btn_disabled = True
+            else:
+                btn_label = "🎥 Confirm Presence"
+                btn_style = discord.ButtonStyle.gray
+                btn_disabled = False
             
             btn = discord.ui.Button(label=btn_label, style=btn_style, custom_id=f"confirm_recorder_{self.event_id}")
             btn.callback = self.confirm_recorder_callback
-            if is_confirmed:
-                btn.disabled = True
-            elif is_too_late:
-                btn.disabled = True
-                btn.label = "❌ Too Late to Confirm"
+            btn.disabled = btn_disabled
             self.add_item(btn)
 
     @with_guild_context
@@ -2254,11 +2277,19 @@ class StaffConfirmationView(discord.ui.View):
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=pytz.UTC)
             now = datetime.datetime.now(pytz.UTC)
-            if (dt - now).total_seconds() < 1200:
-                await interaction.response.send_message("❌ Too late to confirm presence. Staff replacement is now required.", ephemeral=True)
+            seconds_until = (dt - now).total_seconds()
+            
+            # Must confirm between T-20min and T-10min
+            if seconds_until < 600:  # Less than 10 minutes
+                await interaction.response.send_message(
+                    "❌ Too late to confirm presence. It's less than 10 minutes before match start.\n"
+                    "A staff replacement request will be posted shortly.",
+                    ephemeral=True
+                )
                 return
                 
         ev['judge_confirmed'] = True
+        ev['judge_confirmation_time'] = datetime.datetime.utcnow().isoformat()
         save_scheduled_events()
         
         # Disable all buttons after confirmation
@@ -2280,6 +2311,7 @@ class StaffConfirmationView(discord.ui.View):
         else:
             await interaction.response.edit_message(view=self)
         await interaction.followup.send("✅ You have confirmed your presence as Judge!", ephemeral=True)
+        
         # Log Bot Activity
         log_embed = discord.Embed(
             title="⚖️ Judge Presence Confirmed",
@@ -2308,11 +2340,19 @@ class StaffConfirmationView(discord.ui.View):
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=pytz.UTC)
             now = datetime.datetime.now(pytz.UTC)
-            if (dt - now).total_seconds() < 1200:
-                await interaction.response.send_message("❌ Too late to confirm presence. Staff replacement is now required.", ephemeral=True)
+            seconds_until = (dt - now).total_seconds()
+            
+            # Must confirm between T-20min and T-10min
+            if seconds_until < 600:  # Less than 10 minutes
+                await interaction.response.send_message(
+                    "❌ Too late to confirm presence. It's less than 10 minutes before match start.\n"
+                    "A staff replacement request will be posted shortly.",
+                    ephemeral=True
+                )
                 return
                 
         ev['recorder_confirmed'] = True
+        ev['recorder_confirmation_time'] = datetime.datetime.utcnow().isoformat()
         save_scheduled_events()
         
         # Disable all buttons after confirmation
@@ -2334,6 +2374,7 @@ class StaffConfirmationView(discord.ui.View):
         else:
             await interaction.response.edit_message(view=self)
         await interaction.followup.send("✅ You have confirmed your presence as Recorder!", ephemeral=True)
+        
         # Log Bot Activity
         log_embed = discord.Embed(
             title="🎥 Recorder Presence Confirmed",
@@ -3390,11 +3431,16 @@ async def schedule_ten_minute_reminder(event_id: str, team1_captain: discord.Mem
                             
                             embed = discord.Embed(
                                 title="Staff Confirmation Required",
-                                description="Please confirm your presence for the upcoming match (within 20 minutes).",
+                                description="Please confirm your presence for the upcoming match.",
                                 color=discord.Color.orange(),
                                 timestamp=discord.utils.utcnow()
                             )
-                            embed.set_footer(text=f"{ORGANIZATION_NAME} • Staff Confirmation Required | Confirm within 20 minutes or staff will be auto-assigned")
+                            embed.add_field(
+                                name="⏰ Confirmation Window", 
+                                value="You have **10 minutes** to confirm (until T-10min before match).\nAfter that, auto-replacement will be triggered.",
+                                inline=False
+                            )
+                            embed.set_footer(text=f"{ORGANIZATION_NAME} • Staff Confirmation Required | Confirm within 10 minutes")
                             
                             j_m = event_channel.guild.get_member(j) if isinstance(j, int) else j
                             r_m = event_channel.guild.get_member(r) if isinstance(r, int) else r
@@ -3402,24 +3448,81 @@ async def schedule_ten_minute_reminder(event_id: str, team1_captain: discord.Mem
                             
                             await event_channel.send(content=f"{ping_str} 🔔 **Staff Confirmation Required**", embed=embed, view=view)
                         except Exception as e:
-                            print(f"Failed to send staff confirmation request at 30m: {e}")
+                            print(f"Error sending staff confirmation request: {e}")
             
-            # Wait for 20-min staff presence check
-            delay_20 = (reminder_time_20 - datetime.datetime.now(pytz.UTC)).total_seconds()
-            if delay_20 > 0:
-                await asyncio.sleep(delay_20)
-                
+            # Wait until T-10min to check for confirmations
+            delay_to_10min = (reminder_time_10 - datetime.datetime.now(pytz.UTC)).total_seconds()
+            if delay_to_10min > 0:
+                await asyncio.sleep(delay_to_10min)
+            
             if g_id:
                 current_guild_id.set(g_id)
-                
-            # Fire staff presence check (replacement trigger at 20-min mark)
+            
+            # At T-10min: Check if staff confirmed, if not trigger auto-replacement
             if event_id in scheduled_events:
-                now_check = datetime.datetime.now(pytz.UTC)
-                if now_check < match_time:
+                ev_data = scheduled_events[event_id]
+                j = ev_data.get('judge')
+                r = ev_data.get('recorder')
+                j_confirmed = ev_data.get('judge_confirmed', False)
+                r_confirmed = ev_data.get('recorder_confirmed', False)
+                
+                replace_judge = j and not j_confirmed
+                replace_recorder = r and not r_confirmed
+                
+                # If any staff needs replacement, post replacement alert
+                if replace_judge or replace_recorder:
                     try:
-                        await run_staff_presence_check(event_id, event_channel, match_time, minutes_before=20)
+                        schedule_channel_id = ev_data.get('schedule_channel_id')
+                        schedule_channel = event_channel.guild.get_channel(schedule_channel_id) if schedule_channel_id else event_channel
+                        
+                        # Create replacement view and alert
+                        replacement_view = StaffReplacementView(event_id, replace_judge, replace_recorder)
+                        
+                        alert_embed = discord.Embed(
+                            title="🚨 URGENT: Staff Replacement Required",
+                            description="Assigned staff did not confirm. Immediate replacement needed!",
+                            color=discord.Color.red(),
+                            timestamp=discord.utils.utcnow()
+                        )
+                        
+                        staff_needed = []
+                        pings_list = []
+                        if replace_judge:
+                            staff_needed.append("👨‍⚖️ **Judge**")
+                            pings_list.append(f"<@&{ROLE_IDS.get('judge', '')}>")
+                        if replace_recorder:
+                            staff_needed.append("🎥 **Recorder**")
+                            pings_list.append(f"<@&{ROLE_IDS.get('recorder', '')}>")
+                        
+                        alert_embed.add_field(name="⚠️ Staff Needed", value="\n".join(staff_needed), inline=False)
+                        
+                        team1 = ev_data.get('team1_name') or "Team 1"
+                        team2 = ev_data.get('team2_name') or "Team 2"
+                        alert_embed.add_field(
+                            name="📋 Match Details",
+                            value=f"**Match:** {team1} vs {team2}\n**Round:** {ev_data.get('round', 'N/A')}\n**Time:** Match starts in 10 minutes!",
+                            inline=False
+                        )
+                        alert_embed.set_footer(text=f"{ORGANIZATION_NAME} • Auto-Replacement System")
+                        
+                        poster_path = ev_data.get('poster_path')
+                        file = None
+                        if poster_path and os.path.exists(poster_path):
+                            try:
+                                file = discord.File(poster_path, filename="event_poster.png")
+                                alert_embed.set_image(url="attachment://event_poster.png")
+                            except:
+                                pass
+                        
+                        pings_str = " ".join(pings_list)
+                        if file:
+                            await schedule_channel.send(content=f"{pings_str} 🚨 **URGENT REPLACEMENT NEEDED!**", embed=alert_embed, file=file, view=replacement_view)
+                        else:
+                            await schedule_channel.send(content=f"{pings_str} 🚨 **URGENT REPLACEMENT NEEDED!**", embed=alert_embed, view=replacement_view)
+                        
+                        await event_channel.send("🚨 **URGENT:** Staff presence was not confirmed. Replacement request posted to schedule channel.")
                     except Exception as e:
-                        print(f"Failed to run 20-min staff check: {e}")
+                        print(f"Error posting auto-replacement alert: {e}")
             
             # Wait for 10-min player reminder
             delay_10 = (reminder_time_10 - datetime.datetime.now(pytz.UTC)).total_seconds()
@@ -6338,32 +6441,49 @@ async def available_events(interaction: discord.Interaction):
         except Exception:
             pass
 
-@tree.command(name="reassign", description="Resign from an event and notify other judges to take it")
+@tree.command(name="reassign", description="Resign from an event as Judge or Recorder and notify other staff to take it")
 @with_guild_context
 async def reassign_command(interaction: discord.Interaction):
-    """Unassign judge from match"""
+    """Unassign judge OR recorder from match"""
     if interaction.guild:
         current_guild_id.set(interaction.guild.id)
     permission_level = get_user_permission_level(interaction.user.roles, interaction.user.id)
-    if permission_level not in ["judge", "organizer", "owner", "helper"]:
+    if permission_level not in ["judge", "recorder", "organizer", "owner", "helper"]:
         await interaction.response.send_message("❌ You do not have permission to use /reassign.", ephemeral=True)
         return
 
-    # Find events the user is judging
+    # Find events the user is judging OR recording
     user_events = []
     for event_id, event_data in scheduled_events.items():
         judge_val = event_data.get('judge')
+        recorder_val = event_data.get('recorder')
+        user_role = None
+        
+        # Check if user is judge
         if judge_val:
             try:
                 j_id = int(getattr(judge_val, 'id', judge_val))
                 if j_id == interaction.user.id:
-                    user_events.append((event_id, event_data))
+                    user_role = "Judge"
             except (ValueError, TypeError):
                 if str(getattr(judge_val, 'id', judge_val)) == str(interaction.user.id):
-                    user_events.append((event_id, event_data))
+                    user_role = "Judge"
+        
+        # Check if user is recorder
+        if recorder_val and not user_role:
+            try:
+                r_id = int(getattr(recorder_val, 'id', recorder_val))
+                if r_id == interaction.user.id:
+                    user_role = "Recorder"
+            except (ValueError, TypeError):
+                if str(getattr(recorder_val, 'id', recorder_val)) == str(interaction.user.id):
+                    user_role = "Recorder"
+        
+        if user_role:
+            user_events.append((event_id, event_data, user_role))
 
     if not user_events:
-        await interaction.response.send_message("❌ You are not assigned to any events.", ephemeral=True)
+        await interaction.response.send_message("❌ You are not assigned to any events as Judge or Recorder.", ephemeral=True)
         return
 
     class EventReassignView(View):
@@ -6374,17 +6494,20 @@ async def reassign_command(interaction: discord.Interaction):
             placeholder="Select an event to resign from...",
             options=[
                 discord.SelectOption(
-                    label=f"Match {idx+1}: {event_data.get('round', 'Round')} — {event_data.get('date_str', '')}",
+                    label=f"{role}: {event_data.get('round', 'Round')} — {event_data.get('date_str', '')}",
                     description=f"{event_data.get('time_str', 'Time')} | {event_data.get('tournament', '')}",
-                    value=event_id
+                    value=f"{event_id}:{role}"
                 )
-                for idx, (event_id, event_data) in enumerate(user_events[:25])
+                for idx, (event_id, event_data, role) in enumerate(user_events[:25])
             ]
         )
         async def select_event(self, select_interaction: discord.Interaction, select: discord.ui.Select):
             if select_interaction.guild:
                 current_guild_id.set(select_interaction.guild.id)
-            selected_event_id = select.values[0]
+            
+            selected_value = select.values[0]
+            selected_event_id, role_type = selected_value.split(":", 1)
+            
             event_data = scheduled_events.get(selected_event_id)
             if not event_data:
                 await select_interaction.response.send_message("❌ Event not found.", ephemeral=True)
@@ -6402,10 +6525,16 @@ async def reassign_command(interaction: discord.Interaction):
                     )
                     return
 
-            # Remove judge from event
-            old_judge = interaction.user
-            event_data['judge'] = None
-            remove_judge_assignment(interaction.user.id, selected_event_id)
+            # Remove staff member from event based on role
+            old_staff = interaction.user
+            if role_type == "Judge":
+                event_data['judge'] = None
+                event_data['judge_confirmed'] = False
+                remove_judge_assignment(interaction.user.id, selected_event_id)
+            else:  # Recorder
+                event_data['recorder'] = None
+                event_data['recorder_confirmed'] = False
+            
             save_scheduled_events()
 
             # Log to SheetDB
@@ -6413,13 +6542,13 @@ async def reassign_command(interaction: discord.Interaction):
                 "Guild_ID":    str(interaction.guild.id) if interaction.guild else "",
                 "Timestamp":   datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
                 "Event_ID":    selected_event_id,
-                "Judge_ID":    str(old_judge.id),
-                "Judge_Name":  old_judge.name,
+                "Judge_ID":    str(old_staff.id),
+                "Judge_Name":  old_staff.name,
                 "Tournament":  event_data.get('tournament', ''),
                 "Round":       event_data.get('round', ''),
                 "Date":        event_data.get('date_str', ''),
                 "UTC_Time":    event_data.get('time_str', ''),
-                "Action":      "Reassigned (resigned)",
+                "Action":      f"Reassigned (resigned as {role_type})",
             }))
 
             # Get schedule channel to update the original message
@@ -6451,25 +6580,41 @@ async def reassign_command(interaction: discord.Interaction):
                     msg = await sched_channel.fetch_message(msg_id)
                     if msg and msg.embeds:
                         embed = msg.embeds[0]
-                        # Remove judge field so it shows as open again
-                        remove_field_by_name(embed, "👨‍⚖️ Judge")
+                        # Remove the appropriate field
+                        if role_type == "Judge":
+                            remove_field_by_name(embed, "👨‍⚖️ Judge")
+                            # Keep recorder if exists
+                            recorder = event_data.get('recorder')
+                            if not recorder:
+                                embed.add_field(name="👨‍⚖️ Judge", value="⏳ Waiting...", inline=True)
+                        else:  # Recorder
+                            remove_field_by_name(embed, "🎥 Recorder")
+                            # Keep judge if exists
+                            judge = event_data.get('judge')
+                            if not judge:
+                                embed.add_field(name="🎥 Recorder", value="⏳ Waiting...", inline=True)
+                        
                         embed.color = discord.Color.blue()
                         if embed.title and embed.title.startswith("✅"):
                             embed.title = embed.title[1:]
-                        # Restore Take Schedule + Record buttons
+                        # Restore buttons
                         new_view = TakeScheduleButton(selected_event_id, mem_1 or t1, mem_2 or t2, sched_channel)
                         await msg.edit(embed=embed, view=new_view)
                 except Exception as e:
                     print(f"Failed to restore schedule message: {e}")
 
-                # Ping judge role in the schedule channel with a rich notification
+                # Ping appropriate role in the schedule channel
                 t1_ping = f"<@{t1_id}>" if t1_id else "Team 1"
                 t2_ping = f"<@{t2_id}>" if t2_id else "Team 2"
+                
+                role_emoji = "👨‍⚖️" if role_type == "Judge" else "🎥"
+                role_ping_id = ROLE_IDS.get('judge' if role_type == "Judge" else 'recorder')
+                
                 notify_embed = discord.Embed(
-                    title="🔄 Judge Needed — Schedule Open",
+                    title=f"🔄 {role_type} Needed — Schedule Open",
                     description=(
-                        f"**{old_judge.display_name}** has resigned from judging this match.\n\n"
-                        f"A replacement judge is required! Please click **Take Schedule** on the event post."
+                        f"**{old_staff.display_name}** has resigned from {role_type.lower()}ing this match.\n\n"
+                        f"A replacement {role_type.lower()} is required! Please click the appropriate button on the event post."
                     ),
                     color=discord.Color.orange(),
                     timestamp=discord.utils.utcnow()
@@ -6487,14 +6632,14 @@ async def reassign_command(interaction: discord.Interaction):
                 notify_embed.set_footer(text=f"{ORGANIZATION_NAME} • Reassign System")
                 try:
                     await sched_channel.send(
-                        content=f"⚠️ <@&{ROLE_IDS['judge']}> — A judge is needed for this match!",
+                        content=f"⚠️ <@&{role_ping_id}> — A {role_type.lower()} is needed for this match!",
                         embed=notify_embed
                     )
                 except Exception as e:
                     print(f"Error sending reassign notification: {e}")
 
             await select_interaction.response.send_message(
-                f"✅ You have been removed from the schedule. Judges have been notified.", ephemeral=True
+                f"✅ You have been removed from the schedule as {role_type}. Staff have been notified.", ephemeral=True
             )
             self.stop()
 
