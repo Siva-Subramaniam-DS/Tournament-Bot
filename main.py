@@ -1320,86 +1320,8 @@ def _sync_sheetdb_post(sheet_name: str, row_data: dict):
         except Exception as e:
             print(f"[Supabase] ❌ Exception posting to '{sheet_name}': {e}")
 
-    # 2. SheetDB insert
-    guild_id = row_data.get("Guild_ID")
-    if not guild_id:
-        guild_id = current_guild_id.get()
-
-    try:
-        api_url = get_sheetdb_api_url(guild_id)
-    except Exception as e:
-        print(f"[SheetDB] ❌ Failed to fetch SheetDB URL for guild {guild_id}: {e}")
-        api_url = "https://sheetdb.io/api/v1/vlbn6vbc8vdbb"
-
-    if not api_url:
-        print(f"[SheetDB] ❌ No API URL found for guild {guild_id}")
-        return supabase_success
-
-    import urllib.parse
-    import time
-    
-    # Dynamically match sheet name to resolve spaces/casing differences
-    global sheetdb_tabs_cache
-    resolved_sheet_name = sheet_name
-    try:
-        parsed_api = urllib.parse.urlparse(api_url)
-        sheets_url = f"{parsed_api.scheme}://{parsed_api.netloc}{parsed_api.path.rstrip('/')}/sheets"
-        
-        if api_url not in sheetdb_tabs_cache:
-            sheets_resp = requests.get(sheets_url, timeout=5)
-            if sheets_resp.status_code == 200:
-                data = sheets_resp.json()
-                if isinstance(data, dict) and "sheets" in data:
-                    sheetdb_tabs_cache[api_url] = data["sheets"]
-                elif isinstance(data, list):
-                    sheetdb_tabs_cache[api_url] = data
-                print(f"[SheetDB] Cached sheet tabs for {api_url}: {sheetdb_tabs_cache[api_url]}")
-        
-        if api_url in sheetdb_tabs_cache:
-            tabs = sheetdb_tabs_cache[api_url]
-            if sheet_name in tabs:
-                resolved_sheet_name = sheet_name
-            else:
-                stripped_target = sheet_name.strip().lower()
-                for existing_tab in tabs:
-                    if existing_tab.strip().lower() == stripped_target:
-                        resolved_sheet_name = existing_tab
-                        print(f"[SheetDB] ℹ️ Mapped '{sheet_name}' to existing tab '{resolved_sheet_name}'")
-                        break
-    except Exception as e:
-        print(f"[SheetDB] ⚠️ Failed to resolve/map sheet name '{sheet_name}': {e}")
-
-    parsed = urllib.parse.urlparse(api_url)
-    quoted_sheet = urllib.parse.quote(resolved_sheet_name)
-    if parsed.query:
-        post_url = f"{api_url}&sheet={quoted_sheet}"
-    else:
-        post_url = f"{api_url}?sheet={quoted_sheet}"
-
-    payload = {"data": [cleaned_row]}
-    
-    sheetdb_success = False
-    retry_delay = 1.0
-    for attempt in range(1, 4):
-        try:
-            response = requests.post(post_url, json=payload, timeout=10)
-            if response.status_code in (200, 201):
-                print(f"[SheetDB] ✅ Row added to '{sheet_name}' (as '{resolved_sheet_name}') (Attempt {attempt})")
-                sheetdb_success = True
-                break
-            else:
-                print(f"[SheetDB] ⚠️ Non-200 response on attempt {attempt}: Status {response.status_code}, Body: {response.text}")
-        except Exception as e:
-            print(f"[SheetDB] ⚠️ Request exception on attempt {attempt}: {e}")
-        
-        if attempt < 3:
-            time.sleep(retry_delay)
-            retry_delay *= 2.0
-
-    if not sheetdb_success:
-        print(f"[SheetDB] ❌ Failed to post to '{sheet_name}' after 3 attempts")
-
-    return supabase_success or sheetdb_success
+    # 2. SheetDB insert (Disabled: now handled by Google Apps Script pulling from Supabase)
+    return supabase_success
 
 async def sheetdb_post(sheet_name: str, row_data: dict):
     """Async wrapper — runs Supabase and SheetDB inserts in a thread so the event loop stays free."""
