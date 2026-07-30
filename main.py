@@ -612,10 +612,15 @@ async def load_scheduled_events_from_supabase():
         
     print("⏳ Loading scheduled events from Supabase...")
     try:
-        res = await asyncio.to_thread(
-            lambda: supabase_client.table("Events").select("*").execute()
-        )
-        if res.data:
+        try:
+            res = await asyncio.to_thread(
+                lambda: supabase_client.table("Matches").select("*").execute()
+            )
+        except Exception:
+            res = await asyncio.to_thread(
+                lambda: supabase_client.table("Events").select("*").execute()
+            )
+        if res and res.data:
             loaded_count = 0
             for row in res.data:
                 event_id = row.get("Event_ID")
@@ -770,45 +775,72 @@ async def save_event_to_supabase(event_id: str, event_data: dict):
         t2_name = event_data.get('team2_name') or (t2_cap.name if hasattr(t2_cap, 'name') else '')
         match_name = event_data.get('match_name') or f"{t1_name} vs {t2_name}"
 
-        row = {
-            "Guild_ID": str(guild_id) if guild_id else "",
-            "Event_ID": event_id,
-            "Match_Name": match_name,
-            "Tournament": event_data.get('tournament', ''),
-            "Round": event_data.get('round', ''),
-            "Group": event_data.get('group', '') or '',
-            "Date": event_data.get('date_str', ''),
-            "UTC_Time": event_data.get('time_str', ''),
-            "Team1_Captain_ID": str(t1_id) if t1_id else '',
-            "Team1_Captain_Name": t1_name,
-            "Team2_Captain_ID": str(t2_id) if t2_id else '',
-            "Team2_Captain_Name": t2_name,
-            "Judge_ID": str(j_id) if j_id else '',
-            "Judge_Name": judge_val.name if hasattr(judge_val, 'name') else '',
-            "Channel_ID": str(event_data.get('channel_id', '')),
-            "Status": event_data.get('status', 'Scheduled'),
-            "recording_link": event_data.get('recording_link', ''),
-            "recorder_link": event_data.get('recorder_link', ''),
-            "judge_link": event_data.get('judge_link', ''),
-            "results_message_id": str(event_data.get('results_message_id', '')),
-            "results_channel_id": str(event_data.get('results_channel_id', '')),
-            "match_results_message_id": str(event_data.get('match_results_message_id', '')),
-            "match_results_channel_id": str(event_data.get('match_results_channel_id', ''))
-        }
-        
-        res = await asyncio.to_thread(
-            lambda: supabase_client.table("Events").select("id").eq("Event_ID", event_id).execute()
-        )
-        if res.data and len(res.data) > 0:
-            row_id = res.data[0]["id"]
+        target_table = "Matches"
+        try:
+            res = await asyncio.to_thread(
+                lambda: supabase_client.table("Matches").select("Match_ID").eq("Match_ID", event_id).execute()
+            )
+        except Exception:
+            target_table = "Events"
+            res = await asyncio.to_thread(
+                lambda: supabase_client.table("Events").select("id").eq("Event_ID", event_id).execute()
+            )
+
+        if target_table == "Matches":
+            match_row = {
+                "Match_ID": event_id,
+                "Match_Name": match_name,
+                "Round": int(event_data.get('round', 1)) if str(event_data.get('round', '')).isdigit() else 1,
+                "Group": str(event_data.get('group', '') or ''),
+                "Status": str(event_data.get('status', 'scheduled')).lower(),
+                "Channel_ID": str(event_data.get('channel_id', '')),
+                "recording_link": str(event_data.get('recording_link', '')),
+                "recorder_link": str(event_data.get('recorder_link', '')),
+                "judge_link": str(event_data.get('judge_link', '')),
+                "results_message_id": str(event_data.get('results_message_id', '')),
+                "results_channel_id": str(event_data.get('results_channel_id', '')),
+                "match_results_message_id": str(event_data.get('match_results_message_id', '')),
+                "match_results_channel_id": str(event_data.get('match_results_channel_id', ''))
+            }
             await asyncio.to_thread(
-                lambda: supabase_client.table("Events").update(row).eq("id", row_id).execute()
+                lambda: supabase_client.table("Matches").upsert(match_row, on_conflict="Match_ID").execute()
             )
         else:
-            row["Timestamp"] = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-            await asyncio.to_thread(
-                lambda: supabase_client.table("Events").insert(row).execute()
-            )
+            legacy_row = {
+                "Guild_ID": str(guild_id) if guild_id else "",
+                "Event_ID": event_id,
+                "Match_Name": match_name,
+                "Tournament": event_data.get('tournament', ''),
+                "Round": event_data.get('round', ''),
+                "Group": event_data.get('group', '') or '',
+                "Date": event_data.get('date_str', ''),
+                "UTC_Time": event_data.get('time_str', ''),
+                "Team1_Captain_ID": str(t1_id) if t1_id else '',
+                "Team1_Captain_Name": t1_name,
+                "Team2_Captain_ID": str(t2_id) if t2_id else '',
+                "Team2_Captain_Name": t2_name,
+                "Judge_ID": str(j_id) if j_id else '',
+                "Judge_Name": judge_val.name if hasattr(judge_val, 'name') else '',
+                "Channel_ID": str(event_data.get('channel_id', '')),
+                "Status": event_data.get('status', 'Scheduled'),
+                "recording_link": event_data.get('recording_link', ''),
+                "recorder_link": event_data.get('recorder_link', ''),
+                "judge_link": event_data.get('judge_link', ''),
+                "results_message_id": str(event_data.get('results_message_id', '')),
+                "results_channel_id": str(event_data.get('results_channel_id', '')),
+                "match_results_message_id": str(event_data.get('match_results_message_id', '')),
+                "match_results_channel_id": str(event_data.get('match_results_channel_id', ''))
+            }
+            if res and res.data and len(res.data) > 0:
+                row_id = res.data[0]["id"]
+                await asyncio.to_thread(
+                    lambda: supabase_client.table("Events").update(legacy_row).eq("id", row_id).execute()
+                )
+            else:
+                legacy_row["Timestamp"] = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                await asyncio.to_thread(
+                    lambda: supabase_client.table("Events").insert(legacy_row).execute()
+                )
     except Exception as e:
         print(f"[Supabase] Error saving event {event_id} to database: {e}")
 
@@ -849,35 +881,26 @@ async def resolve_scheduled_event_members():
                     pass
     print(f"✅ Resolved {resolved_count} member ID(s) to Member objects.")
 
+def _json_serialize_clean(obj):
+    if hasattr(obj, 'id'):
+        return obj.id
+    if isinstance(obj, (datetime.datetime, datetime.date)):
+        return obj.isoformat()
+    if isinstance(obj, dict):
+        return {k: _json_serialize_clean(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [_json_serialize_clean(x) for x in obj]
+    return str(obj) if not isinstance(obj, (int, float, bool, type(None))) else obj
+
 # Save scheduled events to file
 def save_scheduled_events():
     try:
-        # Convert datetime objects to strings for JSON serialization
         data_to_save = {}
         for event_id, event_data in scheduled_events.items():
-            event_copy = event_data.copy()
-            if 'datetime' in event_copy:
-                event_copy['datetime'] = event_copy['datetime'].isoformat()
-            
-            # Convert Discord Member objects to IDs for JSON serialization
-            if 'team1_captain' in event_copy and hasattr(event_copy['team1_captain'], 'id'):
-                event_copy['team1_captain'] = event_copy['team1_captain'].id
-            if 'team2_captain' in event_copy and hasattr(event_copy['team2_captain'], 'id'):
-                event_copy['team2_captain'] = event_copy['team2_captain'].id
-            if 'judge' in event_copy and hasattr(event_copy['judge'], 'id'):
-                event_copy['judge'] = event_copy['judge'].id
-            elif 'judge' in event_copy and event_copy['judge'] is None:
-                event_copy['judge'] = None
-
-            if 'recorder' in event_copy and hasattr(event_copy['recorder'], 'id'):
-                event_copy['recorder'] = event_copy['recorder'].id
-            elif 'recorder' in event_copy and event_copy['recorder'] is None:
-                event_copy['recorder'] = None
-                
-            data_to_save[event_id] = event_copy
+            data_to_save[event_id] = _json_serialize_clean(event_data)
         
-        with open('scheduled_events.json', 'w') as f:
-            json.dump(data_to_save, f, indent=2)
+        with open('scheduled_events.json', 'w', encoding='utf-8') as f:
+            json.dump(data_to_save, f, indent=2, ensure_ascii=False)
 
         # Sync with Supabase asynchronously in the background
         # Use a single throttled task instead of blasting all events at once,
@@ -1359,23 +1382,76 @@ import io
 sheetdb_tabs_cache = {}  # {api_url: [tab_names]}
 
 def _sync_sheetdb_post(sheet_name: str, row_data: dict):
-    """Synchronous write to Supabase and SheetDB (Google Sheets). Call via asyncio.to_thread."""
-    # 1. Supabase insert
-    supabase_success = False
+    """Synchronous write to Supabase. Call via asyncio.to_thread."""
+    if not supabase_client:
+        return False
+
     cleaned_row = row_data.copy()
     if "sheetdb_api_url" in cleaned_row:
         del cleaned_row["sheetdb_api_url"]
 
-    if supabase_client:
+    target_table = sheet_name
+    if target_table in ("Events", "Results"):
+        target_table = "Matches"
+        match_id = cleaned_row.get("Match_ID") or cleaned_row.get("Event_ID")
+        if not match_id:
+            return False
+        match_payload = {
+            "Match_ID": str(match_id),
+            "Match_Name": str(cleaned_row.get("Match_Name") or ""),
+            "Round": int(cleaned_row.get("Round", 1)) if str(cleaned_row.get("Round", "")).isdigit() else 1,
+            "Group": str(cleaned_row.get("Group") or ""),
+            "Status": str(cleaned_row.get("Status", "scheduled")).lower(),
+            "Channel_ID": str(cleaned_row.get("Channel_ID") or "")
+        }
         try:
-            supabase_client.table(sheet_name).insert(cleaned_row).execute()
-            print(f"[Supabase] ✅ Row added to '{sheet_name}'")
-            supabase_success = True
+            supabase_client.table("Matches").upsert(match_payload, on_conflict="Match_ID").execute()
+            print(f"[Supabase] ✅ Match '{match_id}' synced to Matches table")
+            return True
         except Exception as e:
-            print(f"[Supabase] ❌ Exception posting to '{sheet_name}': {e}")
+            print(f"[Supabase] ⚠️ Exception posting to Matches: {e}")
+            return False
 
-    # 2. SheetDB insert (Disabled: now handled by Google Apps Script pulling from Supabase)
-    return supabase_success
+    if target_table == "JudgeAssignments":
+        target_table = "MatchStaff"
+        match_id = cleaned_row.get("Match_ID") or cleaned_row.get("Event_ID")
+        user_id = cleaned_row.get("User_ID") or cleaned_row.get("Judge_ID")
+        user_name = cleaned_row.get("Name") or cleaned_row.get("Judge_Name") or "Staff"
+        if not match_id or not user_id:
+            return False
+        staff_payload = {
+            "Match_ID": str(match_id),
+            "User_ID": str(user_id),
+            "Name": str(user_name),
+            "Role": "Judge",
+            "Confirmed": True
+        }
+        try:
+            supabase_client.table("MatchStaff").upsert(staff_payload, on_conflict="Match_ID,User_ID,Role").execute()
+            print(f"[Supabase] ✅ Staff assignment synced to MatchStaff for match '{match_id}'")
+            return True
+        except Exception as e:
+            print(f"[Supabase] ⚠️ Exception posting to MatchStaff: {e}")
+            return False
+
+    if target_table == "StaffStats":
+        if "Role_Updated" in cleaned_row:
+            del cleaned_row["Role_Updated"]
+        try:
+            supabase_client.table("StaffStats").upsert(cleaned_row).execute()
+            print(f"[Supabase] ✅ StaffStats updated for user {cleaned_row.get('User_ID')}")
+            return True
+        except Exception as e:
+            print(f"[Supabase] ⚠️ StaffStats upsert warning: {e}")
+            return False
+
+    try:
+        supabase_client.table(target_table).insert(cleaned_row).execute()
+        print(f"[Supabase] ✅ Row added to '{target_table}'")
+        return True
+    except Exception as e:
+        print(f"[Supabase] ❌ Exception posting to '{target_table}': {e}")
+        return False
 
 async def sheetdb_post(sheet_name: str, row_data: dict):
     """Async wrapper — runs Supabase and SheetDB inserts in a thread so the event loop stays free."""
@@ -1401,27 +1477,21 @@ def _sync_save_guild_config_to_supabase(guild_id: int, cfg: dict):
         "Staff_Role_ID": str(cfg.get('role_ids', {}).get('staff') or ""),
         "Players_Role_ID": str(cfg.get('role_ids', {}).get('players') or ""),
         
-        "organization_name": str(cfg.get('organization_name', '')),
-        "tournament_system_name": str(cfg.get('tournament_system_name', '')),
-        "player_info_link": str(cfg.get('player_info_link', '')),
-        "player_info_format": str(cfg.get('player_info_format', '5 vs 5')),
-        "player_info_participant_channel_id": str(cfg.get('player_info_participant_channel_id', '')),
+        "Organization_Name": str(cfg.get('organization_name', '')),
+        "Tournament_System_Name": str(cfg.get('tournament_system_name', '')),
         "Updated_At": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     }
 
-    # Legacy schema fallback
+    # Clean legacy fallback
     legacy_row = {
         "Guild_ID": str(guild_id),
         "Admin_Role_ID": str(cfg.get('role_ids', {}).get('head_organizer') or ""),
-        "Staff_Role_ID": str(cfg.get('role_ids', {}).get('helper_team') or ""),
-        "Challonge_Role_ID": str(cfg.get('role_ids', {}).get('players') or ""),
+        "Organizer_Role_ID": str(cfg.get('role_ids', {}).get('organizer') or ""),
+        "Helper_Role_ID": str(cfg.get('role_ids', {}).get('helper_team') or ""),
         "Judge_Role_ID": str(cfg.get('role_ids', {}).get('judge') or ""),
         "Recorder_Role_ID": str(cfg.get('role_ids', {}).get('recorder') or ""),
-        "organization_name": str(cfg.get('organization_name', '')),
-        "tournament_system_name": str(cfg.get('tournament_system_name', '')),
-        "player_info_link": str(cfg.get('player_info_link', '')),
-        "player_info_format": str(cfg.get('player_info_format', '5 vs 5')),
-        "player_info_participant_channel_id": str(cfg.get('player_info_participant_channel_id', '')),
+        "Staff_Role_ID": str(cfg.get('role_ids', {}).get('staff') or ""),
+        "Players_Role_ID": str(cfg.get('role_ids', {}).get('players') or ""),
         "Updated_At": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     }
 
@@ -1447,74 +1517,43 @@ def _sync_save_tournament_to_supabase(guild_id: int, tournament_id: str, t_data:
     if not supabase_client:
         return False
 
-    # Modern full schema
-    row = {
-        "Guild_ID": str(guild_id),
-        "Tournament_ID": str(tournament_id),
-        "Tournament_Name": str(t_data.get('name') or ""),
-        "State": str(t_data.get('state') or "pending"),
-        "Key": str(t_data.get('key') or ""),
-        "challonge_bracket_link": str(t_data.get('challonge_bracket_link') or ""),
-        
-        # Channels
-        "Attendance_Channel_ID": str(t_data.get('attendance') or ""),
-        "Transcript_Channel_ID": str(t_data.get('transcript') or ""),
-        "Schedule_Channel_ID": str(t_data.get('schedule') or ""),
-        "Rules_Channel_ID": str(t_data.get('rules') or ""),
-        "Deadline_Channel_ID": str(t_data.get('deadline') or ""),
-        "Result_Channel_ID": str(t_data.get('result') or ""),
-        "Challonge_Logs_Channel_ID": str(t_data.get('challonge_logs') or ""),
-        "Transcript_Logs_Channel_ID": str(t_data.get('transcript_logs') or ""),
-        "Bot_Logs_Channel_ID": str(t_data.get('bot_logs') or ""),
-        
-        # Categories
-        "Closed_Ticket_Category_ID": str(t_data.get('closed_ticket_1') or ""),
-        "Closed_Ticket_Category_2_ID": str(t_data.get('closed_ticket_2') or ""),
-        "Open_Category_1_ID": str(t_data.get('ticket_open_category_1') or ""),
-        "Open_Category_2_ID": str(t_data.get('ticket_open_category_2') or ""),
-        "Open_Category_3_ID": str(t_data.get('ticket_open_category_3') or ""),
-        
-        "Auto_Room_Creation": str(t_data.get('auto_room_creation', True)),
-        "Players_Role_ID": str(t_data.get('players_role_id') or ""),
-        "Updated_At": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    }
+    auto_room_val = t_data.get('auto_room_creation', False)
+    if isinstance(auto_room_val, str):
+        auto_room_val = auto_room_val.lower() in ('true', '1', 'yes')
 
-    # Legacy schema fallback
-    legacy_row = {
-        "Guild_ID": str(guild_id),
+    def _get_val(*keys):
+        for k in keys:
+            v = t_data.get(k)
+            if v not in (None, "", "None"):
+                return str(v).strip()
+        return ""
+
+    row = {
         "Tournament_ID": str(tournament_id),
-        "Tournament_Name": str(t_data.get('name') or ""),
-        "State": str(t_data.get('state') or "pending"),
-        "Key": str(t_data.get('key') or ""),
-        "challonge_bracket_link": str(t_data.get('challonge_bracket_link') or ""),
-        "Transcript_Channel_ID": str(t_data.get('transcript') or ""),
-        "Closed_Ticket_Category_ID": str(t_data.get('closed_ticket_1') or ""),
-        "Closed_Ticket_Category_2_ID": str(t_data.get('closed_ticket_2') or ""),
-        "Attendance_Channel_ID": str(t_data.get('attendance') or ""),
-        "Rules_Channel_ID": str(t_data.get('rules') or ""),
-        "Deadline_Channel_ID": str(t_data.get('deadline') or ""),
-        "Result_Channel_ID": str(t_data.get('result') or ""),
-        "Open_Category_1_ID": str(t_data.get('ticket_open_category_1') or ""),
-        "Open_Category_2_ID": str(t_data.get('ticket_open_category_2') or ""),
-        "Open_Category_3_ID": str(t_data.get('ticket_open_category_3') or ""),
-        "Auto_Room_Creation": str(t_data.get('auto_room_creation', True)),
-        "Players_Role_ID": str(t_data.get('players_role_id') or ""),
+        "Guild_ID": str(guild_id),
+        "Tournament_Name": _get_val('name', 'Tournament_Name') or str(tournament_id),
+        "State": _get_val('state', 'State') or "pending",
+        "Key": _get_val('key', 'Key'),
+        "Challonge_Bracket_Link": _get_val('challonge_bracket_link', 'Challonge_Bracket_Link', 'bracket'),
+        "Google_Sheet_Link": _get_val('google_sheet_link', 'Google_Sheet_Link', 'captains_sheet_link', 'Captains_Sheet_Link', 'sheet_link'),
+        "Attendance_Channel_ID": _get_val('attendance', 'attendance_channel', 'Attendance_Channel_ID'),
+        "Transcript_Channel_ID": _get_val('transcript', 'transcript_channel', 'Transcript_Channel_ID'),
+        "Schedule_Channel_ID": _get_val('schedule', 'schedule_channel', 'schedule_channel_id', 'Schedule_Channel_ID'),
+        "Result_Channel_ID": _get_val('result', 'result_channel', 'Result_Channel_ID'),
+        "Deadline_Channel_ID": _get_val('deadline', 'deadline_channel', 'Deadline_Channel_ID'),
+        "Closed_Ticket_Category_ID": _get_val('closed_ticket_1', 'Closed_Ticket_Category_ID'),
+        "Auto_Room_Creation": bool(auto_room_val),
+        "Map_Pool": _get_val('map_pool', 'Map_Pool'),
         "Updated_At": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     }
 
     try:
-        supabase_client.table("Tournaments").upsert(row).execute()
-        print(f"[Supabase] ✅ Tournaments updated/created for tournament {tournament_id}")
+        supabase_client.table("Tournaments").upsert(row, on_conflict="Tournament_ID").execute()
+        print(f"[Supabase] ✅ Tournaments table updated for tournament '{tournament_id}'")
         return True
     except Exception as e:
-        print(f"[Supabase] ⚠️ Failed saving with full Tournaments schema, trying legacy fallback: {e}")
-        try:
-            supabase_client.table("Tournaments").upsert(legacy_row).execute()
-            print("[Supabase] ✅ Tournaments saved using legacy fallback columns.")
-            return True
-        except Exception as fallback_err:
-            print(f"[Supabase] ❌ Error saving tournament using legacy fallback: {fallback_err}")
-            return False
+        print(f"[Supabase] ❌ Exception updating Tournaments table: {e}")
+        return False
 
 async def save_tournament_to_supabase(guild_id: int, tournament_id: str, t_data: dict):
     if supabase_client:
@@ -4600,7 +4639,6 @@ async def on_ready():
     # Sync commands with timeout handling
     try:
         print("🔄 Syncing slash commands...")
-        import asyncio
         synced = await asyncio.wait_for(tree.sync(), timeout=30.0)
         print(f"✅ Synced {len(synced)} command(s)")
     except asyncio.TimeoutError:
@@ -9951,7 +9989,10 @@ async def update_settings_logic(
             updates.append(f"❌ **Server Logo:** Failed to save logo: {logo_err}")
         
     if not updates:
-        await interaction.response.send_message("⚠️ No parameters were provided. Settings remain unchanged.", ephemeral=False)
+        if interaction.response.is_done():
+            await interaction.followup.send("⚠️ No parameters were provided. Settings remain unchanged.", ephemeral=False)
+        else:
+            await interaction.response.send_message("⚠️ No parameters were provided. Settings remain unchanged.", ephemeral=False)
         return
         
     save_guild_config(interaction.guild.id, cfg)
@@ -9974,7 +10015,10 @@ async def update_settings_logic(
     )
     embed.set_footer(text=f"Configured by {interaction.user.display_name}")
     
-    await interaction.response.send_message(embed=embed, ephemeral=False)
+    if interaction.response.is_done():
+        await interaction.followup.send(embed=embed, ephemeral=False)
+    else:
+        await interaction.response.send_message(embed=embed, ephemeral=False)
 
 @settings_group.command(name="add", description="Add server-wide settings: configure server roles and branding details")
 @app_commands.describe(
@@ -10378,7 +10422,9 @@ def load_guild_tournaments(guild_id: int) -> dict:
                             db_val = row.get(col_name)
                             if db_val not in (None, "", "None"):
                                 try:
-                                    existing[dict_key] = int(db_val)
+                                    val_int = int(db_val)
+                                    existing[dict_key] = val_int
+                                    existing[f"{dict_key}_channel"] = val_int
                                 except:
                                     pass
                                     
@@ -10717,6 +10763,255 @@ async def tournament_autocomplete(
     except Exception as e:
         print(f"Error in tournament_autocomplete: {e}")
         return []
+
+# =========================================================================
+# TOURNAMENT COMMAND GROUP (/tournament add, edit, delete, info, list)
+# =========================================================================
+tournament_group = app_commands.Group(name="tournament", description="Manage multi-tournament settings and configurations")
+
+@tournament_group.command(name="add", description="Register a new tournament configuration")
+@app_commands.describe(
+    tournament_id="Unique identifier for the tournament (e.g. t1, apex2024)",
+    name="Full name of the tournament",
+    challonge_key="Challonge API Key or Bracket Identifier",
+    bracket_link="Challonge or tournament bracket URL",
+    sheet_link="Google Sheet link for player roster / team info",
+    attendance_channel="Channel for staff check-ins",
+    transcript_channel="Channel for ticket transcripts",
+    schedule_channel="Channel for posting match schedules",
+    rules_channel="Channel for tournament rules",
+    result_channel="Channel for official match results",
+    deadline_channel="Channel for round deadlines",
+    closed_category="Category where closed tickets are stored",
+    auto_room="Toggle automatic room creation for this tournament"
+)
+@with_guild_context
+async def tournament_add(
+    interaction: discord.Interaction,
+    tournament_id: str,
+    name: str,
+    challonge_key: Optional[str] = None,
+    bracket_link: Optional[str] = None,
+    sheet_link: Optional[str] = None,
+    attendance_channel: Optional[discord.TextChannel] = None,
+    transcript_channel: Optional[discord.TextChannel] = None,
+    schedule_channel: Optional[discord.TextChannel] = None,
+    rules_channel: Optional[discord.TextChannel] = None,
+    result_channel: Optional[discord.TextChannel] = None,
+    deadline_channel: Optional[discord.TextChannel] = None,
+    closed_category: Optional[discord.CategoryChannel] = None,
+    auto_room: Optional[bool] = False
+):
+    if not interaction.guild_id:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    tournaments = load_guild_tournaments(interaction.guild_id)
+    t_id_clean = tournament_id.strip().lower()
+
+    if t_id_clean in tournaments:
+        await interaction.response.send_message(f"⚠️ A tournament with ID `{t_id_clean}` already exists. Use `/tournament edit` to modify it.", ephemeral=True)
+        return
+
+    t_data = get_default_tournament_data()
+    t_data["id"] = t_id_clean
+    t_data["name"] = name.strip()
+    t_data["state"] = "pending"
+    if challonge_key: t_data["key"] = challonge_key.strip()
+    if bracket_link: t_data["challonge_bracket_link"] = bracket_link.strip()
+    if sheet_link: t_data["google_sheet_link"] = sheet_link.strip()
+    if attendance_channel: t_data["attendance_channel"] = attendance_channel.id
+    if transcript_channel: t_data["transcript_channel"] = transcript_channel.id
+    if schedule_channel: t_data["schedule_channel"] = schedule_channel.id
+    if rules_channel: t_data["rules_channel"] = rules_channel.id
+    if result_channel: t_data["result_channel"] = result_channel.id
+    if deadline_channel: t_data["deadline_channel"] = deadline_channel.id
+    if closed_category: t_data["closed_ticket_1"] = closed_category.id
+    if auto_room is not None: t_data["auto_room_creation"] = auto_room
+
+    tournaments[t_id_clean] = t_data
+    save_guild_tournaments(interaction.guild_id, tournaments)
+
+    embed, file = await build_tournament_embed(interaction, t_data, "Tournament Registered")
+    if file:
+        await interaction.response.send_message(embed=embed, file=file, ephemeral=False)
+    else:
+        await interaction.response.send_message(embed=embed, ephemeral=False)
+
+
+@tournament_group.command(name="edit", description="Modify an existing tournament configuration")
+@app_commands.describe(
+    tournament="Select the tournament to edit",
+    name="Updated name for the tournament",
+    state="Tournament state (pending, active, completed)",
+    challonge_key="Challonge API Key or Identifier",
+    bracket_link="Challonge bracket URL",
+    sheet_link="Google Sheet link for player roster",
+    attendance_channel="Attendance channel",
+    transcript_channel="Transcript channel",
+    schedule_channel="Schedule channel",
+    rules_channel="Rules channel",
+    result_channel="Result channel",
+    deadline_channel="Deadline channel",
+    closed_category="Closed ticket category",
+    auto_room="Toggle automatic room creation"
+)
+@app_commands.autocomplete(tournament=tournament_autocomplete)
+@app_commands.choices(state=[
+    app_commands.Choice(name="pending", value="pending"),
+    app_commands.Choice(name="active", value="active"),
+    app_commands.Choice(name="completed", value="completed")
+])
+@with_guild_context
+async def tournament_edit(
+    interaction: discord.Interaction,
+    tournament: str,
+    name: Optional[str] = None,
+    state: Optional[str] = None,
+    challonge_key: Optional[str] = None,
+    bracket_link: Optional[str] = None,
+    sheet_link: Optional[str] = None,
+    attendance_channel: Optional[discord.TextChannel] = None,
+    transcript_channel: Optional[discord.TextChannel] = None,
+    schedule_channel: Optional[discord.TextChannel] = None,
+    rules_channel: Optional[discord.TextChannel] = None,
+    result_channel: Optional[discord.TextChannel] = None,
+    deadline_channel: Optional[discord.TextChannel] = None,
+    closed_category: Optional[discord.CategoryChannel] = None,
+    auto_room: Optional[bool] = None
+):
+    if not interaction.guild_id:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    tournaments = load_guild_tournaments(interaction.guild_id)
+    t_id_clean = tournament.strip().lower()
+
+    if t_id_clean not in tournaments:
+        await interaction.response.send_message(f"❌ Tournament `{t_id_clean}` not found.", ephemeral=True)
+        return
+
+    t_data = tournaments[t_id_clean]
+    if name: t_data["name"] = name.strip()
+    if state: t_data["state"] = state
+    if challonge_key: t_data["key"] = challonge_key.strip()
+    if bracket_link: t_data["challonge_bracket_link"] = bracket_link.strip()
+    if sheet_link: t_data["google_sheet_link"] = sheet_link.strip()
+    if attendance_channel: t_data["attendance_channel"] = attendance_channel.id
+    if transcript_channel: t_data["transcript_channel"] = transcript_channel.id
+    if schedule_channel: t_data["schedule_channel"] = schedule_channel.id
+    if rules_channel: t_data["rules_channel"] = rules_channel.id
+    if result_channel: t_data["result_channel"] = result_channel.id
+    if deadline_channel: t_data["deadline_channel"] = deadline_channel.id
+    if closed_category: t_data["closed_ticket_1"] = closed_category.id
+    if auto_room is not None: t_data["auto_room_creation"] = auto_room
+
+    save_guild_tournaments(interaction.guild_id, tournaments)
+
+    embed, file = await build_tournament_embed(interaction, t_data, "Tournament Updated")
+    if file:
+        await interaction.response.send_message(embed=embed, file=file, ephemeral=False)
+    else:
+        await interaction.response.send_message(embed=embed, ephemeral=False)
+
+
+@tournament_group.command(name="delete", description="Delete a tournament configuration")
+@app_commands.describe(tournament="Select tournament to delete")
+@app_commands.autocomplete(tournament=tournament_autocomplete)
+@with_guild_context
+async def tournament_delete(interaction: discord.Interaction, tournament: str):
+    if not interaction.guild_id:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    tournaments = load_guild_tournaments(interaction.guild_id)
+    t_id_clean = tournament.strip().lower()
+
+    if t_id_clean not in tournaments:
+        await interaction.response.send_message(f"❌ Tournament `{t_id_clean}` not found.", ephemeral=True)
+        return
+
+    del tournaments[t_id_clean]
+    save_guild_tournaments(interaction.guild_id, tournaments)
+
+    if supabase_client:
+        try:
+            supabase_client.table("Tournaments").delete().eq("Tournament_ID", t_id_clean).execute()
+        except Exception as e:
+            print(f"Error deleting tournament from Supabase: {e}")
+
+    await interaction.response.send_message(f"🗑️ Successfully deleted tournament configuration `{t_id_clean}`.", ephemeral=False)
+
+
+@tournament_group.command(name="info", description="Display configuration details of a tournament")
+@app_commands.describe(tournament="Select tournament to view")
+@app_commands.autocomplete(tournament=tournament_autocomplete)
+@with_guild_context
+async def tournament_info(interaction: discord.Interaction, tournament: Optional[str] = None):
+    if not interaction.guild_id:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    tournaments = load_guild_tournaments(interaction.guild_id)
+
+    if not tournaments:
+        await interaction.response.send_message("ℹ️ No registered tournaments found for this server. Use `/tournament add` to create one.", ephemeral=True)
+        return
+
+    target_t_data = None
+    if tournament:
+        t_id_clean = tournament.strip().lower()
+        target_t_data = tournaments.get(t_id_clean)
+    else:
+        for t_id, t_cfg in tournaments.items():
+            if t_cfg.get("state") == "active":
+                target_t_data = t_cfg
+                break
+        if not target_t_data:
+            target_t_data = list(tournaments.values())[0]
+
+    if not target_t_data:
+        await interaction.response.send_message("❌ Tournament not found.", ephemeral=True)
+        return
+
+    embed, file = await build_tournament_embed(interaction, target_t_data, f"Tournament Details — {target_t_data.get('id', 'N/A')}")
+    if file:
+        await interaction.response.send_message(embed=embed, file=file, ephemeral=False)
+    else:
+        await interaction.response.send_message(embed=embed, ephemeral=False)
+
+
+@tournament_group.command(name="list", description="List all tournaments registered for this server")
+@with_guild_context
+async def tournament_list(interaction: discord.Interaction):
+    if not interaction.guild_id:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    tournaments = load_guild_tournaments(interaction.guild_id)
+    if not tournaments:
+        await interaction.response.send_message("ℹ️ No tournaments registered yet. Use `/tournament add` to create one.", ephemeral=False)
+        return
+
+    embed = discord.Embed(
+        title=f"🏆 Server Tournaments [{len(tournaments)}]",
+        description="List of registered tournaments for this server:",
+        color=discord.Color.blue(),
+        timestamp=discord.utils.utcnow()
+    )
+
+    for t_id, t_cfg in tournaments.items():
+        state_icon = "🟢" if t_cfg.get("state") == "active" else "🟡" if t_cfg.get("state") == "pending" else "🔴"
+        name = t_cfg.get("name", "Unnamed")
+        auto_room = "Enabled" if t_cfg.get("auto_room_creation") else "Disabled"
+        embed.add_field(
+            name=f"{state_icon} {name} (`{t_id}`)",
+            value=f"**State:** {t_cfg.get('state', 'pending').title()}\n**Auto Room:** {auto_room}\n**Bracket:** [Link]({t_cfg.get('challonge_bracket_link')})" if t_cfg.get('challonge_bracket_link') else f"**State:** {t_cfg.get('state', 'pending').title()}\n**Auto Room:** {auto_room}",
+            inline=False
+        )
+
+    embed.set_footer(text=f"Requested by {interaction.user.display_name}")
+    await interaction.response.send_message(embed=embed, ephemeral=False)
 
 async def match_autocomplete(
     interaction: discord.Interaction,
@@ -11412,6 +11707,7 @@ async def result_edit(
 
 
 # Register Command Groups to Bot Tree
+bot.tree.add_command(tournament_group)
 bot.tree.add_command(link_group)
 bot.tree.add_command(staff_group)
 bot.tree.add_command(result_group)
