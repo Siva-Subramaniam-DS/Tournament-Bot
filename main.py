@@ -11415,3 +11415,12 @@ async def result_edit(
 bot.tree.add_command(link_group)
 bot.tree.add_command(staff_group)
 bot.tree.add_command(result_group)
+
+if __name__ == "__main__":
+    token = os.getenv("DISCORD_TOKEN") or os.getenv("BOT_TOKEN")
+    if not token:
+        print("❌ Error: DISCORD_TOKEN is missing in environment variables!")
+    else:
+        print("🚀 Starting Tournament Bot...")
+        bot.run(token)
+
