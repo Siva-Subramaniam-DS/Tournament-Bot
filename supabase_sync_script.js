@@ -34,7 +34,13 @@ const HEADER_MAP = {
   "Player Discord ID": "Discord_ID",
   "Player Game Name": "IGN",
   "Player Game ID": "Game_ID",
-  "Player Title": "Title"
+  "Player Title": "Title",
+  "Match Name": "Match_Name",
+  "Match ID": "Match_ID",
+  "Event ID": "Event_ID",
+  "Recording Link": "recording_link",
+  "Recorder Link": "recorder_link",
+  "Judge Link": "judge_link"
 };
 
 // =========================================================================

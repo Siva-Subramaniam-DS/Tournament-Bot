@@ -672,7 +672,8 @@ async def load_scheduled_events_from_supabase():
                         'team1_captain': t1_id,
                         'team2_captain': t2_id,
                         'team1_name': row.get('Team1_Captain_Name'),
-                        'team2_name': row.get('Team2_Captain_Name')
+                        'team2_name': row.get('Team2_Captain_Name'),
+                        'match_name': row.get('Match_Name') or f"{row.get('Team1_Captain_Name', '')} vs {row.get('Team2_Captain_Name', '')}",
                     }
                     loaded_count += 1
                 else:
@@ -708,6 +709,47 @@ async def load_scheduled_events_from_supabase():
     except Exception as e:
         print(f"❌ Error loading scheduled events from Supabase: {e}")
 
+
+def find_event_by_name_or_id(guild_id: int, query: str):
+    if not query:
+        return None, None
+    query_clean = str(query).strip()
+    query_lower = query_clean.lower()
+    
+    # 1. Direct ID match
+    if query_clean in scheduled_events and str(scheduled_events[query_clean].get('guild_id')) == str(guild_id):
+        return query_clean, scheduled_events[query_clean]
+        
+    # Extract ID from autocomplete format like "[EV123] Team A vs Team B"
+    if query_clean.startswith("[") and "]" in query_clean:
+        extracted_id = query_clean[1:query_clean.index("]")].strip()
+        if extracted_id in scheduled_events and str(scheduled_events[extracted_id].get('guild_id')) == str(guild_id):
+            return extracted_id, scheduled_events[extracted_id]
+
+    # 2. Check by match_name or team names substring
+    for ev_id, ev_data in scheduled_events.items():
+        if str(ev_data.get('guild_id')) != str(guild_id):
+            continue
+        m_name = (ev_data.get('match_name') or f"{ev_data.get('team1_name', '')} vs {ev_data.get('team2_name', '')}").lower()
+        t1 = str(ev_data.get('team1_name', '')).lower()
+        t2 = str(ev_data.get('team2_name', '')).lower()
+        
+        if query_lower == ev_id.lower() or query_lower == m_name or (t1 and t1 in query_lower and t2 and t2 in query_lower):
+            return ev_id, ev_data
+
+    # 3. Substring match fallback
+    for ev_id, ev_data in scheduled_events.items():
+        if str(ev_data.get('guild_id')) != str(guild_id):
+            continue
+        m_name = (ev_data.get('match_name') or f"{ev_data.get('team1_name', '')} vs {ev_data.get('team2_name', '')}").lower()
+        t1 = str(ev_data.get('team1_name', '')).lower()
+        t2 = str(ev_data.get('team2_name', '')).lower()
+        
+        if query_lower in m_name or query_lower in ev_id.lower() or (t1 and query_lower in t1) or (t2 and query_lower in t2):
+            return ev_id, ev_data
+            
+    return None, None
+
 async def save_event_to_supabase(event_id: str, event_data: dict):
     if not supabase_client:
         return
@@ -724,22 +766,34 @@ async def save_event_to_supabase(event_id: str, event_data: dict):
         j_id = getattr(judge_val, 'id', judge_val) if judge_val else None
         r_id = getattr(recorder_val, 'id', recorder_val) if recorder_val else None
         
+        t1_name = event_data.get('team1_name') or (t1_cap.name if hasattr(t1_cap, 'name') else '')
+        t2_name = event_data.get('team2_name') or (t2_cap.name if hasattr(t2_cap, 'name') else '')
+        match_name = event_data.get('match_name') or f"{t1_name} vs {t2_name}"
+
         row = {
             "Guild_ID": str(guild_id) if guild_id else "",
             "Event_ID": event_id,
+            "Match_Name": match_name,
             "Tournament": event_data.get('tournament', ''),
             "Round": event_data.get('round', ''),
             "Group": event_data.get('group', '') or '',
             "Date": event_data.get('date_str', ''),
             "UTC_Time": event_data.get('time_str', ''),
             "Team1_Captain_ID": str(t1_id) if t1_id else '',
-            "Team1_Captain_Name": event_data.get('team1_name') or (t1_cap.name if hasattr(t1_cap, 'name') else ''),
+            "Team1_Captain_Name": t1_name,
             "Team2_Captain_ID": str(t2_id) if t2_id else '',
-            "Team2_Captain_Name": event_data.get('team2_name') or (t2_cap.name if hasattr(t2_cap, 'name') else ''),
+            "Team2_Captain_Name": t2_name,
             "Judge_ID": str(j_id) if j_id else '',
             "Judge_Name": judge_val.name if hasattr(judge_val, 'name') else '',
             "Channel_ID": str(event_data.get('channel_id', '')),
-            "Status": "Scheduled"
+            "Status": event_data.get('status', 'Scheduled'),
+            "recording_link": event_data.get('recording_link', ''),
+            "recorder_link": event_data.get('recorder_link', ''),
+            "judge_link": event_data.get('judge_link', ''),
+            "results_message_id": str(event_data.get('results_message_id', '')),
+            "results_channel_id": str(event_data.get('results_channel_id', '')),
+            "match_results_message_id": str(event_data.get('match_results_message_id', '')),
+            "match_results_channel_id": str(event_data.get('match_results_channel_id', ''))
         }
         
         res = await asyncio.to_thread(
@@ -2215,13 +2269,13 @@ class StaffConfirmationView(discord.ui.View):
     async def confirm_judge_callback(self, interaction: discord.Interaction):
         ev = scheduled_events.get(self.event_id)
         if not ev:
-            await interaction.response.send_message("❌ Event not found.", ephemeral=True)
+            await interaction.response.send_message("❌ Event not found.", ephemeral=False)
             return
             
         self.judge_member = ev.get('judge')
         assigned_judge_id = getattr(self.judge_member, 'id', self.judge_member)
         if str(interaction.user.id) != str(assigned_judge_id):
-            await interaction.response.send_message("❌ You are not the assigned judge for this event.", ephemeral=True)
+            await interaction.response.send_message("❌ You are not the assigned judge for this event.", ephemeral=False)
             return
             
         dt = ev.get('datetime')
@@ -2236,7 +2290,7 @@ class StaffConfirmationView(discord.ui.View):
                 await interaction.response.send_message(
                     "❌ Too late to confirm presence. It's less than 10 minutes before match start.\n"
                     "A staff replacement request will be posted shortly.",
-                    ephemeral=True
+                    ephemeral=False
                 )
                 return
                 
@@ -2261,7 +2315,7 @@ class StaffConfirmationView(discord.ui.View):
             await interaction.response.edit_message(embed=embed, view=self)
         else:
             await interaction.response.edit_message(view=self)
-        await interaction.followup.send("✅ You have confirmed your presence as Judge!", ephemeral=True)
+        await interaction.followup.send("✅ You have confirmed your presence as Judge!", ephemeral=False)
         
         # Log Bot Activity
         log_embed = discord.Embed(
@@ -2277,13 +2331,13 @@ class StaffConfirmationView(discord.ui.View):
     async def confirm_recorder_callback(self, interaction: discord.Interaction):
         ev = scheduled_events.get(self.event_id)
         if not ev:
-            await interaction.response.send_message("❌ Event not found.", ephemeral=True)
+            await interaction.response.send_message("❌ Event not found.", ephemeral=False)
             return
             
         self.recorder_member = ev.get('recorder')
         assigned_recorder_id = getattr(self.recorder_member, 'id', self.recorder_member)
         if str(interaction.user.id) != str(assigned_recorder_id):
-            await interaction.response.send_message("❌ You are not the assigned recorder for this event.", ephemeral=True)
+            await interaction.response.send_message("❌ You are not the assigned recorder for this event.", ephemeral=False)
             return
             
         dt = ev.get('datetime')
@@ -2298,7 +2352,7 @@ class StaffConfirmationView(discord.ui.View):
                 await interaction.response.send_message(
                     "❌ Too late to confirm presence. It's less than 10 minutes before match start.\n"
                     "A staff replacement request will be posted shortly.",
-                    ephemeral=True
+                    ephemeral=False
                 )
                 return
                 
@@ -2323,7 +2377,7 @@ class StaffConfirmationView(discord.ui.View):
             await interaction.response.edit_message(embed=embed, view=self)
         else:
             await interaction.response.edit_message(view=self)
-        await interaction.followup.send("✅ You have confirmed your presence as Recorder!", ephemeral=True)
+        await interaction.followup.send("✅ You have confirmed your presence as Recorder!", ephemeral=False)
         
         # Log Bot Activity
         log_embed = discord.Embed(
@@ -2378,12 +2432,12 @@ class StaffReplacementView(discord.ui.View):
         staff_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["staff"])
         has_allowed_role = any([head_organizer_role, head_helper_role, helper_team_role, judge_role, recorder_role, staff_role])
         if not (has_allowed_role or is_admin or is_owner):
-            await interaction.response.send_message("❌ You do not have the required role to replace the judge.", ephemeral=True)
+            await interaction.response.send_message("❌ You do not have the required role to replace the judge.", ephemeral=False)
             return
             
         ev = scheduled_events.get(self.event_id)
         if not ev:
-            await interaction.response.send_message("❌ Event not found.", ephemeral=True)
+            await interaction.response.send_message("❌ Event not found.", ephemeral=False)
             return
             
         ev['judge'] = interaction.user
@@ -2430,7 +2484,7 @@ class StaffReplacementView(discord.ui.View):
             await interaction.response.edit_message(embed=embed, view=self)
         else:
             await interaction.response.edit_message(view=self)
-        await interaction.followup.send(f"✅ You have successfully replaced the judge for this match!", ephemeral=True)
+        await interaction.followup.send(f"✅ You have successfully replaced the judge for this match!", ephemeral=False)
         # Log Bot Activity
         log_embed = discord.Embed(
             title="👨‍⚖️ Judge Replaced",
@@ -2456,12 +2510,12 @@ class StaffReplacementView(discord.ui.View):
         staff_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["staff"])
         has_allowed_role = any([head_organizer_role, head_helper_role, helper_team_role, judge_role, recorder_role, staff_role])
         if not (has_allowed_role or is_admin or is_owner):
-            await interaction.response.send_message("❌ You do not have the required role to replace the recorder.", ephemeral=True)
+            await interaction.response.send_message("❌ You do not have the required role to replace the recorder.", ephemeral=False)
             return
             
         ev = scheduled_events.get(self.event_id)
         if not ev:
-            await interaction.response.send_message("❌ Event not found.", ephemeral=True)
+            await interaction.response.send_message("❌ Event not found.", ephemeral=False)
             return
             
         ev['recorder'] = interaction.user
@@ -2508,7 +2562,7 @@ class StaffReplacementView(discord.ui.View):
             await interaction.response.edit_message(embed=embed, view=self)
         else:
             await interaction.response.edit_message(view=self)
-        await interaction.followup.send(f"✅ You have successfully replaced the recorder for this match!", ephemeral=True)
+        await interaction.followup.send(f"✅ You have successfully replaced the recorder for this match!", ephemeral=False)
         # Log Bot Activity
         log_embed = discord.Embed(
             title="🎥 Recorder Replaced",
@@ -2690,11 +2744,11 @@ class TakeScheduleButton(discord.ui.View):
                 await interaction.message.edit(view=self)
             except Exception:
                 pass
-            await interaction.response.send_message("❌ This event has already started. Buttons are now disabled.", ephemeral=True)
+            await interaction.response.send_message("❌ This event has already started. Buttons are now disabled.", ephemeral=False)
             return
 
         if self._taking_schedule:
-            await interaction.response.send_message("⏳ Another judge is currently taking this schedule. Please wait.", ephemeral=True)
+            await interaction.response.send_message("⏳ Another judge is currently taking this schedule. Please wait.", ephemeral=False)
             return
 
         is_admin = interaction.guild and interaction.user.guild_permissions.administrator
@@ -2707,11 +2761,11 @@ class TakeScheduleButton(discord.ui.View):
         staff_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["staff"])
         has_allowed_role = any([head_organizer_role, head_helper_role, helper_team_role, judge_role, recorder_role, staff_role])
         if not (has_allowed_role or is_owner or is_admin):
-            await interaction.response.send_message("❌ You do not have the required role to take this schedule.", ephemeral=True)
+            await interaction.response.send_message("❌ You do not have the required role to take this schedule.", ephemeral=False)
             return
 
         if self.judge:
-            await interaction.response.send_message(f"❌ This schedule has already been taken by {self.judge.display_name}.", ephemeral=True)
+            await interaction.response.send_message(f"❌ This schedule has already been taken by {self.judge.display_name}.", ephemeral=False)
             return
 
         # Check overlapping schedules
@@ -2740,7 +2794,7 @@ class TakeScheduleButton(discord.ui.View):
                         other_j_id = safe_int_id(other_j)
                         other_r_id = safe_int_id(other_r)
                         if user_id in (other_j_id, other_r_id):
-                            await interaction.response.send_message("❌ You are already scheduled as staff (Judge/Recorder) for another match at this exact same time.", ephemeral=True)
+                            await interaction.response.send_message("❌ You are already scheduled as staff (Judge/Recorder) for another match at this exact same time.", ephemeral=False)
                             return
 
         # Capture original button states for rollback if needed
@@ -2778,7 +2832,7 @@ class TakeScheduleButton(discord.ui.View):
                 await interaction.message.edit(view=self)
                 j_val = ev.get('judge')
                 j_name = getattr(j_val, 'display_name', str(j_val))
-                await interaction.followup.send(f"❌ This schedule has already been taken by {j_name}.", ephemeral=True)
+                await interaction.followup.send(f"❌ This schedule has already been taken by {j_name}.", ephemeral=False)
                 return
 
             self.judge = interaction.user
@@ -2804,11 +2858,11 @@ class TakeScheduleButton(discord.ui.View):
                 button.disabled = original_disabled
                 button.emoji = original_emoji
                 await interaction.message.edit(view=self)
-                await interaction.followup.send("❌ Failed to update embed with judge information.", ephemeral=True)
+                await interaction.followup.send("❌ Failed to update embed with judge information.", ephemeral=False)
                 return
 
             await interaction.message.edit(embed=embed, view=self)
-            await interaction.followup.send("✅ You have successfully taken this schedule!", ephemeral=True)
+            await interaction.followup.send("✅ You have successfully taken this schedule!", ephemeral=False)
             
             # Log Bot Activity
             log_embed = discord.Embed(
@@ -2850,7 +2904,7 @@ class TakeScheduleButton(discord.ui.View):
                 await interaction.message.edit(view=self)
             except Exception as edit_err:
                 print(f"Error editing message back: {edit_err}")
-            await interaction.followup.send(f"❌ An error occurred: {str(e)}", ephemeral=True)
+            await interaction.followup.send(f"❌ An error occurred: {str(e)}", ephemeral=False)
         finally:
             self._taking_schedule = False
 
@@ -2865,7 +2919,7 @@ class TakeScheduleButton(discord.ui.View):
                 await interaction.message.edit(view=self)
             except Exception:
                 pass
-            await interaction.response.send_message("❌ This event has already started. Buttons are now disabled.", ephemeral=True)
+            await interaction.response.send_message("❌ This event has already started. Buttons are now disabled.", ephemeral=False)
             return
 
         is_admin = interaction.guild and interaction.user.guild_permissions.administrator
@@ -2878,11 +2932,11 @@ class TakeScheduleButton(discord.ui.View):
         staff_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["staff"])
         has_allowed_role = any([head_organizer_role, head_helper_role, helper_team_role, judge_role, recorder_role, staff_role])
         if not (has_allowed_role or is_owner or is_admin):
-            await interaction.response.send_message("❌ You do not have the required role to record.", ephemeral=True)
+            await interaction.response.send_message("❌ You do not have the required role to record.", ephemeral=False)
             return
 
         if self.recorder:
-            await interaction.response.send_message(f"❌ This recording slot has already been claimed by {self.recorder.display_name}.", ephemeral=True)
+            await interaction.response.send_message(f"❌ This recording slot has already been claimed by {self.recorder.display_name}.", ephemeral=False)
             return
 
         # Check overlapping schedules
@@ -2903,7 +2957,7 @@ class TakeScheduleButton(discord.ui.View):
                         other_j_id = getattr(other_j, 'id', other_j) if other_j else None
                         other_r_id = getattr(other_r, 'id', other_r) if other_r else None
                         if user_id in (other_j_id, other_r_id):
-                            await interaction.response.send_message("❌ You are already scheduled as staff (Judge/Recorder) for another match at this exact same time.", ephemeral=True)
+                            await interaction.response.send_message("❌ You are already scheduled as staff (Judge/Recorder) for another match at this exact same time.", ephemeral=False)
                             return
 
         # Capture original button states for rollback if needed
@@ -2939,7 +2993,7 @@ class TakeScheduleButton(discord.ui.View):
                 await interaction.message.edit(view=self)
                 r_val = ev.get('recorder')
                 r_name = getattr(r_val, 'display_name', str(r_val))
-                await interaction.followup.send(f"❌ This recording slot has already been claimed by {r_name}.", ephemeral=True)
+                await interaction.followup.send(f"❌ This recording slot has already been claimed by {r_name}.", ephemeral=False)
                 return
 
             self.recorder = interaction.user
@@ -3007,7 +3061,7 @@ class TakeScheduleButton(discord.ui.View):
                 "UTC_Time":    ev.get('time_str', ''),
                 "Action":      "Recorder",
             }))
-            await interaction.followup.send("✅ You have been assigned as the Recorder!", ephemeral=True)
+            await interaction.followup.send("✅ You have been assigned as the Recorder!", ephemeral=False)
 
         except Exception as e:
             print(f"Error in record callback: {e}")
@@ -3019,7 +3073,7 @@ class TakeScheduleButton(discord.ui.View):
                 await interaction.message.edit(view=self)
             except Exception as edit_err:
                 print(f"Error editing message back: {edit_err}")
-            await interaction.followup.send(f"❌ An error occurred: {str(e)}", ephemeral=True)
+            await interaction.followup.send(f"❌ An error occurred: {str(e)}", ephemeral=False)
 
     async def send_judge_assignment_notification(self, judge: discord.Member):
         """Send notification to the event channel when a judge is assigned and add judge to channel"""
@@ -3091,13 +3145,13 @@ class RuleInputModal(discord.ui.Modal):
                 
                 embed.set_footer(text=f"Updated by {interaction.user.name}")
                 
-                await interaction.response.send_message(embed=embed, ephemeral=True)
+                await interaction.response.send_message(embed=embed, ephemeral=False)
             else:
-                await interaction.response.send_message("❌ Failed to save rules. Please try again.", ephemeral=True)
+                await interaction.response.send_message("❌ Failed to save rules. Please try again.", ephemeral=False)
                 
         except Exception as e:
             print(f"Error in rule modal submission: {e}")
-            await interaction.response.send_message("❌ An error occurred while saving rules.", ephemeral=True)
+            await interaction.response.send_message("❌ An error occurred while saving rules.", ephemeral=False)
 
 class RulesManagementView(discord.ui.View):
     """Interactive view for organizers with rule management buttons"""
@@ -3119,7 +3173,7 @@ class RulesManagementView(discord.ui.View):
         current_rules = get_current_rules()
         
         if not current_rules:
-            await interaction.response.send_message("❌ No rules are currently set. Use 'Enter Rules' to create new rules.", ephemeral=True)
+            await interaction.response.send_message("❌ No rules are currently set. Use 'Enter Rules' to create new rules.", ephemeral=False)
             return
         
         modal = RuleInputModal("Edit Tournament Rules", current_rules)
@@ -3184,7 +3238,7 @@ class JudgeLeaderboardView(View):
         # Double-check permissions
         head_organizer_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_organizer"])
         if not head_organizer_role:
-            await interaction.response.send_message("❌ You need **Head Organizer** role to reset the leaderboard.", ephemeral=True)
+            await interaction.response.send_message("❌ You need **Head Organizer** role to reset the leaderboard.", ephemeral=False)
             return
         
         confirm_view = ConfirmResetView()
@@ -3192,7 +3246,7 @@ class JudgeLeaderboardView(View):
             "⚠️ **WARNING**: This will permanently delete all staff statistics!\n\n"
             "Are you sure you want to reset the staff leaderboard?",
             view=confirm_view,
-            ephemeral=True
+            ephemeral=False
         )
 
 class ConfirmResetView(View):
@@ -4573,7 +4627,7 @@ async def upload_score(
     loser_score: int
 ):
     """Upload a match score to Challonge from Discord using autocomplete."""
-    await interaction.response.defer(ephemeral=True)
+    await interaction.response.defer(ephemeral=False)
 
     if interaction.guild:
         current_guild_id.set(interaction.guild.id)
@@ -4581,7 +4635,7 @@ async def upload_score(
     # Permission check — Organizer / Bot Owner
     permission_level = get_user_permission_level(interaction.user.roles, interaction.user.id)
     if permission_level not in ["organizer", "owner"]:
-        await interaction.followup.send("❌ You need **Head Organizer** role to upload scores.", ephemeral=True)
+        await interaction.followup.send("❌ You need **Head Organizer** role to upload scores.", ephemeral=False)
         return
 
     # Parse selected winner option
@@ -4590,7 +4644,7 @@ async def upload_score(
     try:
         parts = winner.split(":")
         if len(parts) < 3:
-            await interaction.followup.send("❌ Invalid selection. Please select a match from the autocomplete dropdown list.", ephemeral=True)
+            await interaction.followup.send("❌ Invalid selection. Please select a match from the autocomplete dropdown list.", ephemeral=False)
             return
         match_id = parts[0]
         winner_participant_id = parts[1]
@@ -4598,7 +4652,7 @@ async def upload_score(
         # 4th segment carries player1_id so we can order scores correctly
         player1_id = str(parts[3]) if len(parts) >= 4 else None
     except Exception:
-        await interaction.followup.send("❌ Error parsing the selection. Please use the autocomplete list.", ephemeral=True)
+        await interaction.followup.send("❌ Error parsing the selection. Please use the autocomplete list.", ephemeral=False)
         return
 
     # Resolve bracket link and API key
@@ -4616,10 +4670,10 @@ async def upload_score(
         api_key = get_bracket_api_key(interaction)
 
     if not bracket_link or not bracket_link.startswith("http"):
-        await interaction.followup.send("❌ No bracket link configured. Set one in the tournament configuration.", ephemeral=True)
+        await interaction.followup.send("❌ No bracket link configured. Set one in the tournament configuration.", ephemeral=False)
         return
     if not api_key:
-        await interaction.followup.send("❌ No Challonge API key configured. Set one in the tournament configuration.", ephemeral=True)
+        await interaction.followup.send("❌ No Challonge API key configured. Set one in the tournament configuration.", ephemeral=False)
         return
 
     # Challonge scores_csv must ALWAYS be "player1_score-player2_score"
@@ -4639,7 +4693,7 @@ async def upload_score(
             bracket_link, api_key, match_id, winner_participant_id, scores_csv
         )
     except Exception as e:
-        await interaction.followup.send(f"❌ Error uploading score: `{e}`", ephemeral=True)
+        await interaction.followup.send(f"❌ Error uploading score: `{e}`", ephemeral=False)
         return
 
     tournament_name = t_cfg.get('name') if t_cfg else get_tournament_name(interaction) or ""
@@ -4678,7 +4732,7 @@ async def upload_score(
         embed.add_field(name="🆔 Match ID", value=f"`{match_id}`", inline=True)
         embed.add_field(name="👤 Winner Team", value=f"**{winner_name}** (`{winner_participant_id}`)", inline=True)
         embed.set_footer(text=f"{ORGANIZATION_NAME} • Uploaded by {interaction.user.display_name}")
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=False)
 
         # Log to challonge_logs channel if configured
         if challonge_logs_channel:
@@ -4711,7 +4765,7 @@ async def upload_score(
             "Uploaded_By_Name": interaction.user.name,
             "Status": f"Failed: {error[:100] if error else 'Unknown'}"
         }))
-        await interaction.followup.send(f"❌ Challonge rejected the score upload:\n```{error[:500] if error else 'Unknown error'}```", ephemeral=True)
+        await interaction.followup.send(f"❌ Challonge rejected the score upload:\n```{error[:500] if error else 'Unknown error'}```", ephemeral=False)
 
         # Log to challonge_logs channel if configured
         if challonge_logs_channel:
@@ -4919,7 +4973,7 @@ async def help_command(interaction: discord.Interaction):
 
     except Exception as e:
         print(f"Error in help command: {e}")
-        await interaction.response.send_message("❌ An error occurred while generating help.", ephemeral=True)
+        await interaction.response.send_message("❌ An error occurred while generating help.", ephemeral=False)
 
 @tree.command(name="staff-leaderboard", description="Display the staff activity leaderboard")
 @with_guild_context
@@ -5017,7 +5071,7 @@ async def staff_leaderboard(interaction: discord.Interaction):
 
     except Exception as e:
         print(f"Error in staff-leaderboard command: {e}")
-        await interaction.response.send_message("❌ An error occurred while generating the leaderboard.", ephemeral=True)
+        await interaction.response.send_message("❌ An error occurred while generating the leaderboard.", ephemeral=False)
 
 @tree.command(name="info", description="Display bot information and statistics")
 @with_guild_context
@@ -5090,7 +5144,7 @@ async def info_command(interaction: discord.Interaction):
         await interaction.response.send_message(embed=embed)
         
     except Exception as e:
-        await interaction.response.send_message(f"❌ An error occurred: {str(e)}", ephemeral=True)
+        await interaction.response.send_message(f"❌ An error occurred: {str(e)}", ephemeral=False)
         print(f"Error in info command: {e}")
 
 
@@ -5109,7 +5163,7 @@ async def info_command(interaction: discord.Interaction):
 @with_guild_context
 async def event(interaction: discord.Interaction, action: app_commands.Choice[str]):
     """Base event command - this will be handled by subcommands"""
-    await interaction.response.send_message(f"Please use `/event {action.value}` with the appropriate parameters.", ephemeral=True)
+    await interaction.response.send_message(f"Please use `/event {action.value}` with the appropriate parameters.", ephemeral=False)
 
 @tree.command(name="event-create", description="Creates an event (Head Organizer/Head Helper/Helper Team only)")
 @app_commands.describe(
@@ -5178,28 +5232,28 @@ async def event_create(
         current_guild_id.set(interaction.guild.id)
     
     # Defer the response to give us more time for image processing
-    await interaction.response.defer(ephemeral=True)
+    await interaction.response.defer(ephemeral=False)
     
     # Check permissions
     if not has_event_create_permission(interaction):
-        await interaction.followup.send("❌ You need **Head Organizer**, **Head Helper** or **Helper Team** role to create events.", ephemeral=True)
+        await interaction.followup.send("❌ You need **Head Organizer**, **Head Helper** or **Helper Team** role to create events.", ephemeral=False)
         return
     
     # Validate input parameters
     if not (0 <= hour <= 23):
-        await interaction.followup.send("❌ Hour must be between 0 and 23", ephemeral=True)
+        await interaction.followup.send("❌ Hour must be between 0 and 23", ephemeral=False)
         return
     
     if not (1 <= date <= 31):
-        await interaction.followup.send("❌ Date must be between 1 and 31", ephemeral=True)
+        await interaction.followup.send("❌ Date must be between 1 and 31", ephemeral=False)
         return
 
     if not (1 <= month <= 12):
-        await interaction.followup.send("❌ Month must be between 1 and 12", ephemeral=True)
+        await interaction.followup.send("❌ Month must be between 1 and 12", ephemeral=False)
         return
             
     if not (0 <= minute <= 59):
-        await interaction.followup.send("❌ Minute must be between 0 and 59", ephemeral=True)
+        await interaction.followup.send("❌ Minute must be between 0 and 59", ephemeral=False)
         return
 
     # Generate unique event ID
@@ -5221,7 +5275,7 @@ async def event_create(
             "This allows staff members time to claim the judge/recorder roles.\n\n"
             "**If you need to schedule an urgent match:**\n"
             "Please manually assign staff members directly in the match channel instead.",
-            ephemeral=True
+            ephemeral=False
         )
         return
     
@@ -5473,7 +5527,7 @@ async def event_create(
     take_schedule_view = TakeScheduleButton(event_id, team_1_captain, team_2_captain, interaction.channel)
     
     # Send confirmation to user
-    await interaction.followup.send("✅ Event created and posted to both channels! Reminder will ping captains 10 minutes before start.", ephemeral=True)
+    await interaction.followup.send("✅ Event created and posted to both channels! Reminder will ping captains 10 minutes before start.", ephemeral=False)
     
     # Post in Take-Schedule channel (with button)
     try:
@@ -5500,9 +5554,9 @@ async def event_create(
             scheduled_events[event_id]['schedule_channel_id'] = schedule_channel.id
             save_scheduled_events()
         else:
-            await interaction.followup.send("⚠️ Could not find Take-Schedule channel.", ephemeral=True)
+            await interaction.followup.send("⚠️ Could not find Take-Schedule channel.", ephemeral=False)
     except Exception as e:
-        await interaction.followup.send(f"⚠️ Could not post in Take-Schedule channel: {e}", ephemeral=True)
+        await interaction.followup.send(f"⚠️ Could not post in Take-Schedule channel: {e}", ephemeral=False)
     
     # Post in the channel where command was used (without button)
     try:
@@ -5543,7 +5597,7 @@ async def event_create(
         await schedule_ten_minute_reminder(event_id, team_1_captain, team_2_captain, None, interaction.channel, event_datetime)
         
     except Exception as e:
-        await interaction.followup.send(f"⚠️ Could not post in current channel: {e}", ephemeral=True)
+        await interaction.followup.send(f"⚠️ Could not post in current channel: {e}", ephemeral=False)
 @tree.command(name="event-result", description="Add event results (Head Organizer/Judge only)")
 @app_commands.describe(
     winner="Winner of the event (optional if team name is provided)",
@@ -5623,25 +5677,25 @@ async def event_result(
         current_guild_id.set(interaction.guild.id)
     
     # Defer the response immediately to avoid timeout issues
-    await interaction.response.defer(ephemeral=True)
+    await interaction.response.defer(ephemeral=False)
     
     # Check permissions
     if not has_event_result_permission(interaction):
-        await interaction.followup.send("❌ You need **Head Organizer** or **Judge** role to post event results.", ephemeral=True)
+        await interaction.followup.send("❌ You need **Head Organizer** or **Judge** role to post event results.", ephemeral=False)
         return
 
     # Check if either winner member or winner team name is provided
     if not winner and not winner_team_name:
-        await interaction.followup.send("❌ Please provide either a **Winner Member** or a **Winner Team Name**.", ephemeral=True)
+        await interaction.followup.send("❌ Please provide either a **Winner Member** or a **Winner Team Name**.", ephemeral=False)
         return
         
     if not loser and not loser_team_name:
-        await interaction.followup.send("❌ Please provide either a **Loser Member** or a **Loser Team Name**.", ephemeral=True)
+        await interaction.followup.send("❌ Please provide either a **Loser Member** or a **Loser Team Name**.", ephemeral=False)
         return
 
     # Validate scores
     if winner_score < 0 or loser_score < 0:
-        await interaction.followup.send("❌ Scores cannot be negative", ephemeral=True)
+        await interaction.followup.send("❌ Scores cannot be negative", ephemeral=False)
         return
             
     # Resolve group label from choice
@@ -5923,7 +5977,7 @@ async def event_result(
     }))
 
     # Send confirmation to user
-    await interaction.followup.send("✅ Event results posted to Results channel, current channel, and Staff Attendance logged!", ephemeral=True)
+    await interaction.followup.send("✅ Event results posted to Results channel, current channel, and Staff Attendance logged!", ephemeral=False)
     
     # Post in Results channel with screenshots as attachments
     results_posted = False
@@ -5955,9 +6009,9 @@ async def event_result(
                 results_msg = await results_channel.send(embed=embed)
             results_posted = True
         else:
-            await interaction.followup.send("⚠️ Could not find Results channel.", ephemeral=True)
+            await interaction.followup.send("⚠️ Could not find Results channel.", ephemeral=False)
     except Exception as e:
-        await interaction.followup.send(f"⚠️ Could not post in Results channel: {e}", ephemeral=True)
+        await interaction.followup.send(f"⚠️ Could not post in Results channel: {e}", ephemeral=False)
     
     # Post in current channel (where command was executed)
     try:
@@ -5984,7 +6038,7 @@ async def event_result(
             else:
                 results_msg = await current_channel.send(embed=embed)
     except Exception as e:
-        await interaction.followup.send(f"⚠️ Could not post in current channel: {e}", ephemeral=True)
+        await interaction.followup.send(f"⚠️ Could not post in current channel: {e}", ephemeral=False)
 
     # Post staff attendance in Staff Attendance channel
     try:
@@ -6264,7 +6318,7 @@ async def event_result(
             print(f"Error updating current channel schedule title: {e}")
 
         if scheduled_any:
-            await interaction.followup.send("🧹 Auto-cleanup scheduled: Related event(s) and match channel will be removed after 20 minutes.", ephemeral=True)
+            await interaction.followup.send("🧹 Auto-cleanup scheduled: Related event(s) and match channel will be removed after 20 minutes.", ephemeral=False)
     except Exception as e:
         print(f"Error scheduling auto-cleanup after results: {e}")
 
@@ -6333,7 +6387,7 @@ async def available_events(interaction: discord.Interaction):
         staff_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["staff"]) if interaction.user else None
 
         if not (head_organizer_role or head_helper_role or helper_team_role or judge_role or recorder_role or staff_role or is_owner or is_admin):
-            await interaction.response.send_message("❌ You need Organizer, Helper, Judge, or Staff role to view unassigned events.", ephemeral=True)
+            await interaction.response.send_message("❌ You need Organizer, Helper, Judge, or Staff role to view unassigned events.", ephemeral=False)
             return
 
         # Build list of unassigned events (exclude completed ones)
@@ -6350,7 +6404,7 @@ async def available_events(interaction: discord.Interaction):
 
         # If none, inform
         if not unassigned:
-            await interaction.response.send_message("✅ All events currently have a judge assigned.", ephemeral=True)
+            await interaction.response.send_message("✅ All events currently have a judge assigned.", ephemeral=False)
             return
 
         # Sort by datetime if present
@@ -6406,11 +6460,11 @@ async def available_events(interaction: discord.Interaction):
 
         embed.set_footer(text="Click the link to jump to the schedule message and press 'Take Schedule' button.")
 
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed, ephemeral=False)
     except Exception as e:
         print(f"Error in available_events: {e}")
         try:
-            await interaction.response.send_message("❌ An error occurred while fetching available events.", ephemeral=True)
+            await interaction.response.send_message("❌ An error occurred while fetching available events.", ephemeral=False)
         except Exception:
             pass
 
@@ -6422,7 +6476,7 @@ async def reassign_command(interaction: discord.Interaction):
         current_guild_id.set(interaction.guild.id)
     permission_level = get_user_permission_level(interaction.user.roles, interaction.user.id)
     if permission_level not in ["judge", "recorder", "organizer", "owner", "helper"]:
-        await interaction.response.send_message("❌ You do not have permission to use /reassign.", ephemeral=True)
+        await interaction.response.send_message("❌ You do not have permission to use /reassign.", ephemeral=False)
         return
 
     # Find events the user is judging OR recording
@@ -6458,7 +6512,7 @@ async def reassign_command(interaction: discord.Interaction):
             user_events.append((event_id, event_data, user_role))
 
     if not user_events:
-        await interaction.response.send_message("❌ You are not assigned to any events as Judge or Recorder.", ephemeral=True)
+        await interaction.response.send_message("❌ You are not assigned to any events as Judge or Recorder.", ephemeral=False)
         return
 
     class EventReassignView(View):
@@ -6485,7 +6539,7 @@ async def reassign_command(interaction: discord.Interaction):
             
             event_data = scheduled_events.get(selected_event_id)
             if not event_data:
-                await select_interaction.response.send_message("❌ Event not found.", ephemeral=True)
+                await select_interaction.response.send_message("❌ Event not found.", ephemeral=False)
                 return
 
             # Block reassign within 20 minutes of event start
@@ -6496,7 +6550,7 @@ async def reassign_command(interaction: discord.Interaction):
                 time_until = dt - datetime.datetime.now(pytz.UTC)
                 if 0 < time_until.total_seconds() < 20 * 60:
                     await select_interaction.response.send_message(
-                        "❌ Cannot resign — this event starts in less than 20 minutes. Contact an organizer.", ephemeral=True
+                        "❌ Cannot resign — this event starts in less than 20 minutes. Contact an organizer.", ephemeral=False
                     )
                     return
 
@@ -6614,12 +6668,12 @@ async def reassign_command(interaction: discord.Interaction):
                     print(f"Error sending reassign notification: {e}")
 
             await select_interaction.response.send_message(
-                f"✅ You have been removed from the schedule as {role_type}. Staff have been notified.", ephemeral=True
+                f"✅ You have been removed from the schedule as {role_type}. Staff have been notified.", ephemeral=False
             )
             self.stop()
 
     await interaction.response.send_message(
-        "Select the event you want to resign from:", view=EventReassignView(), ephemeral=True
+        "Select the event you want to resign from:", view=EventReassignView(), ephemeral=False
     )
 
 
@@ -6630,13 +6684,13 @@ async def event_delete(interaction: discord.Interaction):
         current_guild_id.set(interaction.guild.id)
     # Check permissions - only Head Organizer, Head Helper or Helper Team can delete events
     if not has_event_create_permission(interaction):
-        await interaction.response.send_message("❌ You need **Head Organizer**, **Head Helper** or **Helper Team** role to delete events.", ephemeral=True)
+        await interaction.response.send_message("❌ You need **Head Organizer**, **Head Helper** or **Helper Team** role to delete events.", ephemeral=False)
         return
     
     try:
         # Check if there are any scheduled events
         if not scheduled_events:
-            await interaction.response.send_message(f"❌ No scheduled events found to delete.\n\n**Debug Info:**\n• Scheduled events count: {len(scheduled_events)}\n• Events in memory: {list(scheduled_events.keys()) if scheduled_events else 'None'}", ephemeral=True)
+            await interaction.response.send_message(f"❌ No scheduled events found to delete.\n\n**Debug Info:**\n• Scheduled events count: {len(scheduled_events)}\n• Events in memory: {list(scheduled_events.keys()) if scheduled_events else 'None'}", ephemeral=False)
             return
         
         def _safe_captain_label(cap, team_name=None):
@@ -6664,7 +6718,7 @@ async def event_delete(interaction: discord.Interaction):
         ]
         
         if not guild_events:
-            await interaction.response.send_message("❌ No scheduled events found to delete for this server.", ephemeral=True)
+            await interaction.response.send_message("❌ No scheduled events found to delete for this server.", ephemeral=False)
             return
         
         # Create dropdown with event names
@@ -6835,10 +6889,10 @@ async def event_delete(interaction: discord.Interaction):
         embed.set_footer(text=f"Event Management • {ORGANIZATION_NAME}")
         
         view = EventDeleteView()
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
         
     except Exception as e:
-        await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
+        await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=False)
 
 
 @tree.command(name='staff-update', description="Update a staff member's match count in the leaderboard")
@@ -6855,11 +6909,11 @@ async def event_delete(interaction: discord.Interaction):
 async def staff_update(interaction: discord.Interaction, staff_member: discord.Member, role: app_commands.Choice[str], action: app_commands.Choice[str], amount: int):
     """Update staff statistics for a specific user"""
     if not has_organizer_permission(interaction):
-        await interaction.response.send_message('❌ You need **Head Organizer** role to update staff statistics.', ephemeral=True)
+        await interaction.response.send_message('❌ You need **Head Organizer** role to update staff statistics.', ephemeral=False)
         return
 
     if amount < 0 and action.value != 'subtract':
-        await interaction.response.send_message('❌ Amount cannot be negative.', ephemeral=True)
+        await interaction.response.send_message('❌ Amount cannot be negative.', ephemeral=False)
         return
 
     global staff_stats
@@ -6951,7 +7005,7 @@ async def staff_update(interaction: discord.Interaction, staff_member: discord.M
 async def exchange(interaction: discord.Interaction, role: app_commands.Choice[str], old_user: discord.Member, new_user: discord.Member):
     permission_level = get_user_permission_level(interaction.user.roles, interaction.user.id, interaction.guild_id)
     if permission_level not in ["helper", "organizer", "owner"]:
-        await interaction.response.send_message("❌ You need **Head Organizer**, **Head Helper** or **Helper Team** role to exchange staff.", ephemeral=True)
+        await interaction.response.send_message("❌ You need **Head Organizer**, **Head Helper** or **Helper Team** role to exchange staff.", ephemeral=False)
         return
 
     current_channel_id = interaction.channel.id
@@ -6967,7 +7021,7 @@ async def exchange(interaction: discord.Interaction, role: app_commands.Choice[s
                 target_event_ids.append(ev_id)
 
     if not target_event_ids:
-        await interaction.response.send_message(f"⚠️ No events in this channel are assigned to {old_user.mention} as a {role.name}.", ephemeral=True)
+        await interaction.response.send_message(f"⚠️ No events in this channel are assigned to {old_user.mention} as a {role.name}.", ephemeral=False)
         return
 
     updated_count = 0
@@ -7034,7 +7088,7 @@ async def exchange(interaction: discord.Interaction, role: app_commands.Choice[s
             
         updated_count += 1
         
-    await interaction.response.send_message(f"✅ {new_user.mention} is now the **{role.name}** for {updated_count} event(s), replacing {old_user.mention}.", ephemeral=True)
+    await interaction.response.send_message(f"✅ {new_user.mention} is now the **{role.name}** for {updated_count} event(s), replacing {old_user.mention}.", ephemeral=False)
     
     # ── CRUD Log: exchange ──
     try:
@@ -7233,12 +7287,12 @@ async def event_edit(
         current_guild_id.set(interaction.guild.id)
     
     # Defer the response to give us more time for processing
-    await interaction.response.defer(ephemeral=True)
+    await interaction.response.defer(ephemeral=False)
     
     # Check permissions - Bot Owner, Head Organizer, Head Helper or Helper Team can edit events
     if interaction.user.id != BOT_OWNER_ID:
         if not has_event_create_permission(interaction):
-            await interaction.followup.send("❌ You need **Bot Owner**, **Head Organizer**, **Head Helper** or **Helper Team** role to edit events.", ephemeral=True)
+            await interaction.followup.send("❌ You need **Bot Owner**, **Head Organizer**, **Head Helper** or **Helper Team** role to edit events.", ephemeral=False)
             return
     
     # Find event in current channel
@@ -7253,29 +7307,29 @@ async def event_edit(
             break
     
     if not event_to_edit:
-        await interaction.followup.send("❌ No event found in this ticket channel. Use `/event-create` to create an event first.", ephemeral=True)
+        await interaction.followup.send("❌ No event found in this ticket channel. Use `/event-create` to create an event first.", ephemeral=False)
         return
     
     # Check if at least one field is provided
     if not any([team_1_captain, team_2_captain, hour is not None, minute is not None, date is not None, month is not None, round, tournament, group, team_1_name is not None, team_2_name is not None, mode is not None]):
-        await interaction.followup.send("❌ Please provide at least one field to update.", ephemeral=True)
+        await interaction.followup.send("❌ Please provide at least one field to update.", ephemeral=False)
         return
     
     # Validate input parameters only if provided
     if hour is not None and not (0 <= hour <= 23):
-        await interaction.followup.send("❌ Hour must be between 0 and 23", ephemeral=True)
+        await interaction.followup.send("❌ Hour must be between 0 and 23", ephemeral=False)
         return
     
     if date is not None and not (1 <= date <= 31):
-        await interaction.followup.send("❌ Date must be between 1 and 31", ephemeral=True)
+        await interaction.followup.send("❌ Date must be between 1 and 31", ephemeral=False)
         return
 
     if month is not None and not (1 <= month <= 12):
-        await interaction.followup.send("❌ Month must be between 1 and 12", ephemeral=True)
+        await interaction.followup.send("❌ Month must be between 1 and 12", ephemeral=False)
         return
             
     if minute is not None and not (0 <= minute <= 59):
-        await interaction.followup.send("❌ Minute must be between 0 and 59", ephemeral=True)
+        await interaction.followup.send("❌ Minute must be between 0 and 59", ephemeral=False)
         return
 
     try:
@@ -7739,7 +7793,7 @@ async def event_edit(
             await interaction.channel.send(embed=embed)
 
         # Send private confirmation to the user who edited
-        await interaction.followup.send("✅ Event updated successfully, ticket channel renamed, and posted in the channel!", ephemeral=True)
+        await interaction.followup.send("✅ Event updated successfully, ticket channel renamed, and posted in the channel!", ephemeral=False)
         
         # ── CRUD Log: event_edit ──
         try:
@@ -7789,7 +7843,7 @@ async def event_edit(
             print(f"Error logging event edit to bot_logs: {log_err}")
         
     except Exception as e:
-        await interaction.followup.send(f"❌ Error updating event: {str(e)}", ephemeral=True)
+        await interaction.followup.send(f"❌ Error updating event: {str(e)}", ephemeral=False)
 
 
 @tree.command(name="general_tie_breaker", description="To break a tie between two teams using the highest total score")
@@ -7827,7 +7881,7 @@ async def general_tie_breaker(
     
     # Check permissions - only organizers and helpers can use this command
     if not has_event_create_permission(interaction):
-        await interaction.response.send_message("❌ You need **Organizers** or **Helpers Tournament** role to use tie breaker.", ephemeral=True)
+        await interaction.response.send_message("❌ You need **Organizers** or **Helpers Tournament** role to use tie breaker.", ephemeral=False)
         return
     
     # Calculate team totals
@@ -7954,13 +8008,13 @@ async def add_captain(
     """Add two captains to a tournament match and rename the channel with tournament rules."""
     try:
         if not has_event_create_permission(interaction):
-            await interaction.response.send_message("❌ You don't have permission to use this command. Only Head Helper, Helper Team, Head Organizer, or Bot Owner/Admin can add captains.", ephemeral=True)
+            await interaction.response.send_message("❌ You don't have permission to use this command. Only Head Helper, Helper Team, Head Organizer, or Bot Owner/Admin can add captains.", ephemeral=False)
             return
         
         # Validate round parameter
         valid_rounds = ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "Q", "SF", "3rd Place", "Final"]
         if round not in valid_rounds:
-            await interaction.response.send_message("❌ Invalid round. Please select R1-R10, Q, SF, 3rd Place, or Final.", ephemeral=True)
+            await interaction.response.send_message("❌ Invalid round. Please select R1-R10, Q, SF, 3rd Place, or Final.", ephemeral=False)
             return
         
         
@@ -7989,12 +8043,12 @@ async def add_captain(
         # Rename the channel
         try:
             await channel.edit(name=new_name)
-            await interaction.response.send_message(f"✅ Channel renamed to `{new_name}`", ephemeral=True)
+            await interaction.response.send_message(f"✅ Channel renamed to `{new_name}`", ephemeral=False)
         except discord.Forbidden:
-            await interaction.response.send_message("❌ I don't have permission to rename this channel.", ephemeral=True)
+            await interaction.response.send_message("❌ I don't have permission to rename this channel.", ephemeral=False)
             return
         except discord.HTTPException as e:
-            await interaction.response.send_message(f"❌ Failed to rename channel: {e}", ephemeral=True)
+            await interaction.response.send_message(f"❌ Failed to rename channel: {e}", ephemeral=False)
             return
         
         # Add both captains to the channel
@@ -8009,9 +8063,9 @@ async def add_captain(
                                          view_channel=True,
                                          send_messages=True)
         except discord.Forbidden:
-            await interaction.followup.send("⚠️ Channel renamed but couldn't add captains - missing permissions.", ephemeral=True)
+            await interaction.followup.send("⚠️ Channel renamed but couldn't add captains - missing permissions.", ephemeral=False)
         except discord.HTTPException as e:
-            await interaction.followup.send(f"⚠️ Channel renamed but error adding captains: {e}", ephemeral=True)
+            await interaction.followup.send(f"⚠️ Channel renamed but error adding captains: {e}", ephemeral=False)
         
         # Send tournament rules message — dynamic branded
         rules_embed = discord.Embed(
@@ -8076,7 +8130,7 @@ async def add_captain(
             await channel.send(embed=rules_embed)
 
     except Exception as e:
-        await interaction.response.send_message(f"❌ An error occurred: {str(e)}", ephemeral=True)
+        await interaction.response.send_message(f"❌ An error occurred: {str(e)}", ephemeral=False)
         print(f"Error in add_captain command: {e}")
 @tree.command(name="maps", description="Randomly select 3, 5, or 7 maps for gameplay")
 @app_commands.describe(
@@ -8109,7 +8163,7 @@ async def maps(interaction: discord.Interaction, count: int):
     
     # Validate count
     if count not in [3, 5, 7]:
-        await interaction.response.send_message("❌ Please select 3, 5, or 7 maps only.", ephemeral=True)
+        await interaction.response.send_message("❌ Please select 3, 5, or 7 maps only.", ephemeral=False)
         return
     
     # Randomly select the specified number of maps
@@ -8142,7 +8196,7 @@ async def test_channels(interaction: discord.Interaction):
     if not has_organizer_permission(interaction):
         await interaction.response.send_message(
             "❌ You need to be **Bot Owner** or **Head Organizer** to use this command.",
-            ephemeral=True
+            ephemeral=False
         )
         return
     
@@ -8185,7 +8239,7 @@ async def test_channels(interaction: discord.Interaction):
             )
     
     embed.set_footer(text=f"{ORGANIZATION_NAME}")
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.send_message(embed=embed, ephemeral=False)
 
 
 @tree.command(name="choose", description="Randomly choose from a list of options")
@@ -8203,11 +8257,11 @@ async def choose(interaction: discord.Interaction, options: str):
     
     # Validate input
     if len(option_list) < 2:
-        await interaction.response.send_message("❌ Please provide at least 2 options separated by commas.", ephemeral=True)
+        await interaction.response.send_message("❌ Please provide at least 2 options separated by commas.", ephemeral=False)
         return
     
     if len(option_list) > 20:
-        await interaction.response.send_message("❌ Too many options! Please provide 20 or fewer options.", ephemeral=True)
+        await interaction.response.send_message("❌ Too many options! Please provide 20 or fewer options.", ephemeral=False)
         return
     
     # Randomly select one option
@@ -9424,14 +9478,14 @@ async def config_player_information(
     participant_channel: discord.TextChannel
 ):
     if not interaction.guild:
-        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=False)
         return
         
     if not is_authorized_to_configure(interaction):
-        await interaction.response.send_message("❌ You do not have permission to configure player information.", ephemeral=True)
+        await interaction.response.send_message("❌ You do not have permission to configure player information.", ephemeral=False)
         return
         
-    await interaction.response.defer(ephemeral=True)
+    await interaction.response.defer(ephemeral=False)
     
     cfg = get_guild_config(interaction.guild.id)
     cfg['player_info_link'] = sheet_link.strip()
@@ -9458,9 +9512,9 @@ async def config_player_information(
     # Sync details to participant channel
     success, msg = await sync_player_info_to_channel(interaction.guild, sheet_link.strip(), format.value, participant_channel)
     if success:
-        await interaction.followup.send(f"✅ Configuration saved!\n{msg}", ephemeral=True)
+        await interaction.followup.send(f"✅ Configuration saved!\n{msg}", ephemeral=False)
     else:
-        await interaction.followup.send(f"⚠️ Configuration saved, but sync failed: {msg}", ephemeral=True)
+        await interaction.followup.send(f"⚠️ Configuration saved, but sync failed: {msg}", ephemeral=False)
 
 
 @tree.command(name="player_information", description="Look up player or team info from the configured Google Sheet")
@@ -9805,7 +9859,7 @@ class OwnerConfirmationView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != BOT_OWNER_ID:
-            await interaction.response.send_message("❌ Only the Bot Owner can confirm this action.", ephemeral=True)
+            await interaction.response.send_message("❌ Only the Bot Owner can confirm this action.", ephemeral=False)
             return False
         return True
 
@@ -9820,7 +9874,7 @@ class OwnerConfirmationView(discord.ui.View):
             await interaction.message.edit(content=f"✅ **Action Confirmed**: {self.action_description} (approved by Bot Owner)", view=None)
         except Exception as e:
             print(f"Error executing owner confirmed action: {e}")
-            await interaction.followup.send(f"❌ Error executing action: {e}", ephemeral=True)
+            await interaction.followup.send(f"❌ Error executing action: {e}", ephemeral=False)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="❌")
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -9845,11 +9899,11 @@ async def update_settings_logic(
     server_logo: Optional[discord.Attachment] = None
 ):
     if not interaction.guild:
-        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=False)
         return
         
     if not is_authorized_to_configure(interaction):
-        await interaction.response.send_message("❌ You do not have permission to manage settings. Only the **Bot Owner**, **Administrators**, or members with the **Head Organizer** role can use this.", ephemeral=True)
+        await interaction.response.send_message("❌ You do not have permission to manage settings. Only the **Bot Owner**, **Administrators**, or members with the **Head Organizer** role can use this.", ephemeral=False)
         return
         
     cfg = get_guild_config(interaction.guild.id)
@@ -9897,7 +9951,7 @@ async def update_settings_logic(
             updates.append(f"❌ **Server Logo:** Failed to save logo: {logo_err}")
         
     if not updates:
-        await interaction.response.send_message("⚠️ No parameters were provided. Settings remain unchanged.", ephemeral=True)
+        await interaction.response.send_message("⚠️ No parameters were provided. Settings remain unchanged.", ephemeral=False)
         return
         
     save_guild_config(interaction.guild.id, cfg)
@@ -9920,7 +9974,7 @@ async def update_settings_logic(
     )
     embed.set_footer(text=f"Configured by {interaction.user.display_name}")
     
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.send_message(embed=embed, ephemeral=False)
 
 @settings_group.command(name="add", description="Add server-wide settings: configure server roles and branding details")
 @app_commands.describe(
@@ -10008,7 +10062,7 @@ async def settings_edit(
 @with_guild_context
 async def settings_show(interaction: discord.Interaction):
     if not interaction.guild:
-        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=False)
         return
 
     cfg = get_guild_config(interaction.guild.id)
@@ -10073,19 +10127,19 @@ async def settings_show(interaction: discord.Interaction):
         file = discord.File(logo_filename, filename="server_logo.png")
 
     if file:
-        await interaction.response.send_message(embed=embed, file=file, ephemeral=True)
+        await interaction.response.send_message(embed=embed, file=file, ephemeral=False)
     else:
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed, ephemeral=False)
 
 @settings_group.command(name="clean", description="Reset all bot configurations and data to defaults for this server")
 @with_guild_context
 async def settings_clean(interaction: discord.Interaction):
     if not interaction.guild:
-        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=False)
         return
         
     if not is_authorized_to_configure(interaction):
-        await interaction.response.send_message("❌ You do not have permission to clean settings. Only the **Bot Owner**, **Administrators**, or members with the **Head Organizer** role can use this.", ephemeral=True)
+        await interaction.response.send_message("❌ You do not have permission to clean settings. Only the **Bot Owner**, **Administrators**, or members with the **Head Organizer** role can use this.", ephemeral=False)
         return
         
     async def do_clean(confirm_interaction: discord.Interaction):
@@ -10205,7 +10259,7 @@ async def settings_clean(interaction: discord.Interaction):
             timestamp=discord.utils.utcnow()
         )
         embed.set_footer(text=f"Cleaned by {interaction.user.display_name}")
-        await confirm_interaction.followup.send(embed=embed, ephemeral=True)
+        await confirm_interaction.followup.send(embed=embed, ephemeral=False)
 
     if interaction.user.id == BOT_OWNER_ID:
         class SelfConfirmView(discord.ui.View):
@@ -10219,7 +10273,7 @@ async def settings_clean(interaction: discord.Interaction):
             @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.secondary)
             async def cancel(self, button_interaction: discord.Interaction, button: discord.ui.Button):
                 await button_interaction.response.edit_message(content="Cancelled.", view=None)
-        await interaction.response.send_message("⚠️ **WARNING**: This will permanently delete all data and configurations for this server! Are you sure you want to proceed?", view=SelfConfirmView(), ephemeral=True)
+        await interaction.response.send_message("⚠️ **WARNING**: This will permanently delete all data and configurations for this server! Are you sure you want to proceed?", view=SelfConfirmView(), ephemeral=False)
     else:
         view = OwnerConfirmationView(do_clean, f"Clean all settings for server **{interaction.guild.name}**", interaction.user)
         await interaction.response.send_message(
@@ -10715,12 +10769,64 @@ async def match_autocomplete(
         print(f"Error in match_autocomplete: {e}")
         return []
 
+
+
+
+# =========================================================================
+# LINK COMMAND GROUP & PAGINATION VIEW
+# =========================================================================
+
+class LinkMissingView(discord.ui.View):
+    def __init__(self, pages: list, author_id: int):
+        super().__init__(timeout=180)
+        self.pages = pages
+        self.current_page = 0
+        self.author_id = author_id
+        self.update_buttons()
+
+    def update_buttons(self):
+        self.first_page.disabled = (self.current_page == 0)
+        self.prev_page.disabled = (self.current_page == 0)
+        self.next_page.disabled = (self.current_page >= len(self.pages) - 1)
+        self.last_page.disabled = (self.current_page >= len(self.pages) - 1)
+
+    async def update_page(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("❌ You cannot control this pagination view.", ephemeral=False)
+            return
+        self.update_buttons()
+        embed = self.pages[self.current_page]
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="⏮️", style=discord.ButtonStyle.secondary)
+    async def first_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page = 0
+        await self.update_page(interaction)
+
+    @discord.ui.button(label="◀️", style=discord.ButtonStyle.primary)
+    async def prev_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.current_page > 0:
+            self.current_page -= 1
+        await self.update_page(interaction)
+
+    @discord.ui.button(label="▶️", style=discord.ButtonStyle.primary)
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.current_page < len(self.pages) - 1:
+            self.current_page += 1
+        await self.update_page(interaction)
+
+    @discord.ui.button(label="⏭️", style=discord.ButtonStyle.secondary)
+    async def last_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page = len(self.pages) - 1
+        await self.update_page(interaction)
+
+
 link_group = app_commands.Group(name="link", description="Manage match links and VODs")
 
 @link_group.command(name="add", description="Add a recording/VOD link for a match event")
 @app_commands.describe(
     tournament="Select the tournament",
-    match="Select the match event",
+    match="Select the match event by Name or ID",
     link_type="Select what type of link you are adding",
     link="The URL of the recording/VOD link to add"
 )
@@ -10739,115 +10845,46 @@ async def link_add(
     link: str
 ):
     """Add a recording/VOD link for a match event."""
-    await interaction.response.defer(ephemeral=True)
+    await interaction.response.defer(ephemeral=False)
 
     if interaction.guild:
         current_guild_id.set(interaction.guild.id)
 
-    # Permission check — Recorder, Judge, Helper, Organizer, or Bot Owner
-    is_owner = interaction.user.id == BOT_OWNER_ID
-    is_admin = interaction.guild and interaction.user.guild_permissions.administrator
-    cfg = get_guild_config(interaction.guild.id if interaction.guild else None)
-    role_ids = cfg.get("role_ids", DEFAULT_ROLE_IDS)
-
-    def safe_role_id(key):
-        val = role_ids.get(key)
-        try:
-            return int(val) if val is not None else None
-        except:
-            return None
-
-    user_role_ids = [r.id for r in interaction.user.roles] if hasattr(interaction.user, "roles") else []
-    allowed_roles = [
-        safe_role_id("recorder"),
-        safe_role_id("judge"),
-        safe_role_id("helper_team"),
-        safe_role_id("head_organizer"),
-        safe_role_id("organizer"),
-        safe_role_id("staff"),
-    ]
-    has_role = any(rid and rid in user_role_ids for rid in allowed_roles)
-
-    if not (is_owner or is_admin or has_role):
-        await interaction.followup.send(
-            "❌ You do not have permission to add links. Only staff and authorized roles can use this.",
-            ephemeral=True
-        )
-        return
-
     link_stripped = link.strip()
     if not (link_stripped.startswith("http://") or link_stripped.startswith("https://")):
-        await interaction.followup.send(
-            "❌ Please provide a valid URL starting with `http://` or `https://`.",
-            ephemeral=True
-        )
+        await interaction.followup.send("❌ Please provide a valid URL starting with `http://` or `https://`.", ephemeral=False)
         return
 
-    # Find the matching event
-    matched_event_id = None
-    if match in scheduled_events:
-        # Security check: Make sure event belongs to current guild
-        ev_data = scheduled_events[match]
-        if str(ev_data.get('guild_id')) == str(interaction.guild.id):
-            matched_event_id = match
-    else:
-        # Fallback substring search
-        for ev_id, ev_data in scheduled_events.items():
-            if ev_data.get('guild_id') != interaction.guild.id:
-                continue
-            ev_name_stored = ev_data.get("tournament", "") + " " + ev_data.get("round", "")
-            t1 = ev_data.get("team1_captain")
-            t2 = ev_data.get("team2_captain")
-            t1_name = getattr(t1, "display_name", str(t1)) if t1 else ""
-            t2_name = getattr(t2, "display_name", str(t2)) if t2 else ""
-            
-            search_str = match.lower()
-            if (
-                search_str in ev_name_stored.lower()
-                or search_str in t1_name.lower()
-                or search_str in t2_name.lower()
-                or t1_name.lower() in search_str
-                or t2_name.lower() in search_str
-                or search_str == ev_id.lower()
-            ):
-                matched_event_id = ev_id
-                break
-
-    if not matched_event_id:
-        await interaction.followup.send("❌ No matching scheduled event was found.", ephemeral=True)
+    ev_id, ev_data = find_event_by_name_or_id(interaction.guild.id, match)
+    if not ev_id or not ev_data:
+        await interaction.followup.send("❌ No matching scheduled event was found.", ephemeral=False)
         return
 
-    # Save the link to the event dict based on link_type
     key = "recording_link"
     if link_type.value == "recorder":
         key = "recorder_link"
     elif link_type.value == "judge":
         key = "judge_link"
         
-    scheduled_events[matched_event_id][key] = link_stripped
+    ev_data[key] = link_stripped
     save_scheduled_events()
+    asyncio.create_task(save_event_to_supabase(ev_id, ev_data))
 
-    # Update result embeds if they were already posted
-    event_saved_note = f"\n✅ Link saved to event record **`{matched_event_id}`**."
-    if scheduled_events[matched_event_id].get('result_added'):
+    event_saved_note = f"✅ Link saved to event record **`{ev_id}`** ({ev_data.get('match_name', 'Match')})."
+    if ev_data.get('result_added') or ev_data.get('results_message_id'):
         try:
-            await update_results_embed_with_links(interaction.guild, scheduled_events[matched_event_id])
+            await update_results_embed_with_links(interaction.guild, ev_data)
             event_saved_note += "\n✅ Posted result embeds have been updated with the new link."
         except Exception as e:
-            print(f"Error updating result embeds with links in link_add: {e}")
             event_saved_note += f"\n⚠️ Error updating results embeds: {e}"
 
-    link_label = "General Recording"
-    if link_type.value == "recorder":
-        link_label = "Recorder VOD"
-    elif link_type.value == "judge":
-        link_label = "Judge VOD"
-
+    link_label = link_type.name
     embed = discord.Embed(
         title=f"🎥 {link_label} Added",
         description=(
             f"**Tournament:** {tournament}\n"
-            f"**Event / Match:** {match}\n"
+            f"**Event / Match:** {ev_data.get('match_name') or match}\n"
+            f"**Match ID:** `{ev_id}`\n"
             f"**Link:** {link_stripped}"
         ),
         color=discord.Color.green(),
@@ -10856,887 +10893,525 @@ async def link_add(
     embed.add_field(name="📋 Details", value=event_saved_note, inline=False)
     embed.set_footer(text=f"{ORGANIZATION_NAME} • Link System")
 
-    await interaction.followup.send(embed=embed, ephemeral=True)
+    await interaction.followup.send(embed=embed, ephemeral=False)
 
-    # Log to bot activity log
-    try:
-        log_embed = discord.Embed(
-            title=f"🎥 {link_label} Added",
-            description=(
-                f"Staff member **{interaction.user.display_name}** added a {link_label.lower()}.\n"
-                f"**Event ID:** {matched_event_id}\n"
-                f"**Link:** {link_stripped}"
-            ),
-            color=discord.Color.green(),
-            timestamp=discord.utils.utcnow()
-        )
-        log_embed.set_footer(text=f"Added by {interaction.user.display_name}")
-        await log_bot_activity(interaction.guild, log_embed)
-    except Exception as log_err:
-        print(f"Error logging record link: {log_err}")
 
-# Register link_group
-bot.tree.add_command(link_group)
-
-tournament_group = app_commands.Group(name="tournament", description="Manage tournaments configurations")
-
-@tournament_group.command(name="add", description="Add a tournament configuration")
+@link_group.command(name="edit", description="Edit an existing recording/VOD link for a match event")
 @app_commands.describe(
-    name="The user-friendly display name of the tournament",
-    id="Unique ID for the tournament (optional, defaults to lowercase name with underscores)",
-    challonge_api_key="Challonge API Key for bracket integration",
-    challonge_bracket_link="Challonge Bracket URL or ID",
-    attendance="Channel for staff attendance logs",
-    transcript="Channel for ticket transcripts",
-    schedule="Channel for schedule announcements",
-    rules="Channel for rule configurations/posts",
-    deadline="Channel for match deadline alerts",
-    result="Channel where match results are posted",
-    challonge_logs="Channel for Challonge action logs",
-    transcript_logs="Channel for match tickets transcript logs",
-    bot_logs="Channel for bot logs",
-    closed_ticket_1="Category for closed tickets 1",
-    closed_ticket_2="Category for closed tickets 2",
-    ticket_open_category_1="Open ticket category 1",
-    ticket_open_category_2="Open ticket category 2",
-    ticket_open_category_3="Open ticket category 3",
-    auto_room_creation="Whether to enable auto-ticket creation loops"
+    tournament="Select the tournament",
+    match="Select the match event by Name or ID",
+    link_type="Select what type of link you are updating",
+    new_link="The updated URL of the recording/VOD link"
 )
+@app_commands.choices(link_type=[
+    app_commands.Choice(name="General Recording", value="general"),
+    app_commands.Choice(name="Recorder VOD", value="recorder"),
+    app_commands.Choice(name="Judge VOD", value="judge"),
+])
+@app_commands.autocomplete(tournament=tournament_autocomplete, match=match_autocomplete)
 @with_guild_context
-async def tournament_add(
-    interaction: discord.Interaction,
-    name: str,
-    id: Optional[str] = None,
-    challonge_api_key: Optional[str] = None,
-    challonge_bracket_link: Optional[str] = None,
-    attendance: Optional[discord.TextChannel] = None,
-    transcript: Optional[discord.TextChannel] = None,
-    schedule: Optional[discord.TextChannel] = None,
-    rules: Optional[discord.TextChannel] = None,
-    deadline: Optional[discord.TextChannel] = None,
-    result: Optional[discord.TextChannel] = None,
-    challonge_logs: Optional[discord.TextChannel] = None,
-    transcript_logs: Optional[discord.TextChannel] = None,
-    bot_logs: Optional[discord.TextChannel] = None,
-    closed_ticket_1: Optional[discord.CategoryChannel] = None,
-    closed_ticket_2: Optional[discord.CategoryChannel] = None,
-    ticket_open_category_1: Optional[discord.CategoryChannel] = None,
-    ticket_open_category_2: Optional[discord.CategoryChannel] = None,
-    ticket_open_category_3: Optional[discord.CategoryChannel] = None,
-    auto_room_creation: Optional[bool] = True
-):
-    if not interaction.guild:
-        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
-        return
-        
-    if not is_authorized_to_configure(interaction):
-        await interaction.response.send_message("❌ You do not have permission to manage tournaments.", ephemeral=True)
-        return
-        
-    await interaction.response.defer()
-    tournaments = load_guild_tournaments(interaction.guild.id)
-    
-    t_id_clean = id.strip().replace(" ", "_") if id else name.strip().lower().replace(" ", "_")
-    t_id_clean = re.sub(r'[^a-zA-Z0-9_]', '', t_id_clean)
-    
-    if t_id_clean in tournaments:
-        await interaction.followup.send(f"❌ A tournament with ID `{t_id_clean}` already exists.")
-        return
-        
-    t_data = get_default_tournament_data()
-    t_data.update({
-        'name': name.strip(),
-        'id': t_id_clean,
-        'key': challonge_api_key.strip() if challonge_api_key else "",
-        'challonge_bracket_link': challonge_bracket_link.strip() if challonge_bracket_link else "",
-        
-        # Channels
-        'thumbnail': None,
-        'attendance': attendance.id if attendance else None,
-        'transcript': transcript.id if transcript else None,
-        'schedule': schedule.id if schedule else None,
-        'rules': rules.id if rules else None,
-        'deadline': deadline.id if deadline else None,
-        'result': result.id if result else None,
-        'challonge_logs': challonge_logs.id if challonge_logs else None,
-        'transcript_logs': transcript_logs.id if transcript_logs else None,
-        'bot_logs': bot_logs.id if bot_logs else None,
-        
-        # Categories
-        'closed_ticket_1': closed_ticket_1.id if closed_ticket_1 else None,
-        'closed_ticket_2': closed_ticket_2.id if closed_ticket_2 else None,
-        'ticket_open_category_1': ticket_open_category_1.id if ticket_open_category_1 else None,
-        'ticket_open_category_2': ticket_open_category_2.id if ticket_open_category_2 else None,
-        'ticket_open_category_3': ticket_open_category_3.id if ticket_open_category_3 else None,
-
-        'auto_room_creation': auto_room_creation if auto_room_creation is not None else True,
-        'state': 'pending'
-    })
-    
-    if not tournaments:
-        t_data['state'] = 'active'
-        if t_data.get('auto_room_creation', True):
-            start_auto_room_loop(interaction.guild.id)
-        
-    tournaments[t_id_clean] = t_data
-    save_guild_tournaments(interaction.guild.id, tournaments)
-    
-    # Log bot activity
-    log_embed = discord.Embed(
-        title="🏆 Tournament Created",
-        description=f"A new tournament has been created: **{name.strip()}** (ID: `{t_id_clean}`)",
-        color=discord.Color.green(),
-        timestamp=discord.utils.utcnow()
-    )
-    log_embed.set_footer(text=f"Created by {interaction.user.display_name}")
-    await log_bot_activity(interaction.guild, log_embed)
-    
-    embed, file = await build_tournament_embed(interaction, t_data, "Tournament Created")
-    if file:
-        await interaction.followup.send(embed=embed, file=file)
-    else:
-        await interaction.followup.send(embed=embed)
-
-@tournament_group.command(name="edit", description="Edit an existing tournament configuration")
-@app_commands.choices(
-    state=[
-        app_commands.Choice(name="pending", value="pending"),
-        app_commands.Choice(name="active", value="active"),
-        app_commands.Choice(name="completed", value="completed")
-    ]
-)
-@app_commands.autocomplete(tournament=tournament_autocomplete)
-@app_commands.describe(
-    tournament="Select the tournament configuration to edit",
-    name="The user-friendly display name of the tournament",
-    challonge_api_key="Challonge API Key for bracket integration",
-    challonge_bracket_link="Challonge Bracket URL or ID",
-    attendance="Channel for staff attendance logs",
-    transcript="Channel for ticket transcripts",
-    schedule="Channel for schedule announcements",
-    rules="Channel for rule configurations/posts",
-    deadline="Channel for match deadline alerts",
-    result="Channel where match results are posted",
-    challonge_logs="Channel for Challonge action logs",
-    transcript_logs="Channel for match tickets transcript logs",
-    bot_logs="Channel for bot logs",
-    closed_ticket_1="Category for closed tickets 1",
-    closed_ticket_2="Category for closed tickets 2",
-    ticket_open_category_1="Open ticket category 1",
-    ticket_open_category_2="Open ticket category 2",
-    ticket_open_category_3="Open ticket category 3",
-    auto_room_creation="Whether to enable auto-ticket creation loops",
-    state="The lifecycle state of this tournament"
-)
-@with_guild_context
-async def tournament_edit(
+async def link_edit(
     interaction: discord.Interaction,
     tournament: str,
-    name: Optional[str] = None,
-    challonge_api_key: Optional[str] = None,
-    challonge_bracket_link: Optional[str] = None,
-    attendance: Optional[discord.TextChannel] = None,
-    transcript: Optional[discord.TextChannel] = None,
-    schedule: Optional[discord.TextChannel] = None,
-    rules: Optional[discord.TextChannel] = None,
-    deadline: Optional[discord.TextChannel] = None,
-    result: Optional[discord.TextChannel] = None,
-    challonge_logs: Optional[discord.TextChannel] = None,
-    transcript_logs: Optional[discord.TextChannel] = None,
-    bot_logs: Optional[discord.TextChannel] = None,
-    closed_ticket_1: Optional[discord.CategoryChannel] = None,
-    closed_ticket_2: Optional[discord.CategoryChannel] = None,
-    ticket_open_category_1: Optional[discord.CategoryChannel] = None,
-    ticket_open_category_2: Optional[discord.CategoryChannel] = None,
-    ticket_open_category_3: Optional[discord.CategoryChannel] = None,
-    auto_room_creation: Optional[bool] = None,
-    state: Optional[app_commands.Choice[str]] = None
+    match: str,
+    link_type: app_commands.Choice[str],
+    new_link: str
 ):
-    if not interaction.guild:
-        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
-        return
-        
-    if not is_authorized_to_configure(interaction):
-        await interaction.response.send_message("❌ You do not have permission to manage tournaments.", ephemeral=True)
-        return
-        
-    await interaction.response.defer()
-    tournaments = load_guild_tournaments(interaction.guild.id)
-    
-    t_id_clean = tournament.strip().replace(" ", "_")
-    if t_id_clean not in tournaments:
-        await interaction.followup.send(f"❌ Tournament with ID `{t_id_clean}` not found.")
-        return
-        
-    t_data = tournaments[t_id_clean]
-    
-    if name is not None:
-        t_data['name'] = name.strip()
-    if challonge_api_key is not None:
-        t_data['key'] = challonge_api_key.strip()
-    if challonge_bracket_link is not None:
-        t_data['challonge_bracket_link'] = challonge_bracket_link.strip()
-    # Channels
-    if attendance is not None:
-        t_data['attendance'] = attendance.id
-    if transcript is not None:
-        t_data['transcript'] = transcript.id
-    if schedule is not None:
-        t_data['schedule'] = schedule.id
-    if rules is not None:
-        t_data['rules'] = rules.id
-    if deadline is not None:
-        t_data['deadline'] = deadline.id
-    if result is not None:
-        t_data['result'] = result.id
-    if challonge_logs is not None:
-        t_data['challonge_logs'] = challonge_logs.id
-    if transcript_logs is not None:
-        t_data['transcript_logs'] = transcript_logs.id
-    if bot_logs is not None:
-        t_data['bot_logs'] = bot_logs.id
-        
-    # Categories
-    if closed_ticket_1 is not None:
-        t_data['closed_ticket_1'] = closed_ticket_1.id
-    if closed_ticket_2 is not None:
-        t_data['closed_ticket_2'] = closed_ticket_2.id
-    if ticket_open_category_1 is not None:
-        t_data['ticket_open_category_1'] = ticket_open_category_1.id
-    if ticket_open_category_2 is not None:
-        t_data['ticket_open_category_2'] = ticket_open_category_2.id
-    if ticket_open_category_3 is not None:
-        t_data['ticket_open_category_3'] = ticket_open_category_3.id
-        
-    if auto_room_creation is not None:
-        t_data['auto_room_creation'] = auto_room_creation
+    """Edit a recording/VOD link for a match event."""
+    await interaction.response.defer(ephemeral=False)
 
-    if state is not None:
-        new_state = state.value
-        t_data['state'] = new_state
-        if new_state == 'active':
-            start_auto_room_loop(interaction.guild.id)
-            for other_id, other_cfg in tournaments.items():
-                if other_id != t_id_clean and other_cfg.get('state') == 'active':
-                    other_cfg['state'] = 'pending'
-                    
-    tournaments[t_id_clean] = t_data
-    save_guild_tournaments(interaction.guild.id, tournaments)
-    
-    # Log bot activity
-    log_embed = discord.Embed(
-        title="📝 Tournament Edited",
-        description=f"Tournament **{t_data['name']}** (ID: `{t_id_clean}`) configuration has been updated.",
+    if interaction.guild:
+        current_guild_id.set(interaction.guild.id)
+
+    link_stripped = new_link.strip()
+    if not (link_stripped.startswith("http://") or link_stripped.startswith("https://")):
+        await interaction.followup.send("❌ Please provide a valid URL starting with `http://` or `https://`.", ephemeral=False)
+        return
+
+    ev_id, ev_data = find_event_by_name_or_id(interaction.guild.id, match)
+    if not ev_id or not ev_data:
+        await interaction.followup.send("❌ No matching scheduled event was found.", ephemeral=False)
+        return
+
+    key = "recording_link"
+    if link_type.value == "recorder":
+        key = "recorder_link"
+    elif link_type.value == "judge":
+        key = "judge_link"
+
+    old_link = ev_data.get(key, "None")
+    ev_data[key] = link_stripped
+    save_scheduled_events()
+    asyncio.create_task(save_event_to_supabase(ev_id, ev_data))
+
+    event_saved_note = f"✅ Link updated for event record **`{ev_id}`** ({ev_data.get('match_name', 'Match')})."
+    try:
+        await update_results_embed_with_links(interaction.guild, ev_data)
+        event_saved_note += "\n✅ Posted result embeds updated."
+    except Exception as e:
+        event_saved_note += f"\n⚠️ Note on embed update: {e}"
+
+    embed = discord.Embed(
+        title=f"🎥 {link_type.name} Updated",
+        description=(
+            f"**Tournament:** {tournament}\n"
+            f"**Event / Match:** {ev_data.get('match_name') or match}\n"
+            f"**Match ID:** `{ev_id}`\n"
+            f"**Old Link:** {old_link}\n"
+            f"**New Link:** {link_stripped}"
+        ),
         color=discord.Color.blue(),
         timestamp=discord.utils.utcnow()
     )
-    log_embed.set_footer(text=f"Edited by {interaction.user.display_name}")
-    await log_bot_activity(interaction.guild, log_embed)
-    
-    embed, file = await build_tournament_embed(interaction, t_data, "Tournament Edited")
-    if file:
-        await interaction.followup.send(embed=embed, file=file)
-    else:
-        await interaction.followup.send(embed=embed)
+    embed.add_field(name="📋 Status", value=event_saved_note, inline=False)
+    embed.set_footer(text=f"{ORGANIZATION_NAME} • Link System")
 
-@tournament_group.command(name="delete", description="Delete an existing tournament configuration")
-@app_commands.autocomplete(tournament=tournament_autocomplete)
+    await interaction.followup.send(embed=embed, ephemeral=False)
+
+
+@link_group.command(name="delete", description="Delete a recording/VOD link from a match event")
+@app_commands.describe(
+    tournament="Select the tournament",
+    match="Select the match event by Name or ID",
+    link_type="Select which link type to remove"
+)
+@app_commands.choices(link_type=[
+    app_commands.Choice(name="General Recording", value="general"),
+    app_commands.Choice(name="Recorder VOD", value="recorder"),
+    app_commands.Choice(name="Judge VOD", value="judge"),
+    app_commands.Choice(name="All Links", value="all"),
+])
+@app_commands.autocomplete(tournament=tournament_autocomplete, match=match_autocomplete)
 @with_guild_context
-async def tournament_delete(interaction: discord.Interaction, tournament: str):
-    if not interaction.guild:
-        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
-        return
-        
-    if not is_authorized_to_configure(interaction):
-        await interaction.response.send_message("❌ You do not have permission to manage tournaments.", ephemeral=True)
-        return
-        
-    tournaments = load_guild_tournaments(interaction.guild.id)
-    t_id_clean = tournament.strip().replace(" ", "_")
-    if t_id_clean not in tournaments:
-        await interaction.response.send_message(f"❌ Tournament with ID `{t_id_clean}` not found.", ephemeral=True)
-        return
-        
-    t_data = tournaments[t_id_clean]
+async def link_delete(
+    interaction: discord.Interaction,
+    tournament: str,
+    match: str,
+    link_type: app_commands.Choice[str]
+):
+    """Delete a recording/VOD link from a match event (Image 5 style)."""
+    await interaction.response.defer(ephemeral=False)
 
-    async def do_delete(confirm_interaction: discord.Interaction):
-        del tournaments[t_id_clean]
-        save_guild_tournaments(interaction.guild.id, tournaments)
-        asyncio.create_task(delete_tournament_from_sheetdb(interaction.guild.id, t_id_clean))
-        if supabase_client:
-            asyncio.create_task(delete_tournament_from_supabase(interaction.guild.id, t_id_clean))
-        
-        active_exists = False
-        for other_id, other_cfg in tournaments.items():
-            if other_cfg.get('state') == 'active':
-                active_exists = True
-                break
-        if not active_exists:
-            stop_auto_room_loop(interaction.guild.id)
-            
-        # Log bot activity
-        log_embed = discord.Embed(
-            title="🗑️ Tournament Deleted",
-            description=f"Tournament **{t_data['name']}** (ID: `{t_id_clean}`) was deleted.",
-            color=discord.Color.red(),
-            timestamp=discord.utils.utcnow()
-        )
-        log_embed.set_footer(text=f"Deleted by {interaction.user.display_name}")
-        await log_bot_activity(interaction.guild, log_embed)
+    if interaction.guild:
+        current_guild_id.set(interaction.guild.id)
 
-        embed = discord.Embed(
-            title="🗑️ Tournament Deleted",
-            description=f"Successfully deleted tournament configuration for **{t_data['name']}** (ID: `{t_id_clean}`).",
-            color=discord.Color.red(),
-            timestamp=discord.utils.utcnow()
-        )
-        await confirm_interaction.followup.send(embed=embed, ephemeral=True)
+    ev_id, ev_data = find_event_by_name_or_id(interaction.guild.id, match)
+    if not ev_id or not ev_data:
+        await interaction.followup.send("❌ No matching scheduled event was found.", ephemeral=False)
+        return
 
-    if interaction.user.id == BOT_OWNER_ID:
-        class SelfConfirmView(discord.ui.View):
-            def __init__(self):
-                super().__init__(timeout=60)
-            @discord.ui.button(label="✅ Yes, Delete", style=discord.ButtonStyle.danger)
-            async def confirm(self, button_interaction: discord.Interaction, button: discord.ui.Button):
-                await button_interaction.response.defer()
-                await do_delete(button_interaction)
-                await button_interaction.message.edit(content=f"✅ Deleted tournament `{t_id_clean}`.", view=None)
-            @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.secondary)
-            async def cancel(self, button_interaction: discord.Interaction, button: discord.ui.Button):
-                await button_interaction.response.edit_message(content="Cancelled.", view=None)
-        await interaction.response.send_message(f"⚠️ Are you sure you want to permanently delete tournament **{t_data['name']}** (ID: `{t_id_clean}`)?", view=SelfConfirmView(), ephemeral=True)
-    else:
-        view = OwnerConfirmationView(do_delete, f"Delete tournament **{t_data['name']}** (ID: `{t_id_clean}`)", interaction.user)
-        await interaction.response.send_message(
-            content=f"⚠️ <@{BOT_OWNER_ID}> **Owner Deletion Confirmation Required!**\n"
-                    f"{interaction.user.mention} requested to permanently delete tournament **{t_data['name']}** (ID: `{t_id_clean}`).\n"
-                    f"Please confirm or cancel this action below.",
-            view=view
-        )
+    removed_types = []
+    if link_type.value == "general" or link_type.value == "all":
+        ev_data["recording_link"] = ""
+        removed_types.append("General Recording")
+    if link_type.value == "recorder" or link_type.value == "all":
+        ev_data["recorder_link"] = ""
+        removed_types.append("Recorder VOD")
+    if link_type.value == "judge" or link_type.value == "all":
+        ev_data["judge_link"] = ""
+        removed_types.append("Judge VOD")
 
-@tournament_group.command(name="info", description="Get information about a specific tournament")
-@app_commands.autocomplete(tournament=tournament_autocomplete)
-@with_guild_context
-async def tournament_info(interaction: discord.Interaction, tournament: str):
-    if not interaction.guild:
-        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
-        return
-        
-    await interaction.response.defer()
-    tournaments = load_guild_tournaments(interaction.guild.id)
-    
-    t_id_clean = tournament.strip().replace(" ", "_")
-    if t_id_clean not in tournaments:
-        await interaction.followup.send(f"❌ Tournament with ID `{t_id_clean}` not found.")
-        return
-        
-    t_data = tournaments[t_id_clean]
-    embed, file = await build_tournament_embed(interaction, t_data, "Tournament Info")
-    if file:
-        await interaction.followup.send(embed=embed, file=file)
-    else:
-        await interaction.followup.send(embed=embed)
+    save_scheduled_events()
+    asyncio.create_task(save_event_to_supabase(ev_id, ev_data))
 
-@tournament_group.command(name="list", description="Get the tournament list for this server")
-@with_guild_context
-async def tournament_list(interaction: discord.Interaction):
-    if not interaction.guild:
-        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
-        return
-        
-    await interaction.response.defer()
-    tournaments = load_guild_tournaments(interaction.guild.id)
-    
-    if not tournaments:
-        await interaction.followup.send("ℹ️ No tournaments have been configured on this server yet.")
-        return
-        
+    event_saved_note = f"✅ Link(s) removed from event record **`{ev_id}`**.\n✅ Posted result embeds updated."
+    try:
+        await update_results_embed_with_links(interaction.guild, ev_data)
+    except Exception as e:
+        print(f"Error in link_delete embed update: {e}")
+
     embed = discord.Embed(
-        title="🏆 Tournament List",
-        description="Here is the list of configured tournaments for this server.",
-        color=discord.Color(BRAND_COLOR),
+        title=f"🎥 Recording Link Deleted",
+        description=(
+            f"**Tournament:** {tournament}\n"
+            f"**Event / Match:** {ev_data.get('match_name') or match}\n"
+            f"**Match ID:** `{ev_id}`\n"
+            f"**Link Type:** {', '.join(removed_types)}\n"
+            f"**Action By:** {interaction.user.mention}"
+        ),
+        color=discord.Color.red(),
         timestamp=discord.utils.utcnow()
     )
-    
-    for t_id, t_cfg in tournaments.items():
-        state_emoji = "🟢" if t_cfg.get('state') == 'active' else ("🟡" if t_cfg.get('state') == 'pending' else "🔴")
-        embed.add_field(
-            name=f"{state_emoji} {t_cfg['name']}",
-            value=f"**ID:** `{t_id}`\n**State:** `{t_cfg.get('state', 'pending')}`\n**Auto Rooms:** `{'Enabled' if t_cfg.get('auto_room_creation', True) else 'Disabled'}`",
-            inline=True
-        )
-        
-    await interaction.followup.send(embed=embed)
+    embed.add_field(name="📋 Status", value=event_saved_note, inline=False)
+    embed.set_footer(text=f"{ORGANIZATION_NAME} • Link System")
 
-auto_room_group = app_commands.Group(name="auto_room", description="Automatic room creation management")
+    await interaction.followup.send(embed=embed, ephemeral=False)
 
-@auto_room_group.command(name="run", description="Manually trigger auto room creation")
+
+@link_group.command(name="missing", description="List matches missing VOD links with paginated view")
+@app_commands.describe(tournament="Filter by tournament (optional)")
 @app_commands.autocomplete(tournament=tournament_autocomplete)
 @with_guild_context
-async def auto_room_run(interaction: discord.Interaction, tournament: Optional[str] = None):
-    if not interaction.guild:
-        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
-        return
-    if not is_authorized_to_configure(interaction):
-        await interaction.response.send_message("❌ You do not have permission to run this command.", ephemeral=True)
-        return
-        
-    await interaction.response.defer()
-    
-    try:
-        tournaments = load_guild_tournaments(interaction.guild.id)
-        t_cfg = None
+async def link_missing(interaction: discord.Interaction, tournament: str = None):
+    """Paginated list of matches missing recording/VOD links (Image 1 style)."""
+    await interaction.response.defer(ephemeral=False)
+
+    if interaction.guild:
+        current_guild_id.set(interaction.guild.id)
+
+    missing_list = []
+    for ev_id, ev_data in scheduled_events.items():
+        if str(ev_data.get('guild_id')) != str(interaction.guild.id):
+            continue
         if tournament:
-            t_id_clean = tournament.strip().replace(" ", "_")
-            t_cfg = tournaments.get(t_id_clean)
-            if not t_cfg:
-                await interaction.followup.send(f"❌ Tournament with ID `{t_id_clean}` not found.")
-                return
-        else:
-            t_cfg = get_active_tournament_config(interaction.guild.id)
-            if not t_cfg:
-                await interaction.followup.send("❌ No active tournament found on this server. Please specify a tournament ID.")
-                return
-                
-        status_msg = await interaction.followup.send(f"⏳ [░░░░░░░░░░] 0% — Triggering manual room creation for tournament **{t_cfg['name']}**...")
-        
-        async def on_progress(percent: int, text: str):
-            filled = percent // 10
-            bar = "█" * filled + "░" * (10 - filled)
-            try:
-                await status_msg.edit(content=f"⏳ [{bar}] {percent}% — {text}")
-            except Exception as e:
-                print(f"Error updating progress message: {e}")
-                
-        created, error_msg = await auto_create_open_tickets_for_tournament(interaction.guild, t_cfg, on_progress=on_progress)
-        
-        if error_msg:
-            try:
-                await status_msg.edit(content=f"❌ Error during room creation: {error_msg}")
-            except Exception:
-                await interaction.followup.send(f"❌ Error during room creation: {error_msg}")
-                
-            try:
-                log_embed = discord.Embed(
-                    title="❌ Auto Room Run Failed",
-                    description=f"Manual auto room run failed for tournament **{t_cfg['name']}**.\nReason: {error_msg}",
-                    color=discord.Color.red(),
-                    timestamp=discord.utils.utcnow()
-                )
-                log_embed.set_footer(text=f"Triggered by {interaction.user.name}")
-                await log_bot_activity(interaction.guild, log_embed)
-            except Exception as log_err:
-                print(f"Failed to log auto room run failure: {log_err}")
-        else:
-            try:
-                await status_msg.edit(content=f"✅ [██████████] 100% — Auto room creation complete! Created **{created}** new match room(s).")
-            except Exception:
-                await interaction.followup.send(f"✅ Auto room creation complete! Created **{created}** new match room(s).")
-                
-            try:
-                log_embed = discord.Embed(
-                    title="✅ Auto Room Run Complete",
-                    description=f"Manual auto room run completed for tournament **{t_cfg['name']}**.\nCreated **{created}** new match room(s).",
-                    color=discord.Color.green(),
-                    timestamp=discord.utils.utcnow()
-                )
-                log_embed.set_footer(text=f"Triggered by {interaction.user.name}")
-                if interaction.guild.icon:
-                    log_embed.set_thumbnail(url=interaction.guild.icon.url)
-                await log_bot_activity(interaction.guild, log_embed)
-            except Exception as log_err:
-                print(f"Failed to log auto room run completion: {log_err}")
-                
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        try:
-            await interaction.followup.send(f"❌ An unexpected error occurred: {str(e)}")
-        except Exception:
-            pass
+            t_name = ev_data.get('tournament') or ''
+            if tournament.lower() not in t_name.lower():
+                continue
 
-@auto_room_group.command(name="stop", description="Stop automatic room creation")
-@app_commands.autocomplete(tournament=tournament_autocomplete)
-@with_guild_context
-async def auto_room_stop(interaction: discord.Interaction, tournament: Optional[str] = None):
-    if not interaction.guild:
-        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        rec_link = ev_data.get('recorder_link')
+        jdg_link = ev_data.get('judge_link')
+        general_link = ev_data.get('recording_link')
+
+        missing_types = []
+        if not general_link:
+            missing_types.append("General Link")
+        if not rec_link:
+            missing_types.append("Recorder VOD")
+        if not jdg_link:
+            missing_types.append("Judge VOD")
+
+        if missing_types:
+            missing_list.append((ev_id, ev_data, missing_types))
+
+    if not missing_list:
+        embed = discord.Embed(
+            title="🎥 Missing VOD Links",
+            description="🎉 All matches have their recording and VOD links fully updated!",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow()
+        )
+        embed.set_footer(text=f"{ORGANIZATION_NAME} • Link System")
+        await interaction.followup.send(embed=embed, ephemeral=False)
         return
-    if not is_authorized_to_configure(interaction):
-        await interaction.response.send_message("❌ You do not have permission to run this command.", ephemeral=True)
-        return
+
+    items_per_page = 5
+    pages = []
+    total_pages = (len(missing_list) + items_per_page - 1) // items_per_page
+
+    for page_idx in range(total_pages):
+        start = page_idx * items_per_page
+        chunk = missing_list[start:start + items_per_page]
         
-    await interaction.response.defer()
-    tournaments = load_guild_tournaments(interaction.guild.id)
-    t_id_clean = None
-    if tournament:
-        t_id_clean = tournament.strip().replace(" ", "_")
-        if t_id_clean not in tournaments:
-            await interaction.followup.send(f"❌ Tournament with ID `{t_id_clean}` not found.")
-            return
-    else:
-        t_cfg = get_active_tournament_config(interaction.guild.id)
-        if not t_cfg:
-            await interaction.followup.send("❌ No active tournament found on this server.")
-            return
-        t_id_clean = t_cfg['id']
-        
-    t_cfg = tournaments[t_id_clean]
-    t_cfg['auto_room_creation'] = False
-    tournaments[t_id_clean] = t_cfg
-    save_guild_tournaments(interaction.guild.id, tournaments)
-    stop_auto_room_loop(interaction.guild.id)
-    
-    await interaction.followup.send(f"⏹️ Stopped automatic room creation for tournament **{t_cfg['name']}**.")
-    
-    try:
-        log_embed = discord.Embed(
-            title="⏹️ Auto Room Loop Stopped",
-            description=f"Automatic room creation loop stopped for tournament **{t_cfg['name']}**.",
+        embed = discord.Embed(
+            title=f"🎥 Missing VOD Links (Page {page_idx + 1}/{total_pages})",
+            description=f"Total matches missing links: **{len(missing_list)}**",
             color=discord.Color.orange(),
             timestamp=discord.utils.utcnow()
         )
-        log_embed.set_footer(text=f"Action by {interaction.user.name}")
-        await log_bot_activity(interaction.guild, log_embed)
-    except Exception as log_err:
-        print(f"Failed to log auto room stop: {log_err}")
-
-@auto_room_group.command(name="toggle", description="Toggle automatic room creation for a tournament")
-@app_commands.autocomplete(tournament=tournament_autocomplete)
-@with_guild_context
-async def auto_room_toggle(interaction: discord.Interaction, tournament: Optional[str] = None):
-    if not interaction.guild:
-        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
-        return
-    if not is_authorized_to_configure(interaction):
-        await interaction.response.send_message("❌ You do not have permission to run this command.", ephemeral=True)
-        return
         
-    await interaction.response.defer()
-    tournaments = load_guild_tournaments(interaction.guild.id)
-    t_id_clean = None
-    if tournament:
-        t_id_clean = tournament.strip().replace(" ", "_")
-        if t_id_clean not in tournaments:
-            await interaction.followup.send(f"❌ Tournament with ID `{t_id_clean}` not found.")
-            return
-    else:
-        t_cfg = get_active_tournament_config(interaction.guild.id)
-        if not t_cfg:
-            await interaction.followup.send("❌ No active tournament found on this server.")
-            return
-        t_id_clean = t_cfg['id']
-        
-    t_cfg = tournaments[t_id_clean]
-    new_state = not t_cfg.get('auto_room_creation', True)
-    t_cfg['auto_room_creation'] = new_state
-    tournaments[t_id_clean] = t_cfg
-    save_guild_tournaments(interaction.guild.id, tournaments)
-    
-    if new_state:
-        start_auto_room_loop(interaction.guild.id)
-    else:
-        stop_auto_room_loop(interaction.guild.id)
-    
-    state_str = "Enabled" if new_state else "Disabled"
-    await interaction.followup.send(f"🔄 Automatic room creation for tournament **{t_cfg['name']}** has been **{state_str}**.")
-    
-    try:
-        log_embed = discord.Embed(
-            title="🔄 Auto Room Config Toggled",
-            description=f"Automatic room creation loop for tournament **{t_cfg['name']}** has been **{state_str}**.",
-            color=discord.Color.blue(),
-            timestamp=discord.utils.utcnow()
-        )
-        log_embed.set_footer(text=f"Action by {interaction.user.name}")
-        await log_bot_activity(interaction.guild, log_embed)
-    except Exception as log_err:
-        print(f"Failed to log auto room toggle: {log_err}")
-
-
-clear_group = app_commands.Group(name="clear", description="Clear cache or delete categories")
-
-@clear_group.command(name="category", description="Deletes all channels in a specified category (Organizer only)")
-@app_commands.describe(category="The category channel to delete all channels from")
-@with_guild_context
-async def clear_category(interaction: discord.Interaction, category: discord.CategoryChannel):
-    if not interaction.guild:
-        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
-        return
-    if not is_authorized_to_configure(interaction):
-        await interaction.response.send_message("❌ You do not have permission to run this command.", ephemeral=True)
-        return
-        
-    await interaction.response.defer(ephemeral=True)
-    
-    channels_to_delete = list(category.channels)
-    if not channels_to_delete:
-        await interaction.followup.send(f"ℹ️ Category **{category.name}** has no channels to delete.")
-        return
-        
-    deleted_count = 0
-    failed_count = 0
-    
-    for ch in channels_to_delete:
-        try:
-            await ch.delete()
-            deleted_count += 1
-        except Exception as e:
-            print(f"Error deleting channel {ch.name} in clear_category: {e}")
-            failed_count += 1
+        for ev_id, ev_data, missing_types in chunk:
+            m_name = ev_data.get('match_name') or f"{ev_data.get('team1_name', 'T1')} vs {ev_data.get('team2_name', 'T2')}"
+            rnd = ev_data.get('round', 'N/A')
+            tourn = ev_data.get('tournament', 'N/A')
+            status = ev_data.get('status', 'Scheduled')
+            missing_str = ", ".join(missing_types)
             
-    await interaction.followup.send(
-        f"✅ Purge complete for category **{category.name}**.\n"
-        f"🟢 **Deleted:** {deleted_count} channels.\n"
-        f"🔴 **Failed:** {failed_count} channels."
-    )
-    
-    try:
-        log_embed = discord.Embed(
-            title="🗑️ Category Purged",
-            description=f"Category **{category.name}** has been purged.\n🟢 **Deleted:** {deleted_count} channels.\n🔴 **Failed:** {failed_count} channels.",
-            color=discord.Color.red(),
-            timestamp=discord.utils.utcnow()
-        )
-        log_embed.set_footer(text=f"Purged by {interaction.user.name}")
-        await log_bot_activity(interaction.guild, log_embed)
-    except Exception as log_err:
-        print(f"Failed to log category purge: {log_err}")
-
-@clear_group.command(name="cache", description="Clear Challonge and sheet caches")
-@with_guild_context
-async def clear_cache(interaction: discord.Interaction):
-    if not interaction.guild:
-        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
-        return
-    if not is_authorized_to_configure(interaction):
-        await interaction.response.send_message("❌ You do not have permission to run this command.", ephemeral=True)
-        return
-        
-    await interaction.response.defer(ephemeral=True)
-    
-    global GUILD_CONFIG_CACHE, RULES_CACHE, STAFF_STATS_CACHE, TOURNAMENTS_CACHE
-    GUILD_CONFIG_CACHE.clear()
-    RULES_CACHE.clear()
-    STAFF_STATS_CACHE.clear()
-    TOURNAMENTS_CACHE.clear()
-    
-    await interaction.followup.send("✅ Config, rules, and staff stats caches cleared successfully!")
-
-
-ROUND_OPTIONS = [
-    "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9", "D10",
-    "Semi-Final", "Final", "Bronze Match"
-]
-
-def parse_round_input(val: str) -> Optional[str]:
-    val_clean = val.strip().lower()
-    
-    # Check if integer
-    if val_clean.isdigit():
-        idx = int(val_clean)
-        if 1 <= idx <= 10:
-            return f"D{idx}"
-        elif idx == 11:
-            return "Semi-Final"
-        elif idx == 12:
-            return "Final"
-        elif idx == 13:
-            return "Bronze Match"
+            embed.add_field(
+                name=f"📌 [{ev_id}] {m_name}",
+                value=f"• **Tournament:** {tourn} ({rnd})\n• **Status:** {status}\n• **Missing:** `{missing_str}`",
+                inline=False
+            )
             
-    # Check if exact/substring match
-    for opt in ROUND_OPTIONS:
-        if opt.lower() == val_clean:
-            return opt
-            
-    # Substring match fallback
-    for opt in ROUND_OPTIONS:
-        if val_clean in opt.lower():
-            return opt
-            
-    return None
+        embed.set_footer(text=f"Page {page_idx + 1}/{total_pages} • {ORGANIZATION_NAME} Link System")
+        pages.append(embed)
 
-@tree.command(name="deadline", description="Sets a deadline and schedules automatic reminders (Head Organizer only)")
+    view = LinkMissingView(pages, interaction.user.id)
+    await interaction.followup.send(embed=pages[0], view=view, ephemeral=False)
+
+
+# =========================================================================
+# STAFF COMMAND GROUP (Recruit, Fire, Stats, Work Count, Update)
+# =========================================================================
+
+staff_group = app_commands.Group(name="staff", description="Manage tournament staff roles and workload stats")
+
+@staff_group.command(name="recruit", description="Recruit a member to a staff role (Judge/Recorder/Staff)")
 @app_commands.describe(
-    round="Type a number (1-13) or select/type the round (D1-D10, Semi-Final, Final, Bronze Match)",
-    day="Day of the month for the deadline (1-31)",
-    month="Month for the deadline (1-12)",
-    year="Year for the deadline (e.g. 2026)",
-    hour="Hour for the deadline (0-23, UTC) - Default is 12",
-    minute="Minute for the deadline (0-59, UTC) - Default is 0"
+    member="The discord member to recruit",
+    role="Select role to assign (Judge, Recorder, Staff)"
 )
+@app_commands.choices(role=[
+    app_commands.Choice(name="Judge", value="judge"),
+    app_commands.Choice(name="Recorder", value="recorder"),
+    app_commands.Choice(name="General Staff", value="staff"),
+])
 @with_guild_context
-async def deadline(
-    interaction: discord.Interaction,
-    round: str,
-    day: int,
-    month: int,
-    year: int,
-    hour: int = 12,
-    minute: int = 0
-):
-    if not interaction.guild:
-        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
-        return
-        
-    if not has_organizer_permission(interaction):
-        await interaction.response.send_message("❌ You need **Head Organizer** role to manage deadlines.", ephemeral=True)
-        return
-        
-    await interaction.response.defer(ephemeral=True)
-    
-    round_name = parse_round_input(round)
-    if not round_name:
-        await interaction.followup.send(
-            "❌ Invalid round name. Please type a number (1-13) or choose/type one of:\n"
-            "D1, D2, D3, D4, D5, D6, D7, D8, D9, D10, Semi-Final, Final, Bronze Match.",
-            ephemeral=True
-        )
-        return
-        
-    try:
-        deadline_dt = datetime.datetime(year, month, day, hour, minute)
-    except ValueError:
-        await interaction.followup.send("❌ Invalid date/time values provided. Please enter a valid date.", ephemeral=True)
-        return
-        
-    deadline_dt = deadline_dt.replace(tzinfo=pytz.UTC)
-    now = datetime.datetime.now(pytz.UTC)
-    
-    if deadline_dt <= now:
-        await interaction.followup.send("❌ The deadline date must be in the future.", ephemeral=True)
-        return
-        
-    # Get deadline channel
-    t_cfg = get_active_tournament_config(interaction.guild_id)
-    channel_id = None
-    if t_cfg:
-        channel_id = t_cfg.get('deadline') or t_cfg.get('Deadline_Channel_ID')
-    if not channel_id:
-        cfg = get_guild_config(interaction.guild_id)
-        channel_id = cfg.get('channel_ids', {}).get('deadlines')
-        
-    if not channel_id:
-        await interaction.followup.send("❌ No deadline channel configured. Please configure it in your tournament/guild settings.", ephemeral=True)
-        return
-        
-    deadline_channel = interaction.guild.get_channel(int(channel_id))
-    if not deadline_channel:
-        try:
-            deadline_channel = await interaction.guild.fetch_channel(int(channel_id))
-        except Exception:
-            await interaction.followup.send("❌ Configured deadline channel not found or bot lacks permission to access it.", ephemeral=True)
-            return
-            
-    # Save the scheduled deadline
-    dl_id = f"dl_{round_name.lower().replace('-', '_').replace(' ', '_')}_{interaction.guild_id}"
-    
-    dl_data = {
-        'guild_id': interaction.guild_id,
-        'round': round_name,
-        'deadline_dt': deadline_dt
-    }
-    
-    # Save scheduled deadline (writes to Supabase and JSON backup)
-    save_scheduled_deadline(dl_id, dl_data)
-    
-    # Schedule background tasks
-    schedule_deadline_tasks(dl_id)
-    
-    deadline_date_str = deadline_dt.strftime("%d/%m/%Y")
-    deadline_time_str = deadline_dt.strftime("%H:%M UTC")
-    
-    # Post initial announcement to the Deadline channel
-    announce_embed = discord.Embed(
-        title="📢 Round Deadline Set",
-        description=f"A new deadline has been set for **Round {round_name}**.",
-        color=discord.Color(BRAND_COLOR),
+async def staff_recruit(interaction: discord.Interaction, member: discord.Member, role: app_commands.Choice[str]):
+    """Assign staff role (Image 4 style - Green embed)."""
+    await interaction.response.defer(ephemeral=False)
+
+    cfg = get_guild_config(interaction.guild.id)
+    role_ids = cfg.get("role_ids", DEFAULT_ROLE_IDS)
+    target_role_id = role_ids.get(role.value)
+
+    assigned_role_name = role.name
+    if target_role_id:
+        target_role = interaction.guild.get_role(int(target_role_id))
+        if target_role:
+            try:
+                await member.add_roles(target_role, reason=f"Recruited by {interaction.user}")
+                assigned_role_name = target_role.name
+            except Exception as e:
+                await interaction.followup.send(f"⚠️ Failed to add Discord role: {e}", ephemeral=False)
+
+    embed = discord.Embed(
+        title="📋 Staff Recruitment Updated",
+        description=f"Successfully assigned staff role to {member.mention}",
+        color=discord.Color.green(),
         timestamp=discord.utils.utcnow()
     )
-    announce_embed.add_field(name="Round", value=round_name, inline=True)
-    announce_embed.add_field(name="Deadline Date & Time", value=f"{deadline_date_str} {deadline_time_str}", inline=True)
-    announce_embed.add_field(
-        name="Action Required", 
-        value="Please ensure you open your ticket and schedule your match time before this deadline. Automatic reminders will be sent to unscheduled captains.",
-        inline=False
+    embed.add_field(name="👤 Staff Member", value=f"{member.mention} (`{member.display_name}`)", inline=True)
+    embed.add_field(name="🛡️ Assigned Role", value=f"**{assigned_role_name}**", inline=True)
+    embed.add_field(name="👑 Recruited By", value=interaction.user.mention, inline=True)
+    embed.set_footer(text=f"{ORGANIZATION_NAME} • Staff Management")
+
+    await interaction.followup.send(embed=embed, ephemeral=False)
+
+
+@staff_group.command(name="fire", description="Remove a staff member from a staff role (Judge/Recorder/Staff)")
+@app_commands.describe(
+    member="The discord member to remove staff role from",
+    role="Select role to remove"
+)
+@app_commands.choices(role=[
+    app_commands.Choice(name="Judge", value="judge"),
+    app_commands.Choice(name="Recorder", value="recorder"),
+    app_commands.Choice(name="General Staff", value="staff"),
+    app_commands.Choice(name="All Staff Roles", value="all"),
+])
+@with_guild_context
+async def staff_fire(interaction: discord.Interaction, member: discord.Member, role: app_commands.Choice[str]):
+    """Remove staff role (Image 3 style - Red embed)."""
+    await interaction.response.defer(ephemeral=False)
+
+    cfg = get_guild_config(interaction.guild.id)
+    role_ids = cfg.get("role_ids", DEFAULT_ROLE_IDS)
+
+    roles_to_remove = []
+    if role.value == "all":
+        roles_to_remove = ["judge", "recorder", "staff"]
+    else:
+        roles_to_remove = [role.value]
+
+    removed_names = []
+    for r_key in roles_to_remove:
+        rid = role_ids.get(r_key)
+        if rid:
+            r_obj = interaction.guild.get_role(int(rid))
+            if r_obj and r_obj in member.roles:
+                try:
+                    await member.remove_roles(r_obj, reason=f"Removed by {interaction.user}")
+                    removed_names.append(r_obj.name)
+                except Exception as e:
+                    print(f"Error removing role {r_obj.name}: {e}")
+
+    embed = discord.Embed(
+        title="⚠️ Staff Removal Updated",
+        description=f"Successfully removed staff role from {member.mention}",
+        color=discord.Color.red(),
+        timestamp=discord.utils.utcnow()
     )
-    announce_embed.set_footer(text=f"{interaction.guild.name} • Tournament Deadlines")
-    
-    try:
-        await deadline_channel.send(embed=announce_embed)
-    except Exception as e:
-        print(f"Failed to send initial deadline announcement to channel: {e}")
-        
-    await interaction.followup.send(
-        f"✅ Successfully scheduled deadline for **Round {round_name}** on **{deadline_date_str} {deadline_time_str}**.\n"
-        f"Reminders will be posted in {deadline_channel.mention} at 06:00 UTC one day before and on the deadline day.",
-        ephemeral=True
+    embed.add_field(name="👤 Staff Member", value=f"{member.mention} (`{member.display_name}`)", inline=True)
+    embed.add_field(name="🛡️ Removed Role", value=f"**{', '.join(removed_names) if removed_names else role.name}**", inline=True)
+    embed.add_field(name="👑 Action By", value=interaction.user.mention, inline=True)
+    embed.set_footer(text=f"{ORGANIZATION_NAME} • Staff Management")
+
+    await interaction.followup.send(embed=embed, ephemeral=False)
+
+
+@staff_group.command(name="work_count", description="View staff match count and activity statistics")
+@app_commands.describe(member="Optional staff member to filter")
+@with_guild_context
+async def staff_work_count(interaction: discord.Interaction, member: discord.Member = None):
+    """View staff activity & work count (Image 2 style)."""
+    await interaction.response.defer(ephemeral=False)
+
+    guild_stats = get_guild_staff_stats(interaction.guild.id)
+    if member:
+        uid = str(member.id)
+        s_data = guild_stats.get(uid, {"judge_count": 0, "recorder_count": 0, "total_count": 0})
+        embed = discord.Embed(
+            title=f"📊 Staff Work Count — {member.display_name}",
+            description=f"Activity breakdown for {member.mention}",
+            color=discord.Color.gold(),
+            timestamp=discord.utils.utcnow()
+        )
+        embed.add_field(name="⚖️ Judge Count", value=str(s_data.get("judge_count", 0)), inline=True)
+        embed.add_field(name="🎥 Recorder Count", value=str(s_data.get("recorder_count", 0)), inline=True)
+        embed.add_field(name="🏆 Total Matches", value=str(s_data.get("total_count", 0)), inline=True)
+        embed.set_footer(text=f"{ORGANIZATION_NAME} • Staff Stats")
+        await interaction.followup.send(embed=embed, ephemeral=False)
+        return
+
+    # Leaderboard view if no single member specified
+    sorted_stats = sorted(guild_stats.items(), key=lambda x: x[1].get("total_count", 0), reverse=True)
+    embed = discord.Embed(
+        title="📊 Staff Work Count Leaderboard",
+        description="Overview of matches judged and recorded by staff members:",
+        color=discord.Color.gold(),
+        timestamp=discord.utils.utcnow()
     )
 
-@deadline.autocomplete('round')
-async def deadline_round_autocomplete(
+    if not sorted_stats:
+        embed.description = "No staff activity recorded yet."
+    else:
+        for idx, (uid, stats) in enumerate(sorted_stats[:15], 1):
+            m_obj = interaction.guild.get_member(int(uid))
+            m_name = m_obj.display_name if m_obj else stats.get("name", f"User {uid}")
+            j_cnt = stats.get("judge_count", 0)
+            r_cnt = stats.get("recorder_count", 0)
+            t_cnt = stats.get("total_count", 0)
+            embed.add_field(
+                name=f"{idx}. {m_name}",
+                value=f"⚖️ **Judge:** {j_cnt} | 🎥 **Recorder:** {r_cnt} | 🏆 **Total:** {t_cnt}",
+                inline=False
+            )
+
+    embed.set_footer(text=f"{ORGANIZATION_NAME} • Staff Stats")
+    await interaction.followup.send(embed=embed, ephemeral=False)
+
+
+@staff_group.command(name="stats", description="View staff match activity stats")
+@app_commands.describe(member="Optional staff member to filter")
+@with_guild_context
+async def staff_stats_cmd(interaction: discord.Interaction, member: discord.Member = None):
+    """Alias for staff work_count."""
+    await staff_work_count.callback(interaction, member)
+
+
+@staff_group.command(name="update", description="Update a staff member's match count in the database")
+@app_commands.describe(
+    staff_member="The staff member to update",
+    role="Select role count to modify (Judge or Recorder)",
+    action="Select update action (Add, Remove, Set)",
+    amount="Number of matches to add/remove/set"
+)
+@app_commands.choices(
+    role=[
+        app_commands.Choice(name="Judge", value="Judge"),
+        app_commands.Choice(name="Recorder", value="Recorder"),
+    ],
+    action=[
+        app_commands.Choice(name="Add (+)", value="add"),
+        app_commands.Choice(name="Remove (-)", value="remove"),
+        app_commands.Choice(name="Set Exact (=)", value="set"),
+    ]
+)
+@with_guild_context
+async def staff_update_group(
     interaction: discord.Interaction,
-    current: str
-) -> list[app_commands.Choice[str]]:
-    current_clean = current.strip().lower()
-    
-    choices = []
-    
-    # If digit
-    if current_clean.isdigit():
-        try:
-            idx = int(current_clean)
-            if 1 <= idx <= 10:
-                choices.append(app_commands.Choice(name=f"D{idx} (from number)", value=f"D{idx}"))
-            elif idx == 11:
-                choices.append(app_commands.Choice(name="Semi-Final (from number)", value="Semi-Final"))
-            elif idx == 12:
-                choices.append(app_commands.Choice(name="Final (from number)", value="Final"))
-            elif idx == 13:
-                choices.append(app_commands.Choice(name="Bronze Match (from number)", value="Bronze Match"))
-        except ValueError:
-            pass
-            
-    # Match strings
-    for opt in ROUND_OPTIONS:
-        if not current_clean or current_clean in opt.lower():
-            choices.append(app_commands.Choice(name=opt, value=opt))
-            
-    return choices[:25]
-
-bot.tree.add_command(tournament_group)
-bot.tree.add_command(auto_room_group)
-bot.tree.add_command(clear_group)
+    staff_member: discord.Member,
+    role: app_commands.Choice[str],
+    action: app_commands.Choice[str],
+    amount: int
+):
+    """Delegate to existing staff_update logic."""
+    await staff_update.callback(interaction, staff_member, role, action, amount)
 
 
-if __name__ == "__main__":
-    # Get Discord token from environment
-    token = os.environ.get("DISCORD_TOKEN")
-    
-    # Fallback method if direct get doesn't work
-    if not token:
-        for key, value in os.environ.items():
-            if 'DISCORD' in key and 'TOKEN' in key:
-                token = value
-                break
-    
-    if not token:
-        print("ERROR: Discord token not found in environment variables.")
-        print("Please set your Discord bot token in the DISCORD_TOKEN environment variable.")
-        print("You can also create a .env file with: DISCORD_TOKEN=your_token_here")
-        exit(1)
-    
+# =========================================================================
+# RESULT EDIT & RESULT GROUP COMMANDS
+# =========================================================================
+
+result_group = app_commands.Group(name="result", description="Manage and edit posted match results")
+
+@result_group.command(name="edit", description="Edit any match result by Match Name or Match ID")
+@app_commands.describe(
+    match="Select match event to edit by Name or ID",
+    winner_team_name="Updated winner team name (optional)",
+    loser_team_name="Updated loser team name (optional)",
+    winner_score="Updated winner score (optional)",
+    loser_score="Updated loser score (optional)",
+    remarks="Updated match remarks (optional)",
+    disqualified="Mark winner/loser disqualified (optional)",
+    judge="Updated judge member (optional)",
+    recorder="Updated recorder member (optional)"
+)
+@app_commands.choices(
+    disqualified=[
+        app_commands.Choice(name="Winner Disqualified", value="Winner"),
+        app_commands.Choice(name="Loser Disqualified", value="Loser"),
+        app_commands.Choice(name="Both Disqualified (0:0)", value="Both"),
+        app_commands.Choice(name="None (Clear DQ)", value="None"),
+    ]
+)
+@app_commands.autocomplete(match=match_autocomplete)
+@with_guild_context
+async def result_edit(
+    interaction: discord.Interaction,
+    match: str,
+    winner_team_name: str = None,
+    loser_team_name: str = None,
+    winner_score: int = None,
+    loser_score: int = None,
+    remarks: str = None,
+    disqualified: app_commands.Choice[str] = None,
+    judge: discord.Member = None,
+    recorder: discord.Member = None
+):
+    """Edit match results by Match Name or ID."""
+    await interaction.response.defer(ephemeral=False)
+
+    if interaction.guild:
+        current_guild_id.set(interaction.guild.id)
+
+    ev_id, ev_data = find_event_by_name_or_id(interaction.guild.id, match)
+    if not ev_id or not ev_data:
+        await interaction.followup.send("❌ Match not found. Please select from the autocomplete list or provide a valid Match ID/Name.", ephemeral=False)
+        return
+
+    changes = []
+    if winner_team_name:
+        ev_data['team1_name'] = winner_team_name
+        changes.append(f"Winner Team: `{winner_team_name}`")
+    if loser_team_name:
+        ev_data['team2_name'] = loser_team_name
+        changes.append(f"Loser Team: `{loser_team_name}`")
+    if winner_score is not None:
+        ev_data['winner_score'] = winner_score
+        changes.append(f"Winner Score: `{winner_score}`")
+    if loser_score is not None:
+        ev_data['loser_score'] = loser_score
+        changes.append(f"Loser Score: `{loser_score}`")
+    if remarks:
+        ev_data['remarks'] = remarks
+        changes.append(f"Remarks: `{remarks}`")
+    if disqualified:
+        ev_data['disqualified'] = disqualified.value
+        changes.append(f"Disqualified: `{disqualified.name}`")
+    if judge:
+        ev_data['judge'] = judge.id
+        ev_data['judge_name'] = judge.name
+        changes.append(f"Judge: {judge.mention}")
+    if recorder:
+        ev_data['recorder'] = recorder.id
+        ev_data['recorder_name'] = recorder.name
+        changes.append(f"Recorder: {recorder.mention}")
+
+    t1_n = ev_data.get('team1_name') or 'Team 1'
+    t2_n = ev_data.get('team2_name') or 'Team 2'
+    ev_data['match_name'] = f"{t1_n} vs {t2_n}"
+    save_scheduled_events()
+    asyncio.create_task(save_event_to_supabase(ev_id, ev_data))
+
+    # Update in-place posted result embeds if present
     try:
-        print("🚀 Starting Discord bot...")
-        print("📡 Connecting to Discord...")
-        bot.run(token, log_handler=None)  # Disable default logging to reduce startup time
-    except discord.LoginFailure:
-        print("ERROR: Invalid Discord token. Please check your bot token.")
-        exit(1)
-    except discord.HTTPException as e:
-        print(f"ERROR: HTTP error connecting to Discord: {e}")
-        exit(1)
+        await update_results_embed_with_links(interaction.guild, ev_data)
+        changes.append("Posted result embeds updated in Discord channels")
     except Exception as e:
-        print(f"ERROR: Error starting bot: {e}")
-        exit(1)
+        print(f"Error updating result embeds: {e}")
 
+    embed = discord.Embed(
+        title=f"✅ Match Result Updated — [{ev_id}]",
+        description=f"**Match Name:** {ev_data.get('match_name')}\n\n" + "\n".join(f"• {c}" for c in changes),
+        color=discord.Color.green(),
+        timestamp=discord.utils.utcnow()
+    )
+    embed.set_footer(text=f"{ORGANIZATION_NAME} • Match Result System")
+    await interaction.followup.send(embed=embed, ephemeral=False)
+
+
+# Register Command Groups to Bot Tree
+bot.tree.add_command(link_group)
+bot.tree.add_command(staff_group)
+bot.tree.add_command(result_group)
