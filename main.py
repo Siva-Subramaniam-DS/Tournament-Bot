@@ -1547,13 +1547,18 @@ def _sync_save_tournament_to_supabase(guild_id: int, tournament_id: str, t_data:
         "Updated_At": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     }
 
-    try:
-        supabase_client.table("Tournaments").upsert(row, on_conflict="Tournament_ID").execute()
-        print(f"[Supabase] ✅ Tournaments table updated for tournament '{tournament_id}'")
-        return True
-    except Exception as e:
-        print(f"[Supabase] ❌ Exception updating Tournaments table: {e}")
-        return False
+    for attempt in range(3):
+        try:
+            supabase_client.table("Tournaments").upsert(row, on_conflict="Tournament_ID").execute()
+            print(f"[Supabase] ✅ Tournaments table updated for tournament '{tournament_id}'")
+            return True
+        except Exception as e:
+            if attempt < 2:
+                print(f"[Supabase] ⚠️ Connection retry {attempt+1}/2 for Tournaments table: {e}")
+                time.sleep(0.5)
+            else:
+                print(f"[Supabase] ❌ Exception updating Tournaments table: {e}")
+                return False
 
 async def save_tournament_to_supabase(guild_id: int, tournament_id: str, t_data: dict):
     if supabase_client:
@@ -10190,27 +10195,18 @@ async def settings_clean(interaction: discord.Interaction):
         guild_id = interaction.guild.id
         guild_id_str = str(guild_id)
         
-        # 1. Reset caches for this guild
+        # 1. Reset ONLY server configuration cache for this guild
         GUILD_CONFIG_CACHE[guild_id_str] = get_default_config()
-        TOURNAMENTS_CACHE[guild_id_str] = {}
-        if guild_id_str in RULES_CACHE:
-            del RULES_CACHE[guild_id_str]
-        if guild_id_str in STAFF_STATS_CACHE:
-            del STAFF_STATS_CACHE[guild_id_str]
-        if guild_id in CHALLONGE_MATCHES_CACHE:
-            del CHALLONGE_MATCHES_CACHE[guild_id]
             
-        # 2. Delete from Supabase tables
+        # 2. Reset ONLY GuildConfig table in Supabase
         if supabase_client:
-            tables = ["GuildConfig", "Tournaments", "Events", "JudgeAssignments", "StaffStats", "Results", "Challonge_Uploads", "Deadlines"]
-            for table in tables:
-                try:
-                    supabase_client.table(table).delete().eq("Guild_ID", guild_id_str).execute()
-                    print(f"[Supabase] Cleaned table '{table}' for guild {guild_id}")
-                except Exception as e:
-                    print(f"[Supabase] Error cleaning table '{table}': {e}")
+            try:
+                supabase_client.table("GuildConfig").delete().eq("Guild_ID", guild_id_str).execute()
+                print(f"[Supabase] Reset GuildConfig table for guild {guild_id}")
+            except Exception as e:
+                print(f"[Supabase] Error resetting GuildConfig table: {e}")
                     
-        # 3. Wiping local JSON configurations / databases
+        # 3. Reset local guild_configs.json file
         if os.path.exists('guild_configs.json'):
             try:
                 with open('guild_configs.json', 'r', encoding='utf-8') as f:
@@ -10221,70 +10217,6 @@ async def settings_clean(interaction: discord.Interaction):
                         json.dump(all_configs, f, indent=4)
             except Exception as e:
                 print(f"Error cleaning guild_configs.json: {e}")
-                
-        if os.path.exists('tournaments.json'):
-            try:
-                with open('tournaments.json', 'r', encoding='utf-8') as f:
-                    all_tournaments = json.load(f)
-                if guild_id_str in all_tournaments:
-                    del all_tournaments[guild_id_str]
-                    with open('tournaments.json', 'w', encoding='utf-8') as f:
-                        json.dump(all_tournaments, f, indent=4)
-            except Exception as e:
-                print(f"Error cleaning tournaments.json: {e}")
-
-        if os.path.exists('tournament_rules.json'):
-            try:
-                with open('tournament_rules.json', 'r', encoding='utf-8') as f:
-                    all_rules = json.load(f)
-                if guild_id_str in all_rules:
-                    del all_rules[guild_id_str]
-                    with open('tournament_rules.json', 'w', encoding='utf-8') as f:
-                        json.dump(all_rules, f, indent=4)
-            except Exception as e:
-                print(f"Error cleaning tournament_rules.json: {e}")
-
-        if os.path.exists('staff_stats.json'):
-            try:
-                with open('staff_stats.json', 'r', encoding='utf-8') as f:
-                    all_stats = json.load(f)
-                if guild_id_str in all_stats:
-                    del all_stats[guild_id_str]
-                    with open('staff_stats.json', 'w', encoding='utf-8') as f:
-                        json.dump(all_stats, f, indent=4)
-            except Exception as e:
-                print(f"Error cleaning staff_stats.json: {e}")
-
-        global scheduled_events
-        to_delete_events = [ev_id for ev_id, ev_data in scheduled_events.items() if ev_data.get('guild_id') == guild_id]
-        if to_delete_events:
-            for ev_id in to_delete_events:
-                del scheduled_events[ev_id]
-            save_scheduled_events()
-
-        # Cancel and delete scheduled deadlines for this guild
-        global scheduled_deadlines
-        to_delete_dl = [dl_id for dl_id, dl_data in scheduled_deadlines.items() if dl_data.get('guild_id') == guild_id]
-        for dl_id in to_delete_dl:
-            try:
-                cancel_deadline_tasks(dl_id)
-                del scheduled_deadlines[dl_id]
-            except Exception as e:
-                print(f"Error cancelling deadline {dl_id}: {e}")
-                
-        # Save scheduled deadlines local JSON
-        if to_delete_dl:
-            try:
-                data_to_save = {}
-                for d_id, d_data in scheduled_deadlines.items():
-                    copy_data = d_data.copy()
-                    if 'deadline_dt' in copy_data and isinstance(copy_data['deadline_dt'], datetime.datetime):
-                        copy_data['deadline_dt'] = copy_data['deadline_dt'].isoformat()
-                    data_to_save[d_id] = copy_data
-                with open('scheduled_deadlines.json', 'w', encoding='utf-8') as f:
-                    json.dump(data_to_save, f, indent=4)
-            except Exception as e:
-                print(f"Error saving scheduled_deadlines.json during clean: {e}")
 
         # Log bot activity
         log_embed = discord.Embed(
@@ -10647,18 +10579,20 @@ async def build_tournament_embed(interaction: discord.Interaction, t_data: dict,
     
     # Resolve channel mentions
     def chan_mention(key):
-        cid = safe_int(t_data.get(key))
+        val = t_data.get(key) or t_data.get(f"{key}_channel") or t_data.get(f"{key}_channel_id")
+        cid = safe_int(val)
         if not cid:
             return "Not Set"
         ch = guild.get_channel(cid)
         return ch.mention if ch else f"`ID: {cid}`"
         
     def cat_mention(key):
-        cid = safe_int(t_data.get(key))
+        val = t_data.get(key) or t_data.get(f"{key}_category") or t_data.get(f"{key}_category_id")
+        cid = safe_int(val)
         if not cid:
             return "Not Set"
         ch = guild.get_channel(cid)
-        return f"#{ch.name}" if ch else f"`ID: {cid}`"
+        return f"# {ch.name}" if ch else f"`ID: {cid}`"
 
     sheet_link = t_data.get('captains_sheet_link', '')
     sheet_str  = f"[Click Here]({sheet_link})" if sheet_link else "Not Set"
@@ -10728,8 +10662,7 @@ async def build_tournament_embed(interaction: discord.Interaction, t_data: dict,
     embed.add_field(name="📊 Attendance Channel",  value=chan_mention('attendance'),    inline=True)
     embed.add_field(name="📝 Challonge Logs",      value=chan_mention('challonge_logs'),  inline=True)
 
-    # Row 5: Transcript Logs | Bot Logs | Thumbnail
-    embed.add_field(name="🗒️ Transcript Logs",    value=chan_mention('transcript_logs'), inline=True)
+    # Row 5: Bot Logs | Thumbnail
     embed.add_field(name="🤖 Bot Logs Channel",    value=chan_mention('bot_logs'),        inline=True)
     embed.add_field(name="🖼️ Thumbnail",           value=thumb_str,  inline=True)
 
@@ -10782,6 +10715,8 @@ tournament_group = app_commands.Group(name="tournament", description="Manage mul
     rules_channel="Channel for tournament rules",
     result_channel="Channel for official match results",
     deadline_channel="Channel for round deadlines",
+    bot_logs="Channel for bot activity logs",
+    challonge_logs="Channel for Challonge bracket logs",
     closed_category="Category where closed tickets are stored",
     auto_room="Toggle automatic room creation for this tournament"
 )
@@ -10799,6 +10734,8 @@ async def tournament_add(
     rules_channel: Optional[discord.TextChannel] = None,
     result_channel: Optional[discord.TextChannel] = None,
     deadline_channel: Optional[discord.TextChannel] = None,
+    bot_logs: Optional[discord.TextChannel] = None,
+    challonge_logs: Optional[discord.TextChannel] = None,
     closed_category: Optional[discord.CategoryChannel] = None,
     auto_room: Optional[bool] = False
 ):
@@ -10826,6 +10763,8 @@ async def tournament_add(
     if rules_channel: t_data["rules_channel"] = rules_channel.id
     if result_channel: t_data["result_channel"] = result_channel.id
     if deadline_channel: t_data["deadline_channel"] = deadline_channel.id
+    if bot_logs: t_data["bot_logs"] = bot_logs.id
+    if challonge_logs: t_data["challonge_logs"] = challonge_logs.id
     if closed_category: t_data["closed_ticket_1"] = closed_category.id
     if auto_room is not None: t_data["auto_room_creation"] = auto_room
 
@@ -10853,6 +10792,8 @@ async def tournament_add(
     rules_channel="Rules channel",
     result_channel="Result channel",
     deadline_channel="Deadline channel",
+    bot_logs="Bot activity logs channel",
+    challonge_logs="Challonge logs channel",
     closed_category="Closed ticket category",
     auto_room="Toggle automatic room creation"
 )
@@ -10877,6 +10818,8 @@ async def tournament_edit(
     rules_channel: Optional[discord.TextChannel] = None,
     result_channel: Optional[discord.TextChannel] = None,
     deadline_channel: Optional[discord.TextChannel] = None,
+    bot_logs: Optional[discord.TextChannel] = None,
+    challonge_logs: Optional[discord.TextChannel] = None,
     closed_category: Optional[discord.CategoryChannel] = None,
     auto_room: Optional[bool] = None
 ):
@@ -10903,6 +10846,8 @@ async def tournament_edit(
     if rules_channel: t_data["rules_channel"] = rules_channel.id
     if result_channel: t_data["result_channel"] = result_channel.id
     if deadline_channel: t_data["deadline_channel"] = deadline_channel.id
+    if bot_logs: t_data["bot_logs"] = bot_logs.id
+    if challonge_logs: t_data["challonge_logs"] = challonge_logs.id
     if closed_category: t_data["closed_ticket_1"] = closed_category.id
     if auto_room is not None: t_data["auto_room_creation"] = auto_room
 
@@ -10915,7 +10860,7 @@ async def tournament_edit(
         await interaction.response.send_message(embed=embed, ephemeral=False)
 
 
-@tournament_group.command(name="delete", description="Delete a tournament configuration")
+@tournament_group.command(name="delete", description="Delete a tournament configuration and all associated matches and schedules")
 @app_commands.describe(tournament="Select tournament to delete")
 @app_commands.autocomplete(tournament=tournament_autocomplete)
 @with_guild_context
@@ -10931,16 +10876,76 @@ async def tournament_delete(interaction: discord.Interaction, tournament: str):
         await interaction.response.send_message(f"❌ Tournament `{t_id_clean}` not found.", ephemeral=True)
         return
 
+    # 1. Delete tournament configuration from memory & local JSON
     del tournaments[t_id_clean]
     save_guild_tournaments(interaction.guild_id, tournaments)
 
+    # 2. Clean up scheduled events in memory for this tournament
+    removed_events = 0
+    for ev_id, ev_data in list(scheduled_events.items()):
+        ev_t = str(ev_data.get('tournament', '') or ev_data.get('tournament_id', '')).lower()
+        if ev_t == t_id_clean:
+            if ev_id in reminder_tasks:
+                try:
+                    reminder_tasks[ev_id].cancel()
+                    del reminder_tasks[ev_id]
+                except Exception:
+                    pass
+            del scheduled_events[ev_id]
+            removed_events += 1
+    if removed_events > 0:
+        save_scheduled_events()
+
+    # 3. Clean up deadlines in memory for this tournament
+    removed_deadlines = 0
+    for dl_id, dl_data in list(scheduled_deadlines.items()):
+        if str(dl_data.get('tournament_id', '')).lower() == t_id_clean:
+            del scheduled_deadlines[dl_id]
+            removed_deadlines += 1
+    if removed_deadlines > 0:
+        try:
+            with open('scheduled_deadlines.json', 'w', encoding='utf-8') as f:
+                json.dump(scheduled_deadlines, f, indent=4)
+        except Exception:
+            pass
+
+    # 4. Delete tournament records, matches, match staff & deadlines from Supabase
     if supabase_client:
         try:
-            supabase_client.table("Tournaments").delete().eq("Tournament_ID", t_id_clean).execute()
-        except Exception as e:
-            print(f"Error deleting tournament from Supabase: {e}")
+            # Delete match staff for matches in this tournament
+            match_res = supabase_client.table("Matches").select("Match_ID").eq("Tournament_ID", t_id_clean).execute()
+            if match_res and match_res.data:
+                for m_row in match_res.data:
+                    m_id = m_row.get("Match_ID")
+                    if m_id:
+                        try:
+                            supabase_client.table("MatchStaff").delete().eq("Match_ID", m_id).execute()
+                        except Exception:
+                            pass
+            
+            # Delete matches for this tournament
+            try:
+                supabase_client.table("Matches").delete().eq("Tournament_ID", t_id_clean).execute()
+            except Exception:
+                pass
 
-    await interaction.response.send_message(f"🗑️ Successfully deleted tournament configuration `{t_id_clean}`.", ephemeral=False)
+            # Delete deadlines for this tournament
+            try:
+                supabase_client.table("Deadlines").delete().eq("Tournament_ID", t_id_clean).execute()
+            except Exception:
+                pass
+
+            # Delete tournament record from Tournaments table
+            supabase_client.table("Tournaments").delete().eq("Tournament_ID", t_id_clean).execute()
+            print(f"[Supabase] ✅ Cleaned tournament '{t_id_clean}' and all associated matches, staff, and deadlines.")
+        except Exception as e:
+            print(f"[Supabase] ⚠️ Error deleting tournament '{t_id_clean}' data: {e}")
+
+    await interaction.response.send_message(
+        f"🗑️ Successfully deleted tournament `{t_id_clean}` and all associated matches, schedules, and staff assignments.\n"
+        f"⚙️ **Server roles and settings remain untouched.**",
+        ephemeral=False
+    )
 
 
 @tournament_group.command(name="info", description="Display configuration details of a tournament")
