@@ -10944,11 +10944,13 @@ async def tournament_delete(interaction: discord.Interaction, tournament: str):
         await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
         return
 
+    await interaction.response.defer(ephemeral=False)
+
     tournaments = load_guild_tournaments(interaction.guild_id)
     t_id_clean = tournament.strip().lower()
 
     if t_id_clean not in tournaments:
-        await interaction.response.send_message(f"❌ Tournament `{t_id_clean}` not found.", ephemeral=True)
+        await interaction.followup.send(f"❌ Tournament `{t_id_clean}` not found.", ephemeral=True)
         return
 
     # Grab the human-readable name for matching against event data
@@ -11016,12 +11018,63 @@ async def tournament_delete(interaction: discord.Interaction, tournament: str):
                 except Exception:
                     pass
 
+            # Fetch MatchStaff entries for deleted matches before deleting them to deduct staff stats
+            staff_deductions = {}  # user_id -> {'judge': count, 'recorder': count}
+            for m_id in all_match_ids:
+                try:
+                    ms_res = supabase_client.table("MatchStaff").select("User_ID, Role").eq("Match_ID", m_id).execute()
+                    if ms_res and ms_res.data:
+                        for row in ms_res.data:
+                            uid = str(row.get("User_ID"))
+                            role = str(row.get("Role", "")).lower()
+                            if uid and uid != "None":
+                                if uid not in staff_deductions:
+                                    staff_deductions[uid] = {'judge': 0, 'recorder': 0}
+                                if 'judge' in role:
+                                    staff_deductions[uid]['judge'] += 1
+                                elif 'recorder' in role:
+                                    staff_deductions[uid]['recorder'] += 1
+                except Exception as e:
+                    print(f"[Supabase] Error fetching MatchStaff before delete: {e}")
+
             # Delete MatchStaff for all gathered match IDs
             for m_id in all_match_ids:
                 try:
                     supabase_client.table("MatchStaff").delete().eq("Match_ID", m_id).execute()
                 except Exception:
                     pass
+
+            # Deduct staff stats locally and sync to Supabase StaffStats table
+            if staff_deductions and interaction.guild_id:
+                try:
+                    stats = get_guild_staff_stats(interaction.guild_id)
+                    for uid, counts in staff_deductions.items():
+                        if uid in stats:
+                            stats[uid]['judge_count'] = max(0, stats[uid].get('judge_count', 0) - counts['judge'])
+                            stats[uid]['recorder_count'] = max(0, stats[uid].get('recorder_count', 0) - counts['recorder'])
+                            stats[uid]['last_activity'] = datetime.datetime.utcnow().isoformat()
+                            
+                            # Sync updated count to Supabase StaffStats
+                            j_cnt = stats[uid]['judge_count']
+                            r_cnt = stats[uid]['recorder_count']
+                            tot_cnt = j_cnt + r_cnt
+                            try:
+                                supabase_client.table("StaffStats").upsert({
+                                    "User_ID": str(uid),
+                                    "Guild_ID": str(interaction.guild_id),
+                                    "User_Name": stats[uid].get('name', ''),
+                                    "Judge_Count": j_cnt,
+                                    "Recorder_Count": r_cnt,
+                                    "Total_Count": tot_cnt,
+                                    "Last_Updated": stats[uid]['last_activity']
+                                }, on_conflict="User_ID,Guild_ID").execute()
+                                print(f"[Supabase] ✅ StaffStats updated for user {uid} on tournament delete (Deducted {counts['judge']} J / {counts['recorder']} R)")
+                            except Exception as ss_err:
+                                print(f"[Supabase] ⚠️ Error updating StaffStats on tournament delete: {ss_err}")
+
+                    save_guild_staff_stats(interaction.guild_id, stats)
+                except Exception as local_ss_err:
+                    print(f"Error updating local staff stats on tournament delete: {local_ss_err}")
 
             # Delete Matches by Tournament_ID
             try:
@@ -11043,15 +11096,17 @@ async def tournament_delete(interaction: discord.Interaction, tournament: str):
 
             # Delete tournament record from Tournaments table
             supabase_client.table("Tournaments").delete().eq("Tournament_ID", t_id_clean).execute()
-            print(f"[Supabase] ✅ Cleaned tournament '{t_id_clean}' and all associated matches ({len(all_match_ids)}), staff, and deadlines.")
+            print(f"[Supabase] ✅ Cleaned tournament '{t_id_clean}' and all associated matches ({len(all_match_ids)}), staff, deadlines, and StaffStats.")
         except Exception as e:
             print(f"[Supabase] ⚠️ Error deleting tournament '{t_id_clean}' data: {e}")
 
-    await interaction.response.send_message(
-        f"🗑️ Successfully deleted tournament `{t_id_clean}` and all associated matches, schedules, and staff assignments.\n"
+    await interaction.followup.send(
+        f"🗑️ Successfully deleted tournament `{t_id_clean}` and all associated matches, schedules, staff assignments, and staff work statistics.\n"
         f"⚙️ **Server roles and settings remain untouched.**",
         ephemeral=False
     )
+
+
 
 
 
