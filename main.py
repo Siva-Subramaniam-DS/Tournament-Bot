@@ -61,7 +61,7 @@ DEFAULT_CHANNEL_IDS = {
 DEFAULT_ROLE_IDS = {
     "head_organizer": None,  # Admin Role
     "organizer":      None,  # Organizer Role
-    "helper_team":    None,  # Helper Role
+    "helper_team":    None,  # Helper / Head Helper Role
     "judge":          None,  # Judge Role
     "recorder":       None,  # Recorder Role
     "staff":          None,  # Staff Role
@@ -775,6 +775,32 @@ async def save_event_to_supabase(event_id: str, event_data: dict):
         t2_name = event_data.get('team2_name') or (t2_cap.name if hasattr(t2_cap, 'name') else '')
         match_name = event_data.get('match_name') or f"{t1_name} vs {t2_name}"
 
+        # Resolve canonical Tournament_ID for Supabase foreign key constraint
+        raw_tourney = event_data.get('tournament_id') or event_data.get('tournament') or ''
+        resolved_t_id = None
+        
+        if guild_id:
+            try:
+                tournaments = load_guild_tournaments(int(guild_id))
+                t_clean = str(raw_tourney).strip().lower()
+                
+                if t_clean in tournaments:
+                    resolved_t_id = t_clean
+                else:
+                    for tid, tcfg in tournaments.items():
+                        if tcfg.get('name', '').strip().lower() == t_clean:
+                            resolved_t_id = tid
+                            break
+                            
+                if resolved_t_id:
+                    # Sync tournament row to Supabase first so Foreign Key constraint is satisfied
+                    _sync_save_tournament_to_supabase(int(guild_id), resolved_t_id, tournaments[resolved_t_id])
+            except Exception as tourney_sync_err:
+                print(f"[Supabase] Note on tournament pre-sync: {tourney_sync_err}")
+
+        if not resolved_t_id:
+            resolved_t_id = str(raw_tourney).strip()
+
         target_table = "Matches"
         try:
             res = await asyncio.to_thread(
@@ -787,10 +813,14 @@ async def save_event_to_supabase(event_id: str, event_data: dict):
             )
 
         if target_table == "Matches":
+            round_val = event_data.get('round', '')
+            round_int = int(round_val) if str(round_val).isdigit() else 1
             match_row = {
                 "Match_ID": event_id,
                 "Match_Name": match_name,
-                "Round": int(event_data.get('round', 1)) if str(event_data.get('round', '')).isdigit() else 1,
+                "Tournament_ID": resolved_t_id,
+
+                "Round": round_int,
                 "Group": str(event_data.get('group', '') or ''),
                 "Status": str(event_data.get('status', 'scheduled')).lower(),
                 "Channel_ID": str(event_data.get('channel_id', '')),
@@ -805,6 +835,7 @@ async def save_event_to_supabase(event_id: str, event_data: dict):
             await asyncio.to_thread(
                 lambda: supabase_client.table("Matches").upsert(match_row, on_conflict="Match_ID").execute()
             )
+
         else:
             legacy_row = {
                 "Guild_ID": str(guild_id) if guild_id else "",
@@ -1539,9 +1570,15 @@ def _sync_save_tournament_to_supabase(guild_id: int, tournament_id: str, t_data:
         "Attendance_Channel_ID": _get_val('attendance', 'attendance_channel', 'Attendance_Channel_ID'),
         "Transcript_Channel_ID": _get_val('transcript', 'transcript_channel', 'Transcript_Channel_ID'),
         "Schedule_Channel_ID": _get_val('schedule', 'schedule_channel', 'schedule_channel_id', 'Schedule_Channel_ID'),
+        "Rules_Channel_ID": _get_val('rules', 'rules_channel', 'Rules_Channel_ID'),
         "Result_Channel_ID": _get_val('result', 'result_channel', 'Result_Channel_ID'),
         "Deadline_Channel_ID": _get_val('deadline', 'deadline_channel', 'Deadline_Channel_ID'),
+        "Bot_Logs_Channel_ID": _get_val('bot_logs', 'Bot_Logs_Channel_ID'),
+        "Challonge_Logs_Channel_ID": _get_val('challonge_logs', 'Challonge_Logs_Channel_ID'),
         "Closed_Ticket_Category_ID": _get_val('closed_ticket_1', 'Closed_Ticket_Category_ID'),
+        "Open_Category_1_ID": _get_val('ticket_open_category_1', 'Open_Category_1_ID'),
+        "Open_Category_2_ID": _get_val('ticket_open_category_2', 'Open_Category_2_ID'),
+        "Open_Category_3_ID": _get_val('ticket_open_category_3', 'Open_Category_3_ID'),
         "Auto_Room_Creation": bool(auto_room_val),
         "Map_Pool": _get_val('map_pool', 'Map_Pool'),
         "Updated_At": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
@@ -2036,7 +2073,7 @@ def get_user_permission_level(user_roles, user_id: int = None, guild_id: int = N
         
         if has_role("head_organizer"):
             return "organizer"
-        elif has_role("head_helper") or has_role("helper_team"):
+        elif has_role("helper_team"):
             return "helper"
         elif has_role("judge"):
             return "judge"
@@ -2469,12 +2506,11 @@ class StaffReplacementView(discord.ui.View):
         is_admin = interaction.guild and interaction.user.guild_permissions.administrator
         is_owner = interaction.user.id == BOT_OWNER_ID
         head_organizer_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_organizer"])
-        head_helper_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_helper"])
         helper_team_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["helper_team"])
         judge_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["judge"])
         recorder_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["recorder"])
         staff_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["staff"])
-        has_allowed_role = any([head_organizer_role, head_helper_role, helper_team_role, judge_role, recorder_role, staff_role])
+        has_allowed_role = any([head_organizer_role, helper_team_role, judge_role, recorder_role, staff_role])
         if not (has_allowed_role or is_admin or is_owner):
             await interaction.response.send_message("❌ You do not have the required role to replace the judge.", ephemeral=False)
             return
@@ -2547,12 +2583,11 @@ class StaffReplacementView(discord.ui.View):
         is_admin = interaction.guild and interaction.user.guild_permissions.administrator
         is_owner = interaction.user.id == BOT_OWNER_ID
         head_organizer_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_organizer"])
-        head_helper_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_helper"])
         helper_team_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["helper_team"])
         judge_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["judge"])
         recorder_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["recorder"])
         staff_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["staff"])
-        has_allowed_role = any([head_organizer_role, head_helper_role, helper_team_role, judge_role, recorder_role, staff_role])
+        has_allowed_role = any([head_organizer_role, helper_team_role, judge_role, recorder_role, staff_role])
         if not (has_allowed_role or is_admin or is_owner):
             await interaction.response.send_message("❌ You do not have the required role to replace the recorder.", ephemeral=False)
             return
@@ -2798,12 +2833,11 @@ class TakeScheduleButton(discord.ui.View):
         is_admin = interaction.guild and interaction.user.guild_permissions.administrator
         is_owner = interaction.user.id == BOT_OWNER_ID
         head_organizer_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_organizer"])
-        head_helper_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_helper"])
         helper_team_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["helper_team"])
         judge_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["judge"])
         recorder_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["recorder"])
         staff_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["staff"])
-        has_allowed_role = any([head_organizer_role, head_helper_role, helper_team_role, judge_role, recorder_role, staff_role])
+        has_allowed_role = any([head_organizer_role, helper_team_role, judge_role, recorder_role, staff_role])
         if not (has_allowed_role or is_owner or is_admin):
             await interaction.response.send_message("❌ You do not have the required role to take this schedule.", ephemeral=False)
             return
@@ -2969,12 +3003,11 @@ class TakeScheduleButton(discord.ui.View):
         is_admin = interaction.guild and interaction.user.guild_permissions.administrator
         is_owner = interaction.user.id == BOT_OWNER_ID
         head_organizer_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_organizer"])
-        head_helper_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_helper"])
         helper_team_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["helper_team"])
         judge_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["judge"])
         recorder_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["recorder"])
         staff_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["staff"])
-        has_allowed_role = any([head_organizer_role, head_helper_role, helper_team_role, judge_role, recorder_role, staff_role])
+        has_allowed_role = any([head_organizer_role, helper_team_role, judge_role, recorder_role, staff_role])
         if not (has_allowed_role or is_owner or is_admin):
             await interaction.response.send_message("❌ You do not have the required role to record.", ephemeral=False)
             return
@@ -4233,14 +4266,12 @@ def has_event_create_permission(interaction):
             return None
             
     head_organizer_id = safe_get("head_organizer")
-    head_helper_id = safe_get("head_helper")
     helper_team_id = safe_get("helper_team")
     
     user_role_ids = [r.id for r in interaction.user.roles] if hasattr(interaction.user, "roles") else []
     
     return (
         (head_organizer_id and head_organizer_id in user_role_ids) or
-        (head_helper_id and head_helper_id in user_role_ids) or
         (helper_team_id and helper_team_id in user_role_ids)
     )
 
@@ -4263,7 +4294,6 @@ def has_event_result_permission(interaction):
             return None
             
     head_organizer_id = safe_get("head_organizer")
-    head_helper_id = safe_get("head_helper")
     helper_team_id = safe_get("helper_team")
     judge_id = safe_get("judge")
     recorder_id = safe_get("recorder")
@@ -4273,7 +4303,6 @@ def has_event_result_permission(interaction):
     
     return (
         (head_organizer_id and head_organizer_id in user_role_ids) or
-        (head_helper_id and head_helper_id in user_role_ids) or
         (helper_team_id and helper_team_id in user_role_ids) or
         (judge_id and judge_id in user_role_ids) or
         (recorder_id and recorder_id in user_role_ids) or
@@ -4310,18 +4339,16 @@ async def on_message(message):
         
         if hasattr(message.author, 'roles'):
             head_org_id = ROLE_IDS.get("head_organizer")
-            head_helper_id = ROLE_IDS.get("head_helper")
             helper_team_id = ROLE_IDS.get("helper_team")
             judge_id_val = ROLE_IDS.get("judge")
             recorder_id_val = ROLE_IDS.get("recorder")
             staff_id_val = ROLE_IDS.get("staff")
             head_org = discord.utils.get(message.author.roles, id=head_org_id) if head_org_id else None
-            head_helper = discord.utils.get(message.author.roles, id=head_helper_id) if head_helper_id else None
             helper_team = discord.utils.get(message.author.roles, id=helper_team_id) if helper_team_id else None
             judge = discord.utils.get(message.author.roles, id=judge_id_val) if judge_id_val else None
             recorder = discord.utils.get(message.author.roles, id=recorder_id_val) if recorder_id_val else None
             staff = discord.utils.get(message.author.roles, id=staff_id_val) if staff_id_val else None
-            has_role = bool(head_org or head_helper or helper_team or judge or recorder or staff)
+            has_role = bool(head_org or helper_team or judge or recorder or staff)
             
         if not (is_owner or is_admin or has_role):
             # No permission, quietly delete message and return
@@ -5018,103 +5045,7 @@ async def help_command(interaction: discord.Interaction):
         print(f"Error in help command: {e}")
         await interaction.response.send_message("❌ An error occurred while generating help.", ephemeral=False)
 
-@tree.command(name="staff-leaderboard", description="Display the staff activity leaderboard")
-@with_guild_context
-async def staff_leaderboard(interaction: discord.Interaction):
-    """Rich visual staff leaderboard"""
-    try:
-        if not staff_stats:
-            embed = discord.Embed(
-                title=f"📊 Staff Leaderboard — {ORGANIZATION_NAME}",
-                description="No staff activity recorded yet. Stats will appear once matches are judged/recorded.",
-                color=discord.Color(BRAND_COLOR),
-                timestamp=discord.utils.utcnow()
-            )
-            embed.set_footer(text=f"{ORGANIZATION_NAME} • Staff Tracking")
-            await interaction.response.send_message(embed=embed, ephemeral=False)
-            return
 
-        # Sort by total (desc)
-        sorted_staff = sorted(
-            staff_stats.items(),
-            key=lambda item: item[1].get('total_count', 0),
-            reverse=True
-        )
-        top_staff = sorted_staff[:15]
-
-        # Medal emojis for top 3
-        rank_emojis = {1: "🥇", 2: "🥈", 3: "🥉"}
-
-        embed = discord.Embed(
-            title="🏆 Staff Activity Leaderboard",
-            description=(
-                f"**{ORGANIZATION_NAME}**\n"
-                "═══════════════════════════\n"
-                f"Tracking the top **{len(top_staff)}** most active staff this tournament season."
-            ),
-            color=discord.Color.gold(),
-            timestamp=discord.utils.utcnow()
-        )
-
-        # Build a clean visual list (two compact columns)
-        left_col  = ""
-        right_col = ""
-
-        for i, (user_id, stats) in enumerate(top_staff, 1):
-            medal   = rank_emojis.get(i, f"`#{i:>2}`")
-            name    = (stats.get('name') or 'Unknown')[:16]
-            j_cnt   = stats.get('judge_count', 0)
-            r_cnt   = stats.get('recorder_count', 0)
-            total   = stats.get('total_count', 0)
-            
-            # Role badge: show what this staff member has done
-            if j_cnt > 0 and r_cnt > 0:
-                role_badge = "⚖️🎥 Both"
-            elif j_cnt > 0:
-                role_badge = "⚖️ Judge-only"
-            elif r_cnt > 0:
-                role_badge = "🎥 Recorder-only"
-            else:
-                role_badge = "⬜ No Activity"
-            
-            line = f"{medal} **{name}** `{role_badge}`\n⚖️ {j_cnt}  🎥 {r_cnt}  ✅ {total}\n"
-            if i % 2 == 1:
-                left_col += line
-            else:
-                right_col += line
-
-        if left_col:
-            embed.add_field(name="👥 Staff Rankings (1, 3, 5…)",  value=left_col,  inline=True)
-        if right_col:
-            embed.add_field(name="👥 Staff Rankings (2, 4, 6…)", value=right_col, inline=True)
-
-        # Summary stats
-        total_matches = sum(s.get('total_count', 0) for _, s in top_staff)
-        total_judged  = sum(s.get('judge_count', 0) for _, s in top_staff)
-        total_rec     = sum(s.get('recorder_count', 0) for _, s in top_staff)
-        embed.add_field(
-            name="📈 Tournament Totals",
-            value=(
-                f"⚖️ **Total Judged:** {total_judged}\n"
-                f"🎥 **Total Recorded:** {total_rec}\n"
-                f"📊 **Combined Actions:** {total_matches}"
-            ),
-            inline=False
-        )
-
-        embed.set_footer(text=f"{ORGANIZATION_NAME} • Staff Leaderboard • ⚖️ Judge  🎥 Recorder  ✅ Total")
-
-        # Show reset button only to organiser / bot owner
-        is_owner = interaction.user.id == BOT_OWNER_ID
-        is_admin = interaction.guild and interaction.user.guild_permissions.administrator
-        head_organizer_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_organizer"])
-        view = JudgeLeaderboardView(show_reset=bool(head_organizer_role or is_owner or is_admin))
-
-        await interaction.response.send_message(embed=embed, view=view)
-
-    except Exception as e:
-        print(f"Error in staff-leaderboard command: {e}")
-        await interaction.response.send_message("❌ An error occurred while generating the leaderboard.", ephemeral=False)
 
 @tree.command(name="info", description="Display bot information and statistics")
 @with_guild_context
@@ -5561,8 +5492,9 @@ async def event_create(
         except Exception as e:
             print(f"Error loading poster image: {e}")
             
-    if is_local_thumb and thumb_file:
+    if is_local_thumb and thumb_file and not poster_image:
         files_to_send.append(thumb_file)
+
     
     embed.set_footer(text=f"Powered by • {ORGANIZATION_NAME}")
     
@@ -5573,11 +5505,15 @@ async def event_create(
     await interaction.followup.send("✅ Event created and posted to both channels! Reminder will ping captains 10 minutes before start.", ephemeral=False)
     
     # Post in Take-Schedule channel (with button)
+    # Post in Take-Schedule channel (with button)
     try:
-        schedule_channel = interaction.guild.get_channel(CHANNEL_IDS["take_schedule"])
+        schedule_channel = get_tournament_schedule_channel(interaction.guild, tournament)
+        if not schedule_channel:
+            schedule_channel = interaction.channel  # fallback to current channel
+
         if schedule_channel:
             staff_role_id = ROLE_IDS.get('staff')
-            staff_ping = f"<@&{staff_role_id}>" if staff_role_id else ("<@&" + str(ROLE_IDS['judge']) + ">" if ROLE_IDS.get('judge') else "@Staff")
+            staff_ping = f"<@&{staff_role_id}>" if staff_role_id else ("<@&" + str(ROLE_IDS.get('judge', '')) + ">" if ROLE_IDS.get('judge') else "@Staff")
             if files_to_send:
                 # Create copies of files for schedule channel
                 schedule_files = []
@@ -5600,6 +5536,7 @@ async def event_create(
             await interaction.followup.send("⚠️ Could not find Take-Schedule channel.", ephemeral=False)
     except Exception as e:
         await interaction.followup.send(f"⚠️ Could not post in Take-Schedule channel: {e}", ephemeral=False)
+
     
     # Post in the channel where command was used (without button)
     try:
@@ -5828,10 +5765,9 @@ async def event_result(
         staff_text += f"\n▪ Recorder: {recorder.mention}"
     embed.add_field(name="", value=staff_text, inline=False)
     
-    # Update staff statistics
+    # Update staff statistics for Judge (Recorder will be updated when match video link is uploaded)
     update_staff_stats(interaction.user, "judge")
-    if recorder:
-        update_staff_stats(recorder, "recorder")
+
     
     # Remarks Section
     embed.add_field(name="📝 Remarks", value=remarks, inline=False)
@@ -5841,9 +5777,7 @@ async def event_result(
     files_to_send = []
     screenshot_names = []
     
-    # Add local logo file if needed for embed thumbnail
-    if is_local_thumb and thumb_file:
-        files_to_send.append(thumb_file)
+
             
     # Find matching scheduled event to fetch its poster
     matching_event = None
@@ -5962,19 +5896,7 @@ async def event_result(
             else:
                 embed.add_field(name=field_title, value=value_text, inline=False)
         
-    if poster_image and os.path.exists(poster_image):
-        try:
-            with open(poster_image, 'rb') as f:
-                poster_data = f.read()
-                poster_file = discord.File(
-                    fp=io.BytesIO(poster_data),
-                    filename="event_poster.png"
-                )
-                embed.set_image(url="attachment://event_poster.png")
-                files_to_send.append(poster_file)
-        except Exception as e:
-            print(f"Error loading poster image for result embed: {e}")
-    
+    # Attach only user screenshots (no extra poster image or logo)
     for i, screenshot in enumerate(screenshots, 1):
         if screenshot:
             # Create a file object for each screenshot
@@ -6027,15 +5949,7 @@ async def event_result(
     results_msg = None
     current_msg = None
     try:
-        t_cfg_res = get_active_tournament_config(interaction.guild.id)
-        results_channel = None
-        if t_cfg_res:
-            res_ch_id = t_cfg_res.get('result')
-            if res_ch_id:
-                results_channel = interaction.guild.get_channel(int(res_ch_id))
-        if not results_channel:
-            results_channel = interaction.guild.get_channel(CHANNEL_IDS["results"])
-
+        results_channel = get_tournament_results_channel(interaction.guild, tournament)
         if results_channel:
             if files_to_send:
                 # Create copies of files for results channel (files can only be used once)
@@ -6085,14 +5999,8 @@ async def event_result(
 
     # Post staff attendance in Staff Attendance channel
     try:
-        t_cfg_att = get_active_tournament_config(interaction.guild.id)
-        staff_attendance_channel = None
-        if t_cfg_att:
-            att_ch_id = t_cfg_att.get('attendance')
-            if att_ch_id:
-                staff_attendance_channel = interaction.guild.get_channel(int(att_ch_id))
-        if not staff_attendance_channel:
-            staff_attendance_channel = interaction.guild.get_channel(CHANNEL_IDS["staff_attendance"])
+        staff_attendance_channel = get_tournament_attendance_channel(interaction.guild, tournament)
+
 
         if staff_attendance_channel:
             att_embed = discord.Embed(
@@ -6362,8 +6270,22 @@ async def event_result(
 
         if scheduled_any:
             await interaction.followup.send("🧹 Auto-cleanup scheduled: Related event(s) and match channel will be removed after 20 minutes.", ephemeral=False)
+            
+        # Mention recorder and prompt them to upload match video link
+        if recorder:
+            try:
+                rec_ping = recorder.mention if hasattr(recorder, 'mention') else f"<@{recorder}>"
+                prompt_msg = (
+                    f"📹 {rec_ping} **Please upload the match video link using `/link add`!**\n"
+                    f"⚠️ *Note: This match will only be counted as your work in staff stats after you upload the match video link.*"
+                )
+                if interaction.channel:
+                    await interaction.channel.send(content=prompt_msg)
+            except Exception as e:
+                print(f"Error prompting recorder for match video link: {e}")
     except Exception as e:
         print(f"Error scheduling auto-cleanup after results: {e}")
+
 
 @tree.command(name="time", description="Get a random match time from fixed 30-min slots (10:00-19:00 UTC)")
 @with_guild_context
@@ -6423,13 +6345,12 @@ async def available_events(interaction: discord.Interaction):
         is_owner = interaction.user.id == BOT_OWNER_ID if interaction.user else False
         is_admin = interaction.guild and interaction.user.guild_permissions.administrator if (interaction.user and interaction.guild) else False
         head_organizer_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_organizer"]) if interaction.user else None
-        head_helper_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_helper"]) if interaction.user else None
         helper_team_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["helper_team"]) if interaction.user else None
         judge_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["judge"]) if interaction.user else None
         recorder_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["recorder"]) if interaction.user else None
         staff_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["staff"]) if interaction.user else None
 
-        if not (head_organizer_role or head_helper_role or helper_team_role or judge_role or recorder_role or staff_role or is_owner or is_admin):
+        if not (head_organizer_role or helper_team_role or judge_role or recorder_role or staff_role or is_owner or is_admin):
             await interaction.response.send_message("❌ You need Organizer, Helper, Judge, or Staff role to view unassigned events.", ephemeral=False)
             return
 
@@ -7745,15 +7666,11 @@ async def event_edit(
             except Exception as e:
                 print(f"Could not delete old schedule message: {e}")
                 
-        # Send new message (use active tournament schedule channel first, then global fallback)
+        # Send new message (use tournament schedule channel first, then global fallback)
         try:
-            _sched_ch_edit = None
-            _t_cfg_sched_edit = get_active_tournament_config(interaction.guild.id)
-            if _t_cfg_sched_edit and _t_cfg_sched_edit.get('schedule_channel_id'):
-                _sched_ch_edit = interaction.guild.get_channel(int(_t_cfg_sched_edit['schedule_channel_id']))
-            if not _sched_ch_edit:
-                _sched_ch_edit = interaction.guild.get_channel(CHANNEL_IDS.get("take_schedule"))
-            schedule_channel = _sched_ch_edit
+            t_id_edit = event_to_edit.get('tournament_id') or event_to_edit.get('tournament')
+            schedule_channel = get_tournament_schedule_channel(interaction.guild, t_id_edit)
+
             if schedule_channel:
                 judge_ping = f"<@&{ROLE_IDS['judge']}>"
                 if files_to_send:
@@ -8718,9 +8635,9 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                             overwrites[staff_r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
                             allowed_role_ids.add(staff_r.id)
 
-                # From global guild config: head_organizer, organizer, head_helper, helper_team
+                # From global guild config: head_organizer, organizer, helper_team
                 cfg = get_guild_config(guild.id)
-                for role_key in ["head_organizer", "organizer", "head_helper", "helper_team"]:
+                for role_key in ["head_organizer", "organizer", "helper_team"]:
                     if r_id := cfg.get('role_ids', {}).get(role_key):
                         try:
                             r_id = int(r_id)
@@ -10432,6 +10349,145 @@ def get_active_tournament_config(guild_id: int) -> Optional[dict]:
             return t_cfg
     return None
 
+def get_tournament_schedule_channel(guild: discord.Guild, tournament_name_or_id: str = None) -> Optional[discord.TextChannel]:
+    """Find the schedule channel for a tournament by ID/Name, or active tournament, or global fallback."""
+    if not guild:
+        return None
+        
+    tournaments = load_guild_tournaments(guild.id)
+    t_cfg = None
+    
+    if tournament_name_or_id:
+        t_clean = str(tournament_name_or_id).strip().lower()
+        if t_clean in tournaments:
+            t_cfg = tournaments[t_clean]
+        else:
+            for tid, cfg in tournaments.items():
+                if cfg.get('name', '').lower() == t_clean:
+                    t_cfg = cfg
+                    break
+
+    if not t_cfg:
+        t_cfg = get_active_tournament_config(guild.id)
+
+    # 1. Check tournament config for schedule channel ID
+    if t_cfg:
+        ch_id = t_cfg.get('schedule') or t_cfg.get('schedule_channel') or t_cfg.get('schedule_channel_id')
+        if ch_id:
+            try:
+                ch = guild.get_channel(int(ch_id))
+                if ch:
+                    return ch
+            except Exception:
+                pass
+
+    # 2. Check global guild config (role/channel mapping)
+    cfg = get_guild_config(guild.id)
+    g_sched_id = cfg.get('channel_ids', {}).get('take_schedule') or CHANNEL_IDS.get("take_schedule")
+    if g_sched_id:
+        try:
+            ch = guild.get_channel(int(g_sched_id))
+            if ch:
+                return ch
+        except Exception:
+            pass
+
+    return None
+
+
+def get_tournament_results_channel(guild: discord.Guild, tournament_name_or_id: str = None) -> Optional[discord.TextChannel]:
+    """Find the results channel for a tournament by ID/Name, or active tournament, or global fallback."""
+    if not guild:
+        return None
+        
+    tournaments = load_guild_tournaments(guild.id)
+    t_cfg = None
+    
+    if tournament_name_or_id:
+        t_clean = str(tournament_name_or_id).strip().lower()
+        if t_clean in tournaments:
+            t_cfg = tournaments[t_clean]
+        else:
+            for tid, cfg in tournaments.items():
+                if cfg.get('name', '').lower() == t_clean:
+                    t_cfg = cfg
+                    break
+
+    if not t_cfg:
+        t_cfg = get_active_tournament_config(guild.id)
+
+    # 1. Check tournament config for result channel ID
+    if t_cfg:
+        ch_id = t_cfg.get('result') or t_cfg.get('result_channel') or t_cfg.get('results_channel') or t_cfg.get('Result_Channel_ID')
+        if ch_id:
+            try:
+                ch = guild.get_channel(int(ch_id))
+                if ch:
+                    return ch
+            except Exception:
+                pass
+
+    # 2. Check global guild config (role/channel mapping)
+    cfg = get_guild_config(guild.id)
+    g_res_id = cfg.get('channel_ids', {}).get('results') or CHANNEL_IDS.get("results")
+    if g_res_id:
+        try:
+            ch = guild.get_channel(int(g_res_id))
+            if ch:
+                return ch
+        except Exception:
+            pass
+
+    return None
+
+
+def get_tournament_attendance_channel(guild: discord.Guild, tournament_name_or_id: str = None) -> Optional[discord.TextChannel]:
+    """Find the staff attendance channel for a tournament by ID/Name, or active tournament, or global fallback."""
+    if not guild:
+        return None
+        
+    tournaments = load_guild_tournaments(guild.id)
+    t_cfg = None
+    
+    if tournament_name_or_id:
+        t_clean = str(tournament_name_or_id).strip().lower()
+        if t_clean in tournaments:
+            t_cfg = tournaments[t_clean]
+        else:
+            for tid, cfg in tournaments.items():
+                if cfg.get('name', '').lower() == t_clean:
+                    t_cfg = cfg
+                    break
+
+    if not t_cfg:
+        t_cfg = get_active_tournament_config(guild.id)
+
+    # 1. Check tournament config for attendance channel ID
+    if t_cfg:
+        ch_id = t_cfg.get('attendance') or t_cfg.get('attendance_channel') or t_cfg.get('Attendance_Channel_ID')
+        if ch_id:
+            try:
+                ch = guild.get_channel(int(ch_id))
+                if ch:
+                    return ch
+            except Exception:
+                pass
+
+    # 2. Check global guild config (role/channel mapping)
+    cfg = get_guild_config(guild.id)
+    g_att_id = cfg.get('channel_ids', {}).get('staff_attendance') or CHANNEL_IDS.get("staff_attendance")
+    if g_att_id:
+        try:
+            ch = guild.get_channel(int(g_att_id))
+            if ch:
+                return ch
+        except Exception:
+            pass
+
+    return None
+
+
+
 async def log_bot_activity(guild: discord.Guild, embed: discord.Embed):
     if not guild:
         return
@@ -10662,9 +10718,10 @@ async def build_tournament_embed(interaction: discord.Interaction, t_data: dict,
     embed.add_field(name="📊 Attendance Channel",  value=chan_mention('attendance'),    inline=True)
     embed.add_field(name="📝 Challonge Logs",      value=chan_mention('challonge_logs'),  inline=True)
 
-    # Row 5: Bot Logs | Thumbnail
-    embed.add_field(name="🤖 Bot Logs Channel",    value=chan_mention('bot_logs'),        inline=True)
-    embed.add_field(name="🖼️ Thumbnail",           value=thumb_str,  inline=True)
+    # Row 5: Schedule Channel | Bot Logs | Thumbnail
+    embed.add_field(name="📋 Schedule Channel",    value=chan_mention('schedule'),         inline=True)
+    embed.add_field(name="🤖 Bot Logs Channel",    value=chan_mention('bot_logs'),         inline=True)
+    embed.add_field(name="🖼️ Thumbnail",           value=thumb_str,                        inline=True)
 
     # Row 7: Open Ticket Categories list
     open_cats = []
@@ -10718,6 +10775,9 @@ tournament_group = app_commands.Group(name="tournament", description="Manage mul
     bot_logs="Channel for bot activity logs",
     challonge_logs="Channel for Challonge bracket logs",
     closed_category="Category where closed tickets are stored",
+    open_category_1="1st category for ticket opening (open tickets)",
+    open_category_2="2nd category for ticket opening (open tickets)",
+    open_category_3="3rd category for ticket opening (open tickets)",
     auto_room="Toggle automatic room creation for this tournament"
 )
 @with_guild_context
@@ -10737,6 +10797,9 @@ async def tournament_add(
     bot_logs: Optional[discord.TextChannel] = None,
     challonge_logs: Optional[discord.TextChannel] = None,
     closed_category: Optional[discord.CategoryChannel] = None,
+    open_category_1: Optional[discord.CategoryChannel] = None,
+    open_category_2: Optional[discord.CategoryChannel] = None,
+    open_category_3: Optional[discord.CategoryChannel] = None,
     auto_room: Optional[bool] = False
 ):
     if not interaction.guild_id:
@@ -10754,18 +10817,21 @@ async def tournament_add(
     t_data["id"] = t_id_clean
     t_data["name"] = name.strip()
     t_data["state"] = "pending"
-    if challonge_key: t_data["key"] = challonge_key.strip()
-    if bracket_link: t_data["challonge_bracket_link"] = bracket_link.strip()
-    if sheet_link: t_data["google_sheet_link"] = sheet_link.strip()
-    if attendance_channel: t_data["attendance_channel"] = attendance_channel.id
-    if transcript_channel: t_data["transcript_channel"] = transcript_channel.id
-    if schedule_channel: t_data["schedule_channel"] = schedule_channel.id
-    if rules_channel: t_data["rules_channel"] = rules_channel.id
-    if result_channel: t_data["result_channel"] = result_channel.id
-    if deadline_channel: t_data["deadline_channel"] = deadline_channel.id
-    if bot_logs: t_data["bot_logs"] = bot_logs.id
-    if challonge_logs: t_data["challonge_logs"] = challonge_logs.id
-    if closed_category: t_data["closed_ticket_1"] = closed_category.id
+    if challonge_key:       t_data["key"] = challonge_key.strip()
+    if bracket_link:        t_data["challonge_bracket_link"] = bracket_link.strip()
+    if sheet_link:          t_data["google_sheet_link"] = sheet_link.strip()
+    if attendance_channel:  t_data["attendance"] = attendance_channel.id
+    if transcript_channel:  t_data["transcript"] = transcript_channel.id
+    if schedule_channel:    t_data["schedule"] = schedule_channel.id
+    if rules_channel:       t_data["rules"] = rules_channel.id
+    if result_channel:      t_data["result"] = result_channel.id
+    if deadline_channel:    t_data["deadline"] = deadline_channel.id
+    if bot_logs:            t_data["bot_logs"] = bot_logs.id
+    if challonge_logs:      t_data["challonge_logs"] = challonge_logs.id
+    if closed_category:     t_data["closed_ticket_1"] = closed_category.id
+    if open_category_1:     t_data["ticket_open_category_1"] = open_category_1.id
+    if open_category_2:     t_data["ticket_open_category_2"] = open_category_2.id
+    if open_category_3:     t_data["ticket_open_category_3"] = open_category_3.id
     if auto_room is not None: t_data["auto_room_creation"] = auto_room
 
     tournaments[t_id_clean] = t_data
@@ -10795,6 +10861,9 @@ async def tournament_add(
     bot_logs="Bot activity logs channel",
     challonge_logs="Challonge logs channel",
     closed_category="Closed ticket category",
+    open_category_1="1st category for ticket opening (open tickets)",
+    open_category_2="2nd category for ticket opening (open tickets)",
+    open_category_3="3rd category for ticket opening (open tickets)",
     auto_room="Toggle automatic room creation"
 )
 @app_commands.autocomplete(tournament=tournament_autocomplete)
@@ -10821,6 +10890,9 @@ async def tournament_edit(
     bot_logs: Optional[discord.TextChannel] = None,
     challonge_logs: Optional[discord.TextChannel] = None,
     closed_category: Optional[discord.CategoryChannel] = None,
+    open_category_1: Optional[discord.CategoryChannel] = None,
+    open_category_2: Optional[discord.CategoryChannel] = None,
+    open_category_3: Optional[discord.CategoryChannel] = None,
     auto_room: Optional[bool] = None
 ):
     if not interaction.guild_id:
@@ -10835,20 +10907,23 @@ async def tournament_edit(
         return
 
     t_data = tournaments[t_id_clean]
-    if name: t_data["name"] = name.strip()
-    if state: t_data["state"] = state
-    if challonge_key: t_data["key"] = challonge_key.strip()
-    if bracket_link: t_data["challonge_bracket_link"] = bracket_link.strip()
-    if sheet_link: t_data["google_sheet_link"] = sheet_link.strip()
-    if attendance_channel: t_data["attendance_channel"] = attendance_channel.id
-    if transcript_channel: t_data["transcript_channel"] = transcript_channel.id
-    if schedule_channel: t_data["schedule_channel"] = schedule_channel.id
-    if rules_channel: t_data["rules_channel"] = rules_channel.id
-    if result_channel: t_data["result_channel"] = result_channel.id
-    if deadline_channel: t_data["deadline_channel"] = deadline_channel.id
-    if bot_logs: t_data["bot_logs"] = bot_logs.id
-    if challonge_logs: t_data["challonge_logs"] = challonge_logs.id
-    if closed_category: t_data["closed_ticket_1"] = closed_category.id
+    if name:               t_data["name"] = name.strip()
+    if state:              t_data["state"] = state
+    if challonge_key:      t_data["key"] = challonge_key.strip()
+    if bracket_link:       t_data["challonge_bracket_link"] = bracket_link.strip()
+    if sheet_link:         t_data["google_sheet_link"] = sheet_link.strip()
+    if attendance_channel: t_data["attendance"] = attendance_channel.id
+    if transcript_channel: t_data["transcript"] = transcript_channel.id
+    if schedule_channel:   t_data["schedule"] = schedule_channel.id
+    if rules_channel:      t_data["rules"] = rules_channel.id
+    if result_channel:     t_data["result"] = result_channel.id
+    if deadline_channel:   t_data["deadline"] = deadline_channel.id
+    if bot_logs:           t_data["bot_logs"] = bot_logs.id
+    if challonge_logs:     t_data["challonge_logs"] = challonge_logs.id
+    if closed_category:    t_data["closed_ticket_1"] = closed_category.id
+    if open_category_1:    t_data["ticket_open_category_1"] = open_category_1.id
+    if open_category_2:    t_data["ticket_open_category_2"] = open_category_2.id
+    if open_category_3:    t_data["ticket_open_category_3"] = open_category_3.id
     if auto_room is not None: t_data["auto_room_creation"] = auto_room
 
     save_guild_tournaments(interaction.guild_id, tournaments)
@@ -10876,21 +10951,28 @@ async def tournament_delete(interaction: discord.Interaction, tournament: str):
         await interaction.response.send_message(f"❌ Tournament `{t_id_clean}` not found.", ephemeral=True)
         return
 
+    # Grab the human-readable name for matching against event data
+    t_name = str(tournaments[t_id_clean].get('name', '')).lower()
+
     # 1. Delete tournament configuration from memory & local JSON
     del tournaments[t_id_clean]
     save_guild_tournaments(interaction.guild_id, tournaments)
 
     # 2. Clean up scheduled events in memory for this tournament
+    #    Match by tournament ID or tournament name (handles legacy entries)
     removed_events = 0
+    removed_event_ids = []
     for ev_id, ev_data in list(scheduled_events.items()):
-        ev_t = str(ev_data.get('tournament', '') or ev_data.get('tournament_id', '')).lower()
-        if ev_t == t_id_clean:
+        ev_t_id = str(ev_data.get('tournament_id', '') or '').lower()
+        ev_t_name = str(ev_data.get('tournament', '') or '').lower()
+        if ev_t_id == t_id_clean or ev_t_name == t_id_clean or (t_name and ev_t_name == t_name):
             if ev_id in reminder_tasks:
                 try:
                     reminder_tasks[ev_id].cancel()
                     del reminder_tasks[ev_id]
                 except Exception:
                     pass
+            removed_event_ids.append(ev_id)
             del scheduled_events[ev_id]
             removed_events += 1
     if removed_events > 0:
@@ -10899,7 +10981,8 @@ async def tournament_delete(interaction: discord.Interaction, tournament: str):
     # 3. Clean up deadlines in memory for this tournament
     removed_deadlines = 0
     for dl_id, dl_data in list(scheduled_deadlines.items()):
-        if str(dl_data.get('tournament_id', '')).lower() == t_id_clean:
+        dl_t = str(dl_data.get('tournament_id', '') or dl_data.get('tournament', '') or '').lower()
+        if dl_t == t_id_clean or (t_name and dl_t == t_name):
             del scheduled_deadlines[dl_id]
             removed_deadlines += 1
     if removed_deadlines > 0:
@@ -10912,22 +10995,45 @@ async def tournament_delete(interaction: discord.Interaction, tournament: str):
     # 4. Delete tournament records, matches, match staff & deadlines from Supabase
     if supabase_client:
         try:
-            # Delete match staff for matches in this tournament
-            match_res = supabase_client.table("Matches").select("Match_ID").eq("Tournament_ID", t_id_clean).execute()
-            if match_res and match_res.data:
-                for m_row in match_res.data:
-                    m_id = m_row.get("Match_ID")
-                    if m_id:
-                        try:
-                            supabase_client.table("MatchStaff").delete().eq("Match_ID", m_id).execute()
-                        except Exception:
-                            pass
-            
-            # Delete matches for this tournament
+            # Gather all match IDs for this tournament (by Tournament_ID field or by in-memory event IDs)
+            all_match_ids = set(removed_event_ids)
+            try:
+                match_res = supabase_client.table("Matches").select("Match_ID").eq("Tournament_ID", t_id_clean).execute()
+                if match_res and match_res.data:
+                    for m_row in match_res.data:
+                        if m_row.get("Match_ID"):
+                            all_match_ids.add(m_row["Match_ID"])
+            except Exception:
+                pass
+            # Also try matching by tournament name (for rows with NULL Tournament_ID)
+            if t_name:
+                try:
+                    match_res2 = supabase_client.table("Matches").select("Match_ID").ilike("Tournament_ID", t_name).execute()
+                    if match_res2 and match_res2.data:
+                        for m_row in match_res2.data:
+                            if m_row.get("Match_ID"):
+                                all_match_ids.add(m_row["Match_ID"])
+                except Exception:
+                    pass
+
+            # Delete MatchStaff for all gathered match IDs
+            for m_id in all_match_ids:
+                try:
+                    supabase_client.table("MatchStaff").delete().eq("Match_ID", m_id).execute()
+                except Exception:
+                    pass
+
+            # Delete Matches by Tournament_ID
             try:
                 supabase_client.table("Matches").delete().eq("Tournament_ID", t_id_clean).execute()
             except Exception:
                 pass
+            # Also delete any remaining gathered matches by ID (handles NULL Tournament_ID rows)
+            for m_id in all_match_ids:
+                try:
+                    supabase_client.table("Matches").delete().eq("Match_ID", m_id).execute()
+                except Exception:
+                    pass
 
             # Delete deadlines for this tournament
             try:
@@ -10937,7 +11043,7 @@ async def tournament_delete(interaction: discord.Interaction, tournament: str):
 
             # Delete tournament record from Tournaments table
             supabase_client.table("Tournaments").delete().eq("Tournament_ID", t_id_clean).execute()
-            print(f"[Supabase] ✅ Cleaned tournament '{t_id_clean}' and all associated matches, staff, and deadlines.")
+            print(f"[Supabase] ✅ Cleaned tournament '{t_id_clean}' and all associated matches ({len(all_match_ids)}), staff, and deadlines.")
         except Exception as e:
             print(f"[Supabase] ⚠️ Error deleting tournament '{t_id_clean}' data: {e}")
 
@@ -10946,6 +11052,7 @@ async def tournament_delete(interaction: discord.Interaction, tournament: str):
         f"⚙️ **Server roles and settings remain untouched.**",
         ephemeral=False
     )
+
 
 
 @tournament_group.command(name="info", description="Display configuration details of a tournament")
@@ -11070,6 +11177,132 @@ async def match_autocomplete(
         return []
 
 
+@tree.command(name="event-result-edit", description="Edit a previously posted match result (Head Organizer/Judge only)")
+@app_commands.describe(
+    match="Select the match to edit (type name or ID to search)",
+    winner_team_name="Updated winner team name (optional)",
+    loser_team_name="Updated loser team name (optional)",
+    winner_score="Updated winner score (optional)",
+    loser_score="Updated loser score (optional)",
+    remarks="Updated match remarks (optional)",
+    disqualified="Update disqualification status (optional)",
+    judge="Updated judge member (optional)",
+    recorder="Updated recorder member (optional)"
+)
+@app_commands.choices(
+    disqualified=[
+        app_commands.Choice(name="Winner Disqualified", value="Winner"),
+        app_commands.Choice(name="Loser Disqualified", value="Loser"),
+        app_commands.Choice(name="Both Disqualified (0:0)", value="Both"),
+        app_commands.Choice(name="None (Clear DQ)", value="None"),
+    ]
+)
+@app_commands.autocomplete(match=match_autocomplete)
+@with_guild_context
+async def event_result_edit(
+    interaction: discord.Interaction,
+    match: str,
+    winner_team_name: str = None,
+    loser_team_name: str = None,
+    winner_score: int = None,
+    loser_score: int = None,
+    remarks: str = None,
+    disqualified: app_commands.Choice[str] = None,
+    judge: discord.Member = None,
+    recorder: discord.Member = None
+):
+    """Edit a previously posted match result by selecting the match from the autocomplete dropdown."""
+    await interaction.response.defer(ephemeral=False)
+
+    if interaction.guild:
+        current_guild_id.set(interaction.guild.id)
+
+    # Permission check — same as event-result
+    if not has_event_result_permission(interaction):
+        await interaction.followup.send("❌ You need **Head Organizer** or **Judge** role to edit match results.", ephemeral=False)
+        return
+
+    # Find the event
+    ev_id, ev_data = find_event_by_name_or_id(interaction.guild.id, match)
+    if not ev_id or not ev_data:
+        await interaction.followup.send(
+            "❌ Match not found. Please select from the autocomplete dropdown or provide a valid Match ID/Name.",
+            ephemeral=False
+        )
+        return
+
+    # Check that at least one field was provided
+    if not any([winner_team_name, loser_team_name, winner_score is not None,
+                loser_score is not None, remarks, disqualified, judge, recorder]):
+        await interaction.followup.send("❌ Please provide at least one field to update.", ephemeral=False)
+        return
+
+    changes = []
+    if winner_team_name:
+        ev_data['team1_name'] = winner_team_name
+        changes.append(f"Winner Team: `{winner_team_name}`")
+    if loser_team_name:
+        ev_data['team2_name'] = loser_team_name
+        changes.append(f"Loser Team: `{loser_team_name}`")
+    if winner_score is not None:
+        ev_data['winner_score'] = winner_score
+        changes.append(f"Winner Score: `{winner_score}`")
+    if loser_score is not None:
+        ev_data['loser_score'] = loser_score
+        changes.append(f"Loser Score: `{loser_score}`")
+    if remarks:
+        ev_data['remarks'] = remarks
+        changes.append(f"Remarks: `{remarks}`")
+    if disqualified:
+        if disqualified.value == "None":
+            ev_data.pop('disqualified', None)
+            changes.append("Disqualified: `Cleared`")
+        else:
+            ev_data['disqualified'] = disqualified.value
+            changes.append(f"Disqualified: `{disqualified.name}`")
+    if judge:
+        ev_data['judge'] = judge.id
+        ev_data['judge_name'] = judge.name
+        changes.append(f"Judge: {judge.mention}")
+    if recorder:
+        ev_data['recorder'] = recorder.id
+        ev_data['recorder_name'] = recorder.name
+        changes.append(f"Recorder: {recorder.mention}")
+
+    # Update match name from new team names
+    t1_n = ev_data.get('team1_name') or 'Team 1'
+    t2_n = ev_data.get('team2_name') or 'Team 2'
+    ev_data['match_name'] = f"{t1_n} vs {t2_n}"
+
+    save_scheduled_events()
+    asyncio.create_task(save_event_to_supabase(ev_id, ev_data))
+
+    # Update posted result embeds in Discord
+    embed_update_note = ""
+    try:
+        await update_results_embed_with_links(interaction.guild, ev_data)
+        embed_update_note = "\n✅ Posted result embeds updated in Discord channels."
+    except Exception as e:
+        print(f"Error updating result embeds in event_result_edit: {e}")
+
+    result_embed = discord.Embed(
+        title=f"✅ Match Result Edited — `{ev_id}`",
+        description=f"**Match:** {ev_data.get('match_name')}\n\n" + "\n".join(f"• {c}" for c in changes) + embed_update_note,
+        color=discord.Color.green(),
+        timestamp=discord.utils.utcnow()
+    )
+    result_embed.set_footer(text=f"{ORGANIZATION_NAME} • Match Result Edit")
+    await interaction.followup.send(embed=result_embed, ephemeral=False)
+
+    # Log the edit
+    log_embed = discord.Embed(
+        title="✏️ Match Result Edited",
+        description=f"**{interaction.user.display_name}** edited result for `{ev_id}` ({ev_data.get('match_name')}).\n\n" + "\n".join(f"• {c}" for c in changes),
+        color=discord.Color.orange(),
+        timestamp=discord.utils.utcnow()
+    )
+    log_embed.set_footer(text=f"Edited by {interaction.user.display_name}")
+    await log_bot_activity(interaction.guild, log_embed)
 
 
 # =========================================================================
@@ -11167,10 +11400,40 @@ async def link_add(
         key = "judge_link"
         
     ev_data[key] = link_stripped
+
+    # Credit recorder in staff stats once video link is uploaded
+    rec_obj = ev_data.get('recorder')
+    rec_credited_name = None
+    if rec_obj and not ev_data.get('recorder_credited'):
+        rec_mem = None
+        if isinstance(rec_obj, (discord.Member, discord.User)):
+            rec_mem = rec_obj
+        elif isinstance(rec_obj, (int, str)) and str(rec_obj).isdigit():
+            rec_mem = interaction.guild.get_member(int(rec_obj))
+            
+        if not rec_mem and isinstance(rec_obj, str) and rec_obj.isdigit():
+            try:
+                rec_mem = await interaction.guild.fetch_member(int(rec_obj))
+            except:
+                pass
+
+        if rec_mem:
+            update_staff_stats(rec_mem, "recorder")
+            ev_data['recorder_credited'] = True
+            rec_credited_name = rec_mem.mention
+        elif interaction.user:
+            # Fallback to credit the user uploading the video link
+            update_staff_stats(interaction.user, "recorder")
+            ev_data['recorder_credited'] = True
+            rec_credited_name = interaction.user.mention
+
     save_scheduled_events()
     asyncio.create_task(save_event_to_supabase(ev_id, ev_data))
 
     event_saved_note = f"✅ Link saved to event record **`{ev_id}`** ({ev_data.get('match_name', 'Match')})."
+    if rec_credited_name:
+        event_saved_note += f"\n🎉 **Recorder credit registered in staff stats for {rec_credited_name}!**"
+
     if ev_data.get('result_added') or ev_data.get('results_message_id'):
         try:
             await update_results_embed_with_links(interaction.guild, ev_data)
@@ -11519,64 +11782,228 @@ async def staff_fire(interaction: discord.Interaction, member: discord.Member, r
     await interaction.followup.send(embed=embed, ephemeral=False)
 
 
-@staff_group.command(name="work_count", description="View staff match count and activity statistics")
-@app_commands.describe(member="Optional staff member to filter")
-@with_guild_context
-async def staff_work_count(interaction: discord.Interaction, member: discord.Member = None):
-    """View staff activity & work count (Image 2 style)."""
-    await interaction.response.defer(ephemeral=False)
+async def render_staff_work_count(
+    interaction: discord.Interaction,
+    tournament: Optional[str] = None,
+    default_wins: Optional[str] = "Including",
+    member: Optional[discord.Member] = None
+):
+    """Render 4-embed staff work count layout matching user screenshot."""
+    if not interaction.response.is_done():
+        await interaction.response.defer(ephemeral=False)
 
-    guild_stats = get_guild_staff_stats(interaction.guild.id)
-    if member:
-        uid = str(member.id)
-        s_data = guild_stats.get(uid, {"judge_count": 0, "recorder_count": 0, "total_count": 0})
-        embed = discord.Embed(
-            title=f"📊 Staff Work Count — {member.display_name}",
-            description=f"Activity breakdown for {member.mention}",
-            color=discord.Color.gold(),
-            timestamp=discord.utils.utcnow()
-        )
-        embed.add_field(name="⚖️ Judge Count", value=str(s_data.get("judge_count", 0)), inline=True)
-        embed.add_field(name="🎥 Recorder Count", value=str(s_data.get("recorder_count", 0)), inline=True)
-        embed.add_field(name="🏆 Total Matches", value=str(s_data.get("total_count", 0)), inline=True)
-        embed.set_footer(text=f"{ORGANIZATION_NAME} • Staff Stats")
-        await interaction.followup.send(embed=embed, ephemeral=False)
+    guild = interaction.guild
+    if not guild:
+        await interaction.followup.send("❌ This command can only be used in a server.", ephemeral=True)
         return
 
-    # Leaderboard view if no single member specified
-    sorted_stats = sorted(guild_stats.items(), key=lambda x: x[1].get("total_count", 0), reverse=True)
-    embed = discord.Embed(
-        title="📊 Staff Work Count Leaderboard",
-        description="Overview of matches judged and recorded by staff members:",
-        color=discord.Color.gold(),
+    tournaments = load_guild_tournaments(guild.id)
+    
+    # Resolve target tournament display name and ID
+    target_t_id = None
+    target_t_name = "All Tournaments"
+    dw_setting = default_wins or "Including"
+    
+    if tournament:
+        t_clean = tournament.strip().lower()
+        if t_clean in tournaments:
+            target_t_id = t_clean
+            target_t_name = tournaments[t_clean].get('name') or t_clean
+        else:
+            for tid, tcfg in tournaments.items():
+                if tcfg.get('name', '').lower() == t_clean:
+                    target_t_id = tid
+                    target_t_name = tcfg.get('name') or tid
+                    break
+            if not target_t_id:
+                target_t_name = tournament
+    else:
+        # Check for active tournament
+        for tid, tcfg in tournaments.items():
+            if tcfg.get('state') == 'active':
+                target_t_id = tid
+                target_t_name = tcfg.get('name') or tid
+                break
+
+    # Stats containers: user_id -> {'matches': set(), 'rounds': set(), 'name': str}
+    judges = {}
+    recorders = {}
+
+    # 1. Gather stats from scheduled_events
+    for ev_id, ev_data in scheduled_events.items():
+        if ev_data.get('guild_id') and str(ev_data.get('guild_id')) != str(guild.id):
+            continue
+            
+        # Check tournament filter
+        if target_t_id:
+            ev_t_id = str(ev_data.get('tournament_id') or '').lower()
+            ev_t_name = str(ev_data.get('tournament') or '').lower()
+            if ev_t_id != target_t_id and ev_t_name != target_t_id and ev_t_name != target_t_name.lower():
+                continue
+                
+        # Check default wins filter
+        if dw_setting == "Excluded" and ev_data.get('disqualified'):
+            continue
+            
+        rnd = str(ev_data.get('round') or 'R1')
+        
+        # Judge check
+        j_val = ev_data.get('judge') or ev_data.get('result_judge')
+        if j_val:
+            u_id = str(getattr(j_val, 'id', j_val))
+            u_name = getattr(j_val, 'name', ev_data.get('judge_name', f"User_{u_id}"))
+            if u_id not in judges:
+                judges[u_id] = {'matches': set(), 'rounds': set(), 'name': u_name}
+            judges[u_id]['matches'].add(ev_id)
+            judges[u_id]['rounds'].add(rnd)
+            if hasattr(j_val, 'name'):
+                judges[u_id]['name'] = j_val.name
+
+        # Recorder check (only count if match video link is uploaded or recorder_credited is True)
+        r_val = ev_data.get('recorder')
+        r_has_link = bool(ev_data.get('recorder_link') or ev_data.get('recording_link') or ev_data.get('recorder_credited'))
+        if r_val and r_has_link:
+            u_id = str(getattr(r_val, 'id', r_val))
+            u_name = getattr(r_val, 'name', ev_data.get('recorder_name', f"User_{u_id}"))
+            if u_id not in recorders:
+                recorders[u_id] = {'matches': set(), 'rounds': set(), 'name': u_name}
+            recorders[u_id]['matches'].add(ev_id)
+            recorders[u_id]['rounds'].add(rnd)
+            if hasattr(r_val, 'name'):
+                recorders[u_id]['name'] = r_val.name
+
+
+    # 2. Merge from persistent staff_stats for historical counts if needed
+    guild_stats = get_guild_staff_stats(guild.id)
+    for u_id, s_data in guild_stats.items():
+        j_cnt = s_data.get('judge_count', 0)
+        r_cnt = s_data.get('recorder_count', 0)
+        s_name = s_data.get('name', f"User_{u_id}")
+        
+        if j_cnt > 0 and u_id not in judges and not target_t_id:
+            fake_matches = {f"stat_j_{i}" for i in range(j_cnt)}
+            fake_rounds = {f"rnd_{i//2}" for i in range(j_cnt)}
+            judges[u_id] = {'matches': fake_matches, 'rounds': fake_rounds, 'name': s_name}
+            
+        if r_cnt > 0 and u_id not in recorders and not target_t_id:
+            fake_matches = {f"stat_r_{i}" for i in range(r_cnt)}
+            fake_rounds = {f"rnd_{i//2}" for i in range(r_cnt)}
+            recorders[u_id] = {'matches': fake_matches, 'rounds': fake_rounds, 'name': s_name}
+
+    # Filter single member if specified
+    if member:
+        target_uid = str(member.id)
+        judges = {k: v for k, v in judges.items() if k == target_uid}
+        recorders = {k: v for k, v in recorders.items() if k == target_uid}
+
+    # Format entry line
+    def format_staff_entry(idx, u_id, data):
+        m_obj = guild.get_member(int(u_id)) if u_id.isdigit() else None
+        if m_obj:
+            mention = m_obj.mention
+            uname = m_obj.name
+        else:
+            mention = f"<@{u_id}>" if u_id.isdigit() else f"@{u_id}"
+            uname = data.get('name', u_id)
+            
+        m_count = len(data['matches'])
+        r_count = len(data['rounds'])
+        return f"{idx}. {mention} **{uname}** - {m_count} matches ( {r_count} rounds)"
+
+    # Header Embed (Embed 1)
+    org_name = ORGANIZATION_NAME
+    header_embed = discord.Embed(
+        title="✔️ Staff Work Count",
+        color=discord.Color(0x2F3136),
         timestamp=discord.utils.utcnow()
     )
+    header_embed.add_field(name="🏆 Tournament", value=target_t_name, inline=False)
+    header_embed.add_field(name="🥀 Default Wins", value=dw_setting, inline=False)
+    header_embed.add_field(name="👑 Requested By", value=interaction.user.mention, inline=False)
+    
+    t_slug = target_t_name.replace(' ', '_')
+    header_embed.set_footer(text=f"{org_name} · {t_slug}")
 
-    if not sorted_stats:
-        embed.description = "No staff activity recorded yet."
+    # Judges Embed (Embed 2 - Red)
+    sorted_judges = sorted(judges.items(), key=lambda x: (len(x[1]['matches']), len(x[1]['rounds'])), reverse=True)
+    judges_embed = discord.Embed(
+        title="🧑‍⚖️ Judges",
+        color=discord.Color.red()
+    )
+    if sorted_judges:
+        judge_lines = [format_staff_entry(i, uid, d) for i, (uid, d) in enumerate(sorted_judges, 1)]
+        judges_embed.description = "\n".join(judge_lines[:25])
     else:
-        for idx, (uid, stats) in enumerate(sorted_stats[:15], 1):
-            m_obj = interaction.guild.get_member(int(uid))
-            m_name = m_obj.display_name if m_obj else stats.get("name", f"User {uid}")
-            j_cnt = stats.get("judge_count", 0)
-            r_cnt = stats.get("recorder_count", 0)
-            t_cnt = stats.get("total_count", 0)
-            embed.add_field(
-                name=f"{idx}. {m_name}",
-                value=f"⚖️ **Judge:** {j_cnt} | 🎥 **Recorder:** {r_cnt} | 🏆 **Total:** {t_cnt}",
-                inline=False
-            )
+        judges_embed.description = "*No judge activity recorded.*"
 
-    embed.set_footer(text=f"{ORGANIZATION_NAME} • Staff Stats")
-    await interaction.followup.send(embed=embed, ephemeral=False)
+    # Recorders Embed (Embed 3 - Green)
+    sorted_recorders = sorted(recorders.items(), key=lambda x: (len(x[1]['matches']), len(x[1]['rounds'])), reverse=True)
+    recorders_embed = discord.Embed(
+        title="🎥 Recorders",
+        color=discord.Color.green()
+    )
+    if sorted_recorders:
+        recorder_lines = [format_staff_entry(i, uid, d) for i, (uid, d) in enumerate(sorted_recorders, 1)]
+        recorders_embed.description = "\n".join(recorder_lines[:25])
+    else:
+        recorders_embed.description = "*No recorder activity recorded.*"
+
+    # Combined Embed (Embed 4 - Blue)
+    all_uids = set(judges.keys()).union(set(recorders.keys()))
+    combined_data = {}
+    for uid in all_uids:
+        j_d = judges.get(uid, {'matches': set(), 'rounds': set(), 'name': ''})
+        r_d = recorders.get(uid, {'matches': set(), 'rounds': set(), 'name': ''})
+        
+        c_matches = j_d['matches'] | r_d['matches']
+        c_rounds = j_d['rounds'] | r_d['rounds']
+        c_name = j_d.get('name') or r_d.get('name') or uid
+        
+        combined_data[uid] = {
+            'matches': c_matches,
+            'rounds': c_rounds,
+            'name': c_name
+        }
+        
+    sorted_combined = sorted(combined_data.items(), key=lambda x: (len(x[1]['matches']), len(x[1]['rounds'])), reverse=True)
+    combined_embed = discord.Embed(
+        title="🎥🧑‍⚖️ Judge & Recorder",
+        color=discord.Color.blue()
+    )
+    if sorted_combined:
+        combined_lines = [format_staff_entry(i, uid, d) for i, (uid, d) in enumerate(sorted_combined, 1)]
+        combined_embed.description = "\n".join(combined_lines[:25])
+    else:
+        combined_embed.description = "*No staff activity recorded.*"
+
+    await interaction.followup.send(embeds=[header_embed, judges_embed, recorders_embed, combined_embed], ephemeral=False)
 
 
-@staff_group.command(name="stats", description="View staff match activity stats")
-@app_commands.describe(member="Optional staff member to filter")
+@staff_group.command(name="work", description="View staff match count and activity statistics")
+@app_commands.describe(
+    tournament="Select tournament to filter (optional)",
+    default_wins="Include or exclude default wins / DQs",
+    member="Optional staff member to filter"
+)
+@app_commands.choices(
+    default_wins=[
+        app_commands.Choice(name="Including", value="Including"),
+        app_commands.Choice(name="Excluded", value="Excluded"),
+    ]
+)
+@app_commands.autocomplete(tournament=tournament_autocomplete)
 @with_guild_context
-async def staff_stats_cmd(interaction: discord.Interaction, member: discord.Member = None):
-    """Alias for staff work_count."""
-    await staff_work_count.callback(interaction, member)
+async def staff_work_cmd(
+    interaction: discord.Interaction,
+    tournament: Optional[str] = None,
+    default_wins: Optional[app_commands.Choice[str]] = None,
+    member: Optional[discord.Member] = None
+):
+    """Single unified /staff work command matching image layout."""
+    dw_val = default_wins.value if default_wins else "Including"
+    await render_staff_work_count(interaction, tournament=tournament, default_wins=dw_val, member=member)
+
+
 
 
 @staff_group.command(name="update", description="Update a staff member's match count in the database")
