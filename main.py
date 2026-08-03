@@ -4278,7 +4278,11 @@ def has_event_create_permission(interaction):
 def has_event_result_permission(interaction):
     if interaction.user.id == BOT_OWNER_ID:
         return True
-    if interaction.guild and interaction.user.guild_permissions.administrator:
+    if interaction.guild and (
+        interaction.user.guild_permissions.administrator or
+        interaction.user.guild_permissions.manage_guild or
+        interaction.user.guild_permissions.manage_events
+    ):
         return True
     if not interaction.guild:
         return False
@@ -5805,6 +5809,8 @@ async def event_result(
             return None
 
     # Loop to find the matching event
+    matching_event = None
+    matching_event_id = None
     for ev_id, ev_data in scheduled_events.items():
         if str(ev_data.get('guild_id')) != str(interaction.guild.id):
             continue
@@ -5849,6 +5855,7 @@ async def event_result(
                 
         if match_captains or match_names:
             matching_event = ev_data
+            matching_event_id = ev_id
             break
             
     # Fallback to single candidate if no direct match by captains/names
@@ -5862,9 +5869,9 @@ async def event_result(
             ev_g = ev_data.get('group')
             norm_ev_g = ev_g.strip().lower() if ev_g else None
             if ev_t.strip().lower() == norm_tournament and ev_r.strip().lower() == norm_round and norm_group == norm_ev_g:
-                candidates.append(ev_data)
+                candidates.append((ev_id, ev_data))
         if len(candidates) == 1:
-            matching_event = candidates[0]
+            matching_event_id, matching_event = candidates[0]
             
     if matching_event:
         poster_image = matching_event.get('poster_path')
@@ -5896,17 +5903,15 @@ async def event_result(
             else:
                 embed.add_field(name=field_title, value=value_text, inline=False)
         
-    # Attach only user screenshots (no extra poster image or logo)
+    # Read screenshot bytes into raw memory tuples for safe reuse
+    raw_screenshots = []
+    screenshot_names = []
     for i, screenshot in enumerate(screenshots, 1):
         if screenshot:
-            # Create a file object for each screenshot
             try:
                 file_data = await screenshot.read()
-                file_obj = discord.File(
-                    fp=io.BytesIO(file_data),
-                    filename=f"SS-{i}_{screenshot.filename}"
-                )
-                files_to_send.append(file_obj)
+                filename = f"SS-{i}_{screenshot.filename}"
+                raw_screenshots.append((filename, file_data))
                 screenshot_names.append(f"SS-{i}")
             except Exception as e:
                 print(f"Error processing screenshot {i}: {e}")
@@ -5937,7 +5942,7 @@ async def event_result(
         "Recorder_ID":    str(recorder.id) if recorder else "",
         "Recorder_Name":  recorder.name if recorder else "",
         "Remarks":        remarks,
-        "Screenshots_Count": str(sum(1 for s in [ss_1,ss_2,ss_3,ss_4,ss_5,ss_6,ss_7,ss_8,ss_9,ss_10,ss_11] if s)),
+        "Screenshots_Count": str(len(raw_screenshots)),
         "Disqualified":   dq_status or "None"
     }))
 
@@ -5951,16 +5956,8 @@ async def event_result(
     try:
         results_channel = get_tournament_results_channel(interaction.guild, tournament)
         if results_channel:
-            if files_to_send:
-                # Create copies of files for results channel (files can only be used once)
-                results_files = []
-                for file_obj in files_to_send:
-                    file_obj.fp.seek(0)  # Reset file pointer
-                    file_data = file_obj.fp.read()
-                    results_files.append(discord.File(
-                        fp=io.BytesIO(file_data),
-                        filename=file_obj.filename
-                    ))
+            if raw_screenshots:
+                results_files = [discord.File(fp=io.BytesIO(b), filename=fn) for fn, b in raw_screenshots]
                 results_msg = await results_channel.send(embed=embed, files=results_files)
             else:
                 results_msg = await results_channel.send(embed=embed)
@@ -5974,24 +5971,16 @@ async def event_result(
     try:
         current_channel = interaction.channel
         res_ch_id_val = results_channel.id if results_channel else CHANNEL_IDS["results"]
-        if current_channel and current_channel.id != res_ch_id_val and current_channel.id != CHANNEL_IDS.get("take_schedule"):  # Don't duplicate or post in schedule channel
-            if files_to_send:
-                # Reset file pointers and create new file objects for current channel
-                current_files = []
-                for file_obj in files_to_send:
-                    file_obj.fp.seek(0)  # Reset file pointer
-                    file_data = file_obj.fp.read()
-                    current_files.append(discord.File(
-                        fp=io.BytesIO(file_data),
-                        filename=file_obj.filename
-                    ))
+        if current_channel and current_channel.id != res_ch_id_val and current_channel.id != CHANNEL_IDS.get("take_schedule"):
+            if raw_screenshots:
+                current_files = [discord.File(fp=io.BytesIO(b), filename=fn) for fn, b in raw_screenshots]
                 current_msg = await current_channel.send(embed=embed, files=current_files)
             else:
                 current_msg = await current_channel.send(embed=embed)
         elif current_channel and current_channel.id == res_ch_id_val and not results_posted:
-            # If we're in results channel but posting failed above, try again
-            if files_to_send:
-                results_msg = await current_channel.send(embed=embed, files=files_to_send)
+            if raw_screenshots:
+                fallback_files = [discord.File(fp=io.BytesIO(b), filename=fn) for fn, b in raw_screenshots]
+                results_msg = await current_channel.send(embed=embed, files=fallback_files)
             else:
                 results_msg = await current_channel.send(embed=embed)
     except Exception as e:
@@ -6000,7 +5989,6 @@ async def event_result(
     # Post staff attendance in Staff Attendance channel
     try:
         staff_attendance_channel = get_tournament_attendance_channel(interaction.guild, tournament)
-
 
         if staff_attendance_channel:
             att_embed = discord.Embed(
@@ -6062,7 +6050,7 @@ async def event_result(
         )
         res_log_embed.add_field(
             name="📋 Channel",
-            value=interaction.channel.mention,
+            value=interaction.channel.mention if interaction.channel else "N/A",
             inline=True
         )
         res_log_embed.add_field(
@@ -6094,85 +6082,38 @@ async def event_result(
         print(f"Error logging event result: {log_err}")
 
 
-    # Schedule auto-cleanup of matching events in this channel after 20 minutes
+    # Schedule auto-cleanup and state update of matching events
     try:
         current_channel_id = interaction.channel.id if interaction.channel else None
         matching_event_ids = []
+        if matching_event_id and matching_event_id in scheduled_events:
+            matching_event_ids.append(matching_event_id)
+            
         for ev_id, data in scheduled_events.items():
-            if data.get('channel_id') == current_channel_id:
-                # Optional: further match by captains to be safer
-                try:
-                    t1_raw = data.get('team1_captain')
-                    t2_raw = data.get('team2_captain')
-                    
-                    t1 = getattr(t1_raw, 'id', t1_raw)
-                    if isinstance(t1, str) and t1.isdigit():
-                        t1 = int(t1)
-                    t2 = getattr(t2_raw, 'id', t2_raw)
-                    if isinstance(t2, str) and t2.isdigit():
-                        t2 = int(t2)
-                    
-                    w_id = getattr(winner, 'id', None)
-                    l_id = getattr(loser, 'id', None)
-                    
-                    matches_captains = False
-                    if w_id and l_id and t1 and t2:
-                        if w_id in (t1, t2) and l_id in (t1, t2):
-                            matches_captains = True
-                    elif w_name and l_name:
-                        t1_cap_name = ""
-                        if t1_raw:
-                            if hasattr(t1_raw, 'name'):
-                                t1_cap_name = t1_raw.name
-                            elif isinstance(t1_raw, int) or (isinstance(t1_raw, str) and t1_raw.isdigit()):
-                                try:
-                                    t1_mem = interaction.guild.get_member(int(t1_raw))
-                                    if t1_mem:
-                                        t1_cap_name = t1_mem.name
-                                except:
-                                    pass
-                        t1_name = data.get('team1_name') or t1_cap_name
-                        
-                        t2_cap_name = ""
-                        if t2_raw:
-                            if hasattr(t2_raw, 'name'):
-                                t2_cap_name = t2_raw.name
-                            elif isinstance(t2_raw, int) or (isinstance(t2_raw, str) and t2_raw.isdigit()):
-                                try:
-                                    t2_mem = interaction.guild.get_member(int(t2_raw))
-                                    if t2_mem:
-                                        t2_cap_name = t2_mem.name
-                                except:
-                                    pass
-                        t2_name = data.get('team2_name') or t2_cap_name
-                        
-                        if (w_name.lower() in (t1_name.lower(), t2_name.lower())) or (l_name.lower() in (t1_name.lower(), t2_name.lower())):
-                            matches_captains = True
-                            
-                    if matches_captains:
-                        matching_event_ids.append(ev_id)
-                        
-                        # Update the event with result data
-                        scheduled_events[ev_id]['result_added'] = True
-                        scheduled_events[ev_id]['result_winner'] = winner
-                        scheduled_events[ev_id]['result_loser'] = loser
-                        scheduled_events[ev_id]['result_winner_score'] = winner_score
-                        scheduled_events[ev_id]['result_loser_score'] = loser_score
-                        scheduled_events[ev_id]['result_judge'] = interaction.user
-                        scheduled_events[ev_id]['result_group'] = group_label
-                        scheduled_events[ev_id]['result_remarks'] = remarks
-                        
-                        if results_msg:
-                            scheduled_events[ev_id]['results_message_id'] = results_msg.id
-                            scheduled_events[ev_id]['results_channel_id'] = results_msg.channel.id
-                        if current_msg:
-                            scheduled_events[ev_id]['match_results_message_id'] = current_msg.id
-                            scheduled_events[ev_id]['match_results_channel_id'] = current_msg.channel.id
-                        
-                        print(f"Updated event {ev_id} with result data")
-                except Exception as e:
-                    print(f"Error updating event {ev_id}: {e}")
-                    matching_event_ids.append(ev_id)
+            if current_channel_id and data.get('channel_id') == current_channel_id and ev_id not in matching_event_ids:
+                matching_event_ids.append(ev_id)
+
+        for ev_id in matching_event_ids:
+            try:
+                scheduled_events[ev_id]['result_added'] = True
+                scheduled_events[ev_id]['result_winner'] = w_name
+                scheduled_events[ev_id]['result_loser'] = l_name
+                scheduled_events[ev_id]['result_winner_score'] = winner_score
+                scheduled_events[ev_id]['result_loser_score'] = loser_score
+                scheduled_events[ev_id]['result_judge'] = interaction.user.name
+                scheduled_events[ev_id]['result_group'] = group_label
+                scheduled_events[ev_id]['result_remarks'] = remarks
+                
+                if results_msg:
+                    scheduled_events[ev_id]['results_message_id'] = results_msg.id
+                    scheduled_events[ev_id]['results_channel_id'] = results_msg.channel.id
+                if current_msg:
+                    scheduled_events[ev_id]['match_results_message_id'] = current_msg.id
+                    scheduled_events[ev_id]['match_results_channel_id'] = current_msg.channel.id
+                
+                print(f"Updated event {ev_id} with result data")
+            except Exception as e:
+                print(f"Error updating event {ev_id}: {e}")
 
         # Save updated events
         if matching_event_ids:
@@ -9176,11 +9117,9 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
             if not row or all(not cell.strip() for cell in row):
                 continue
                 
-            # Build formatted info
-            text_lines = []
-            
-            # Resolve the captain or player member if possible to mention them
+            # Resolve member for avatar / mention
             user_mention = "—"
+            member = None
             
             search_col = -1
             if is_1v1:
@@ -9213,11 +9152,6 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
                         user_mention = member.mention
             
             if is_1v1:
-                text_lines.append("🎮 **PLAYER INFORMATION**")
-                text_lines.append(f"Player: {user_mention}")
-                text_lines.append(f"**Format:** {format_str}")
-                text_lines.append("───────────────────────────")
-                
                 aliases_map_1v1 = {
                     "Player Discord ID": ["player discord developers i'd", "player discord developers id", "player discord developer id", "discord developer id", "developer id", "player discord id", "discord id", "player discord", "discord tag", "discord name", "discord", "discord developers i'd", "discord developers id", "discord developer id", "player discord username", "discord username"],
                     "Player Game Name": ["player in game name", "player in-game name", "game name", "player name", "ign", "in-game name", "player ign", "player in-game name", "in-game name (for example"],
@@ -9225,6 +9159,17 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
                     "Player Title": ["player title", "title", "rank", "role", "player in-game title", "in-game title"]
                 }
                 
+                embed = discord.Embed(
+                    title="🎮 PLAYER INFORMATION",
+                    description=f"**Player:** {user_mention}\n**Format:** `{format_str}`",
+                    color=discord.Color.blurple(),
+                    timestamp=discord.utils.utcnow()
+                )
+                if member and hasattr(member, 'display_avatar'):
+                    embed.set_thumbnail(url=member.display_avatar.url)
+                elif member and member.avatar:
+                    embed.set_thumbnail(url=member.avatar.url)
+
                 found_any = False
                 for field_name in _1V1_FIELDS:
                     aliases = aliases_map_1v1.get(field_name, [])
@@ -9254,33 +9199,33 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
                     label = field_name.replace("Player ", "")
                     emoji = ""
                     if "discord id" in field_name.lower():
-                        emoji = "👤 "
+                        emoji = "👤"
                         label = "Discord ID"
                     elif "game name" in field_name.lower():
-                        emoji = "🎮 "
+                        emoji = "🎮"
                         label = "Game Name"
                     elif "game id" in field_name.lower():
-                        emoji = "🆔 "
+                        emoji = "🆔"
                         label = "Game ID"
                     elif "title" in field_name.lower():
-                        emoji = "🎖️ "
+                        emoji = "🎖️"
                         label = "Title"
                         
-                    text_lines.append(f"{emoji}**{label}:** {val}")
+                    embed.add_field(name=f"{emoji} {label}", value=val, inline=True)
                     found_any = True
+                
                 if not found_any:
-                    text_lines.append(f"⚠️ **Column Mismatch:** Expected columns like `{'` | `'.join(_1V1_FIELDS)}`")
+                    embed.add_field(
+                        name="⚠️ Column Mismatch",
+                        value=f"Expected columns like `{'` | `'.join(_1V1_FIELDS)}`",
+                        inline=False
+                    )
                     
-                text_lines.append("───────────────────────────")
-                text_lines.append(f"*{guild.name} • Player Info*")
+                embed.set_footer(text=f"{guild.name} • Player Info")
+                await channel.send(embed=embed)
                 
             else:
-                text_lines.append("🏆 **TEAM INFORMATION**")
-                text_lines.append(f"Captain: {user_mention}")
-                text_lines.append(f"**Format:** {format_str}")
-                text_lines.append("───────────────────────────")
-                
-                # Team Name
+                tn_val = "—"
                 tn_col = _col_index(header, "Team Name")
                 if tn_col == -1:
                     for alias in ["teamname", "team", "clan name", "clan"]:
@@ -9289,8 +9234,21 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
                             break
                 if tn_col != -1:
                     tn_val = row[tn_col].strip() if tn_col < len(row) else "—"
-                    text_lines.append(f"🏷️ **Team Name:** {tn_val or '—'}")
-                    text_lines.append("")
+
+                embed = discord.Embed(
+                    title="🏆 TEAM INFORMATION",
+                    description=(
+                        f"**Captain:** {user_mention}\n"
+                        f"**Team Name:** `{tn_val or '—'}`\n"
+                        f"**Format:** `{format_str}`"
+                    ),
+                    color=discord.Color.gold(),
+                    timestamp=discord.utils.utcnow()
+                )
+                if member and hasattr(member, 'display_avatar'):
+                    embed.set_thumbnail(url=member.display_avatar.url)
+                elif member and member.avatar:
+                    embed.set_thumbnail(url=member.avatar.url)
                     
                 # Captain block
                 cap_block = []
@@ -9343,9 +9301,7 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
                     cap_block.append(f"{emoji}**{label}:** {val}")
                     
                 if cap_block:
-                    text_lines.append("👑 **Captain**")
-                    text_lines.extend(cap_block)
-                    text_lines.append("")
+                    embed.add_field(name="👑 Captain", value="\n".join(cap_block), inline=False)
                     
                 # Players
                 for n in range(2, team_size + 1):
@@ -9395,17 +9351,11 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
                         player_block.append(f"{emoji}**{label}:** {val}")
                         
                     if player_block:
-                        text_lines.append(f"👥 **Player {n}**")
-                        text_lines.extend(player_block)
-                        text_lines.append("")
-                        
-                while text_lines and text_lines[-1] == "":
-                    text_lines.pop()
-                    
-                text_lines.append("───────────────────────────")
-                text_lines.append(f"*{guild.name} • Team Info*")
-                
-            await channel.send("\n".join(text_lines))
+                        embed.add_field(name=f"👥 Player {n}", value="\n".join(player_block), inline=False)
+
+                embed.set_footer(text=f"{guild.name} • Team Info")
+                await channel.send(embed=embed)
+
             posted_count += 1
             await asyncio.sleep(0.5)
             
@@ -11194,7 +11144,7 @@ async def match_autocomplete(
         current_lower = current.lower()
         
         for ev_id, ev_data in scheduled_events.items():
-            if ev_data.get('guild_id') != guild_id:
+            if str(ev_data.get('guild_id')) != str(guild_id):
                 continue
             
             # If tournament is selected, filter by it
@@ -11743,34 +11693,22 @@ async def link_missing(interaction: discord.Interaction, tournament: str = None)
 
 staff_group = app_commands.Group(name="staff", description="Manage tournament staff roles and workload stats")
 
-@staff_group.command(name="recruit", description="Recruit a member to a staff role (Judge/Recorder/Staff)")
+@staff_group.command(name="recruit", description="Recruit a member to a staff role")
 @app_commands.describe(
     member="The discord member to recruit",
-    role="Select role to assign (Judge, Recorder, Staff)"
+    role="Select any role to assign to the member"
 )
-@app_commands.choices(role=[
-    app_commands.Choice(name="Judge", value="judge"),
-    app_commands.Choice(name="Recorder", value="recorder"),
-    app_commands.Choice(name="General Staff", value="staff"),
-])
 @with_guild_context
-async def staff_recruit(interaction: discord.Interaction, member: discord.Member, role: app_commands.Choice[str]):
-    """Assign staff role (Image 4 style - Green embed)."""
+async def staff_recruit(interaction: discord.Interaction, member: discord.Member, role: discord.Role):
+    """Assign staff role (Green embed)."""
     await interaction.response.defer(ephemeral=False)
 
-    cfg = get_guild_config(interaction.guild.id)
-    role_ids = cfg.get("role_ids", DEFAULT_ROLE_IDS)
-    target_role_id = role_ids.get(role.value)
-
-    assigned_role_name = role.name
-    if target_role_id:
-        target_role = interaction.guild.get_role(int(target_role_id))
-        if target_role:
-            try:
-                await member.add_roles(target_role, reason=f"Recruited by {interaction.user}")
-                assigned_role_name = target_role.name
-            except Exception as e:
-                await interaction.followup.send(f"⚠️ Failed to add Discord role: {e}", ephemeral=False)
+    try:
+        await member.add_roles(role, reason=f"Recruited by {interaction.user}")
+        assigned_role_text = role.mention
+    except Exception as e:
+        await interaction.followup.send(f"⚠️ Failed to add Discord role {role.mention}: {e}", ephemeral=False)
+        return
 
     embed = discord.Embed(
         title="📋 Staff Recruitment Updated",
@@ -11779,49 +11717,29 @@ async def staff_recruit(interaction: discord.Interaction, member: discord.Member
         timestamp=discord.utils.utcnow()
     )
     embed.add_field(name="👤 Staff Member", value=f"{member.mention} (`{member.display_name}`)", inline=True)
-    embed.add_field(name="🛡️ Assigned Role", value=f"**{assigned_role_name}**", inline=True)
+    embed.add_field(name="🛡️ Assigned Role", value=assigned_role_text, inline=True)
     embed.add_field(name="👑 Recruited By", value=interaction.user.mention, inline=True)
     embed.set_footer(text=f"{ORGANIZATION_NAME} • Staff Management")
 
     await interaction.followup.send(embed=embed, ephemeral=False)
 
 
-@staff_group.command(name="fire", description="Remove a staff member from a staff role (Judge/Recorder/Staff)")
+@staff_group.command(name="fire", description="Remove a staff role from a member")
 @app_commands.describe(
     member="The discord member to remove staff role from",
-    role="Select role to remove"
+    role="Select any role to remove from the member"
 )
-@app_commands.choices(role=[
-    app_commands.Choice(name="Judge", value="judge"),
-    app_commands.Choice(name="Recorder", value="recorder"),
-    app_commands.Choice(name="General Staff", value="staff"),
-    app_commands.Choice(name="All Staff Roles", value="all"),
-])
 @with_guild_context
-async def staff_fire(interaction: discord.Interaction, member: discord.Member, role: app_commands.Choice[str]):
-    """Remove staff role (Image 3 style - Red embed)."""
+async def staff_fire(interaction: discord.Interaction, member: discord.Member, role: discord.Role):
+    """Remove staff role (Red embed)."""
     await interaction.response.defer(ephemeral=False)
 
-    cfg = get_guild_config(interaction.guild.id)
-    role_ids = cfg.get("role_ids", DEFAULT_ROLE_IDS)
-
-    roles_to_remove = []
-    if role.value == "all":
-        roles_to_remove = ["judge", "recorder", "staff"]
-    else:
-        roles_to_remove = [role.value]
-
-    removed_names = []
-    for r_key in roles_to_remove:
-        rid = role_ids.get(r_key)
-        if rid:
-            r_obj = interaction.guild.get_role(int(rid))
-            if r_obj and r_obj in member.roles:
-                try:
-                    await member.remove_roles(r_obj, reason=f"Removed by {interaction.user}")
-                    removed_names.append(r_obj.name)
-                except Exception as e:
-                    print(f"Error removing role {r_obj.name}: {e}")
+    try:
+        await member.remove_roles(role, reason=f"Removed by {interaction.user}")
+        removed_role_text = role.mention
+    except Exception as e:
+        await interaction.followup.send(f"⚠️ Failed to remove Discord role {role.mention}: {e}", ephemeral=False)
+        return
 
     embed = discord.Embed(
         title="⚠️ Staff Removal Updated",
@@ -11830,9 +11748,11 @@ async def staff_fire(interaction: discord.Interaction, member: discord.Member, r
         timestamp=discord.utils.utcnow()
     )
     embed.add_field(name="👤 Staff Member", value=f"{member.mention} (`{member.display_name}`)", inline=True)
-    embed.add_field(name="🛡️ Removed Role", value=f"**{', '.join(removed_names) if removed_names else role.name}**", inline=True)
+    embed.add_field(name="🛡️ Removed Role", value=removed_role_text, inline=True)
     embed.add_field(name="👑 Action By", value=interaction.user.mention, inline=True)
     embed.set_footer(text=f"{ORGANIZATION_NAME} • Staff Management")
+
+    await interaction.followup.send(embed=embed, ephemeral=False)
 
     await interaction.followup.send(embed=embed, ephemeral=False)
 
