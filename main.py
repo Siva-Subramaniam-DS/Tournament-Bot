@@ -4850,6 +4850,11 @@ async def on_ready():
         except Exception as e:
             print(f"Error starting auto-room loop for guild {guild.id} on startup: {e}")
 
+    # Start recurring embed background loop
+    if not hasattr(bot, "_recurring_embed_loop_started"):
+        bot._recurring_embed_loop_started = True
+        asyncio.create_task(recurring_embed_loop())
+
     # Sync commands with timeout handling
     try:
         print("🔄 Syncing slash commands...")
@@ -13062,5 +13067,4 @@ if __name__ == "__main__":
         print("\u274c Error: DISCORD_TOKEN is missing in environment variables!")
     else:
         print("\U0001f680 Starting Tournament Bot...")
-        bot.loop.create_task(recurring_embed_loop())
         bot.run(token)
