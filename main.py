@@ -3948,33 +3948,211 @@ def sanitize_username_for_poster(username: str) -> str:
     except Exception:
         return str(username) if username else "Player"
 
-def get_random_template():
-    """Get a random template image from the Templates folder"""
-    template_path = "/home/container/templates"
-    if not os.path.exists(template_path):
-        if os.path.exists("/home/container/Templates"):
-            template_path = "/home/container/Templates"
+# Known game aliases mapping to template folder names
+GAME_ALIASES = {
+    "mw": "Modern Warship",
+    "modern warships": "Modern Warship",
+    "modernwarship": "Modern Warship",
+    "modern warship": "Modern Warship",
+    "bgmi": "BGMI",
+    "pubg": "BGMI",
+    "pubgm": "BGMI",
+    "pubg mobile": "BGMI",
+    "free fire": "Free Fire",
+    "ff": "Free Fire",
+    "freefire": "Free Fire",
+    "val": "Valorant",
+    "valo": "Valorant",
+    "valorant": "Valorant",
+    "cod": "Call of Duty Mobile",
+    "codm": "Call of Duty Mobile",
+    "call of duty": "Call of Duty Mobile",
+    "call of duty mobile": "Call of Duty Mobile",
+    "ml": "Mobile Legends",
+    "mlbb": "Mobile Legends",
+    "mobile legends": "Mobile Legends",
+    "cs": "Counter Strike 2",
+    "cs2": "Counter Strike 2",
+    "csgo": "Counter Strike 2",
+    "counter strike": "Counter Strike 2",
+    "counter strike 2": "Counter Strike 2",
+    "apex": "Apex Legends",
+    "apex legends": "Apex Legends",
+    "fortnite": "Fortnite",
+    "fn": "Fortnite",
+    "rl": "Rocket League",
+    "rocket league": "Rocket League",
+    "dota": "Dota 2",
+    "dota 2": "Dota 2",
+    "dota2": "Dota 2",
+    "brawl stars": "Brawl Stars",
+    "bs": "Brawl Stars",
+    "brawlstars": "Brawl Stars",
+    "clash royale": "Clash Royale",
+    "cr": "Clash Royale",
+    "clashroyale": "Clash Royale",
+    "r6": "Rainbow Six Siege",
+    "r6s": "Rainbow Six Siege",
+    "rainbow six": "Rainbow Six Siege",
+    "rainbow six siege": "Rainbow Six Siege",
+    "warzone": "Warzone",
+    "wzm": "Warzone",
+    "cod warzone": "Warzone"
+}
+
+def get_templates_base_path() -> str:
+    """Resolve the absolute Templates directory path."""
+    for p in ["/home/container/templates", "/home/container/Templates", os.path.join(BASE_DIR, "Templates"), os.path.join(BASE_DIR, "templates")]:
+        if os.path.exists(p):
+            return p
+    return os.path.join(BASE_DIR, "Templates")
+
+def get_available_game_templates() -> list[str]:
+    """Return a sorted list of all available game template folders."""
+    base = get_templates_base_path()
+    if not os.path.exists(base):
+        return []
+    try:
+        subdirs = [
+            d for d in os.listdir(base)
+            if os.path.isdir(os.path.join(base, d)) and not d.startswith(".") and not d.startswith("__")
+        ]
+        return sorted(subdirs)
+    except Exception as e:
+        print(f"Error listing game template folders: {e}")
+        return []
+
+async def game_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    """Autocomplete for selecting game template folders in slash commands."""
+    try:
+        games = get_available_game_templates()
+        if not games:
+            # Standard fallback list of popular esports games
+            games = [
+                "Modern Warship", "BGMI", "Free Fire", "Valorant",
+                "Call of Duty Mobile", "Mobile Legends", "Counter Strike 2",
+                "Apex Legends", "Fortnite", "Rocket League", "Dota 2",
+                "Brawl Stars", "Clash Royale", "Rainbow Six Siege", "Warzone"
+            ]
+        choices = []
+        for g in games:
+            if current.lower() in g.lower():
+                choices.append(app_commands.Choice(name=g, value=g))
+        return choices[:25]
+    except Exception as e:
+        print(f"Error in game_autocomplete: {e}")
+        return []
+
+async def tournament_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    """Autocomplete for selecting configured tournaments."""
+    if not interaction.guild_id:
+        return []
+    try:
+        if 'load_guild_tournaments' in globals():
+            tournaments = load_guild_tournaments(interaction.guild_id)
         else:
-            template_path = os.path.join(BASE_DIR, "Templates")
-    image_files = []
-    if os.path.exists(template_path):
-        # Get all image files
-        image_extensions = ['*.jpg', '*.jpeg', '*.png', '*.gif']
-        for ext in image_extensions:
-            image_files.extend(glob.glob(os.path.join(template_path, ext)))
-            image_files.extend(glob.glob(os.path.join(template_path, ext.upper())))
-            
-    # Fallback to root templates/banners if Templates folder is empty or missing
-    if not image_files:
+            tournaments = {}
+        choices = []
+        for t_id, t_cfg in tournaments.items():
+            name = t_cfg.get('name', t_id)
+            if current.lower() in name.lower() or current.lower() in t_id.lower():
+                choices.append(app_commands.Choice(name=name, value=t_id))
+        return choices[:25]
+    except Exception as e:
+        print(f"Error in tournament_autocomplete: {e}")
+        return []
+
+def get_random_template(game_or_mode: str = None) -> Optional[str]:
+    """Get a random template image from the Templates folder or a specific game subfolder (e.g. Templates/Modern Warship/)."""
+    template_path = get_templates_base_path()
+
+    if not os.path.exists(template_path):
         fallback_banners = ["tournament_bot_banner.png", "banner.png"]
         for fb in fallback_banners:
             fb_path = os.path.join(BASE_DIR, fb)
             if os.path.exists(fb_path):
-                image_files.append(fb_path)
+                return fb_path
+        return None
+
+    image_extensions = ['*.jpg', '*.jpeg', '*.png', '*.webp', '*.gif']
+    
+    def get_images_in_dir(folder_path):
+        files = []
+        if os.path.exists(folder_path):
+            for ext in image_extensions:
+                files.extend(glob.glob(os.path.join(folder_path, ext)))
+                files.extend(glob.glob(os.path.join(folder_path, ext.upper())))
+        return list(dict.fromkeys(files))
+
+    # 1. If game_or_mode is provided, search for matching game subfolder in Templates/
+    if game_or_mode and str(game_or_mode).strip():
+        raw_term = str(game_or_mode).strip()
+        search_term = raw_term.lower()
         
-    if image_files:
-        return random.choice(image_files)
+        # Check alias first (e.g. "mw" -> "Modern Warship", "codm" -> "Call of Duty Mobile")
+        canonical_game = GAME_ALIASES.get(search_term, raw_term)
+        canonical_lower = canonical_game.lower()
+
+        try:
+            subdirs = [d for d in os.listdir(template_path) if os.path.isdir(os.path.join(template_path, d))]
+            matched_folder = None
+            
+            # Exact or alias match
+            for d in subdirs:
+                if d.lower() == canonical_lower or d.lower() == search_term or d.lower().replace(" ", "") == search_term.replace(" ", ""):
+                    matched_folder = os.path.join(template_path, d)
+                    break
+            
+            # Substring / partial match
+            if not matched_folder:
+                for d in subdirs:
+                    if d.lower() in search_term or search_term in d.lower() or d.lower() in canonical_lower or canonical_lower in d.lower():
+                        matched_folder = os.path.join(template_path, d)
+                        break
+
+            if matched_folder:
+                game_images = get_images_in_dir(matched_folder)
+                if game_images:
+                    chosen = random.choice(game_images)
+                    print(f"🎮 Selected template for '{game_or_mode}' from '{os.path.basename(matched_folder)}': {chosen}")
+                    return chosen
+        except Exception as e:
+            print(f"Error checking game template folder for '{game_or_mode}': {e}")
+
+    # 2. Check root Templates folder for direct image files
+    root_images = get_images_in_dir(template_path)
+    if root_images:
+        return random.choice(root_images)
+
+    # 3. Check all subfolders inside Templates/ so any uploaded game folder works as fallback
+    all_subfolder_images = []
+    try:
+        for entry in os.listdir(template_path):
+            full_entry = os.path.join(template_path, entry)
+            if os.path.isdir(full_entry):
+                all_subfolder_images.extend(get_images_in_dir(full_entry))
+    except Exception as e:
+        print(f"Error scanning subfolders in Templates: {e}")
+
+    if all_subfolder_images:
+        return random.choice(all_subfolder_images)
+
+    # 4. Fallback to root templates/banners if Templates folder is empty
+    fallback_banners = ["tournament_bot_banner.png", "banner.png"]
+    for fb in fallback_banners:
+        fb_path = os.path.join(BASE_DIR, fb)
+        if os.path.exists(fb_path):
+            return fb_path
+
     return None
+
+
 
 def create_event_poster(template_path: str, round_label: str, team1_captain: str, team2_captain: str, utc_time: str, date_str: str = None, server_name: str = "Tournament Organizer") -> str:
     """Create event poster with text overlays using Google Fonts and improved error handling"""
@@ -5153,10 +5331,13 @@ async def event(interaction: discord.Interaction, action: app_commands.Choice[st
     month="Month of the event",
     round="Round label",
     tournament="Tournament name (e.g. King of the Seas, Summer Cup, etc.)",
+    game="Game for poster background (e.g. Modern Warship, BGMI, Valorant, Free Fire)",
     group="Group assignment (A-J) or Winner/Loser",
     team_1_name="Optional name of team 1",
-    team_2_name="Optional name of team 2"
+    team_2_name="Optional name of team 2",
+    mode="Optional game mode (e.g. 5v5, 1v1, Battle Royale)"
 )
+@app_commands.autocomplete(tournament=tournament_autocomplete, game=game_autocomplete)
 @app_commands.choices(
     round=[
         app_commands.Choice(name="R1", value="R1"),
@@ -5200,6 +5381,7 @@ async def event_create(
     month: int,
     round: app_commands.Choice[str],
     tournament: str,
+    game: Optional[str] = None,
     group: app_commands.Choice[str] = None,
     team_1_name: str = None,
     team_2_name: str = None,
@@ -5314,8 +5496,15 @@ async def event_create(
         "Created_By_Name":   interaction.user.name
     }))
     
-    # Get random template image and create poster (exact same as Sample Bot)
-    template_image = get_random_template()
+    # Get random template image from matching game folder or general templates
+    game_hint = game
+    if not game_hint and tournament and interaction.guild_id:
+        t_configs = load_guild_tournaments(interaction.guild_id)
+        t_data_hint = t_configs.get(tournament.lower(), {})
+        game_hint = t_data_hint.get('game') or t_data_hint.get('name') or t_data_hint.get('mode') or tournament
+    if not game_hint:
+        game_hint = mode
+    template_image = get_random_template(game_or_mode=game_hint)
     poster_image = None
     
     if template_image:
@@ -7412,9 +7601,14 @@ async def event_edit(
         date_info_display = event_to_edit.get('date_str', 'Unknown')
         group_info = event_to_edit.get('group', '')
         
-        # Recreate poster
+        # Recreate poster using matching game folder if available
         poster_image = None
-        template_image = get_random_template()
+        game_hint = event_to_edit.get('mode') or event_to_edit.get('tournament')
+        if interaction.guild_id and tournament_info:
+            t_configs = load_guild_tournaments(interaction.guild_id)
+            t_data_hint = t_configs.get(str(tournament_info).lower(), {})
+            game_hint = t_data_hint.get('name') or t_data_hint.get('mode') or game_hint
+        template_image = get_random_template(game_or_mode=game_hint)
         if template_image:
             try:
                 # Clean up old poster first
@@ -10140,10 +10334,12 @@ def get_default_tournament_data():
     return {
         'name': "",
         'id': "",
+        'game': "",          # Game e.g. Modern Warship, BGMI, Valorant, etc.
         'key': "",
         'challonge_bracket_link': "",
         'captains_sheet_link': "",
         'state': 'pending',  # pending, active, completed
+        'mode': '',          # game mode e.g. 5v5, 1v1, battle_royale
         
         # Channels
         'thumbnail': None,
@@ -10607,6 +10803,19 @@ async def build_tournament_embed(interaction: discord.Interaction, t_data: dict,
     bracket_str = f"[Click Here]({bracket_val})" if bracket_val.startswith("http") else (f"`{bracket_val}`" if bracket_val else "Not Set")
 
     key_val = t_data.get('key', '')
+    # Row 1: Tournament ID | State | Game | Mode
+    game_val = t_data.get('game') or 'Not Set'
+    mode_val = t_data.get('mode', '') or 'Not Set'
+    mode_labels = {
+        '1v1': '1v1', '2v2': '2v2', '3v3': '3v3', '4v4': '4v4', '5v5': '5v5',
+        'battle_royale': 'Battle Royale', 'squad': 'Squad (4 players)',
+        'duo': 'Duo', 'custom': 'Custom'
+    }
+    mode_display = mode_labels.get(mode_val, mode_val.upper() if mode_val != 'Not Set' else 'Not Set')
+    embed.add_field(name="🏆 Tournament ID",   value=f"`{t_data['id']}`",    inline=True)
+    embed.add_field(name="📊 Tournament State", value=f"`{t_data['state']}`", inline=True)
+    embed.add_field(name="🎮 Game",             value=f"`{game_val}`",        inline=True)
+    embed.add_field(name="⚔️ Mode",             value=f"`{mode_display}`",    inline=True)
     key_str = f"`{mask_api_key(key_val)}`"
 
     # Thumbnail channel logic
@@ -10618,8 +10827,9 @@ async def build_tournament_embed(interaction: discord.Interaction, t_data: dict,
         embed.set_thumbnail(url=thumb_url)
         thumb_str = f"[Image Link]({thumb_url}) (from {chan_mention('thumbnail')})"
     else:
-        # Try a template image from Templates folder
-        template_path = get_random_template()
+        # Try a template image from matching game folder or general Templates folder
+        game_hint = t_data.get('game') or t_data.get('name') or t_data.get('mode') or t_data.get('id')
+        template_path = get_random_template(game_or_mode=game_hint)
         if template_path and os.path.exists(template_path):
             try:
                 from PIL import Image
@@ -10648,30 +10858,30 @@ async def build_tournament_embed(interaction: discord.Interaction, t_data: dict,
                 file = discord.File("tournament_bot_logo.png", filename="tournament_bot_logo.png")
             thumb_str = f"Default Logo (Channel: {chan_mention('thumbnail')})"
 
-    # Row 1: Tournament ID | State | Key
-    embed.add_field(name="🆔 Tournament ID",   value=f"`{t_data['id']}`",    inline=True)
-    embed.add_field(name="📊 Tournament State", value=f"`{t_data['state']}`", inline=True)
-    embed.add_field(name="🔑 Challonge API Key", value=key_str,               inline=True)
+    # Row 2: Challonge Key | Transcript | Closed Category 1
+    embed.add_field(name="🔑 Challonge API Key",     value=key_str,                         inline=True)
+    embed.add_field(name="🗒️ Transcript Channel",    value=chan_mention('transcript'),       inline=True)
+    embed.add_field(name="📁 Closed Category 1",     value=cat_mention('closed_ticket_1'),  inline=True)
 
-    # Row 2: Transcript | Closed Category 1 | Closed Category 2
-    embed.add_field(name="🗒️ Transcript Channel",      value=chan_mention('transcript'),  inline=True)
-    embed.add_field(name="📁 Closed Category 1",        value=cat_mention('closed_ticket_1'), inline=True)
-    embed.add_field(name="📁 Closed Category 2",        value=cat_mention('closed_ticket_2'), inline=True)
-
-    # Row 3: Rules | Deadline | Result
+    # Row 3: Closed Category 2 | Rules | Deadline
+    embed.add_field(name="📁 Closed Category 2",     value=cat_mention('closed_ticket_2'), inline=True)
     embed.add_field(name="📌 Rules Channel",    value=chan_mention('rules'),    inline=True)
     embed.add_field(name="📅 Deadline Channel", value=chan_mention('deadline'), inline=True)
-    embed.add_field(name="🏅 Result Channel",   value=chan_mention('result'),      inline=True)
 
-    # Row 4: Challonge Bracket | Attendance | Challonge Logs
+    # Row 4: Result | Challonge Bracket | Attendance
+    embed.add_field(name="🏅 Result Channel",        value=chan_mention('result'),            inline=True)
     embed.add_field(name="🎮 Challonge Bracket",   value=bracket_str, inline=True)
     embed.add_field(name="📊 Attendance Channel",  value=chan_mention('attendance'),    inline=True)
-    embed.add_field(name="📝 Challonge Logs",      value=chan_mention('challonge_logs'),  inline=True)
 
-    # Row 5: Schedule Channel | Bot Logs | Thumbnail
+    # Row 5: Challonge Logs | Schedule Channel | Bot Logs
+    embed.add_field(name="📝 Challonge Logs",      value=chan_mention('challonge_logs'),  inline=True)
     embed.add_field(name="📋 Schedule Channel",    value=chan_mention('schedule'),         inline=True)
     embed.add_field(name="🤖 Bot Logs Channel",    value=chan_mention('bot_logs'),         inline=True)
+
+    # Row 6: Sheet Link | Thumbnail
+    embed.add_field(name="📄 Google Sheet",        value=sheet_str,                        inline=True)
     embed.add_field(name="🖼️ Thumbnail",           value=thumb_str,                        inline=True)
+    embed.add_field(name="​", value="​", inline=True)  # spacer
 
     # Row 7: Open Ticket Categories list
     open_cats = []
@@ -10686,24 +10896,6 @@ async def build_tournament_embed(interaction: discord.Interaction, t_data: dict,
     embed.set_footer(text=f"Requested by {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url if interaction.user.display_avatar else None)
     return embed, file
 
-async def tournament_autocomplete(
-    interaction: discord.Interaction,
-    current: str,
-) -> list[app_commands.Choice[str]]:
-    if not interaction.guild_id:
-        return []
-    try:
-        tournaments = load_guild_tournaments(interaction.guild_id)
-        choices = []
-        for t_id, t_cfg in tournaments.items():
-            name = t_cfg.get('name', t_id)
-            if current.lower() in name.lower() or current.lower() in t_id.lower():
-                choices.append(app_commands.Choice(name=name, value=t_id))
-        return choices[:25]
-    except Exception as e:
-        print(f"Error in tournament_autocomplete: {e}")
-        return []
-
 # =========================================================================
 # TOURNAMENT COMMAND GROUP (/tournament add, edit, delete, info, list)
 # =========================================================================
@@ -10713,6 +10905,8 @@ tournament_group = app_commands.Group(name="tournament", description="Manage mul
 @app_commands.describe(
     tournament_id="Unique identifier for the tournament (e.g. t1, apex2024)",
     name="Full name of the tournament",
+    game="Game for this tournament (e.g. Modern Warship, BGMI, Valorant, etc.)",
+    mode="Game mode for this tournament (e.g. 5v5, 1v1, Battle Royale)",
     challonge_key="Challonge API Key or Bracket Identifier",
     bracket_link="Challonge or tournament bracket URL",
     sheet_link="Google Sheet link for player roster / team info",
@@ -10730,11 +10924,25 @@ tournament_group = app_commands.Group(name="tournament", description="Manage mul
     open_category_3="3rd category for ticket opening (open tickets)",
     auto_room="Toggle automatic room creation for this tournament"
 )
+@app_commands.autocomplete(game=game_autocomplete)
+@app_commands.choices(mode=[
+    app_commands.Choice(name="1v1",              value="1v1"),
+    app_commands.Choice(name="2v2",              value="2v2"),
+    app_commands.Choice(name="3v3",              value="3v3"),
+    app_commands.Choice(name="4v4",              value="4v4"),
+    app_commands.Choice(name="5v5",              value="5v5"),
+    app_commands.Choice(name="Battle Royale",    value="battle_royale"),
+    app_commands.Choice(name="Squad (4 players)",value="squad"),
+    app_commands.Choice(name="Duo",              value="duo"),
+    app_commands.Choice(name="Custom",           value="custom"),
+])
 @with_guild_context
 async def tournament_add(
     interaction: discord.Interaction,
     tournament_id: str,
     name: str,
+    game: Optional[str] = None,
+    mode: Optional[app_commands.Choice[str]] = None,
     challonge_key: Optional[str] = None,
     bracket_link: Optional[str] = None,
     sheet_link: Optional[str] = None,
@@ -10767,6 +10975,8 @@ async def tournament_add(
     t_data["id"] = t_id_clean
     t_data["name"] = name.strip()
     t_data["state"] = "pending"
+    if game:                t_data["game"] = game.strip()
+    if mode:                t_data["mode"] = mode.value
     if challonge_key:       t_data["key"] = challonge_key.strip()
     if bracket_link:        t_data["challonge_bracket_link"] = bracket_link.strip()
     if sheet_link:          t_data["google_sheet_link"] = sheet_link.strip()
@@ -10799,6 +11009,8 @@ async def tournament_add(
     tournament="Select the tournament to edit",
     name="Updated name for the tournament",
     state="Tournament state (pending, active, completed)",
+    game="Updated game for template posters (e.g. Modern Warship, BGMI, Valorant)",
+    mode="Game mode for this tournament (e.g. 5v5, 1v1, Battle Royale)",
     challonge_key="Challonge API Key or Identifier",
     bracket_link="Challonge bracket URL",
     sheet_link="Google Sheet link for player roster",
@@ -10816,18 +11028,33 @@ async def tournament_add(
     open_category_3="3rd category for ticket opening (open tickets)",
     auto_room="Toggle automatic room creation"
 )
-@app_commands.autocomplete(tournament=tournament_autocomplete)
-@app_commands.choices(state=[
-    app_commands.Choice(name="pending", value="pending"),
-    app_commands.Choice(name="active", value="active"),
-    app_commands.Choice(name="completed", value="completed")
-])
+@app_commands.autocomplete(tournament=tournament_autocomplete, game=game_autocomplete)
+@app_commands.choices(
+    state=[
+        app_commands.Choice(name="pending",   value="pending"),
+        app_commands.Choice(name="active",    value="active"),
+        app_commands.Choice(name="completed", value="completed")
+    ],
+    mode=[
+        app_commands.Choice(name="1v1",               value="1v1"),
+        app_commands.Choice(name="2v2",               value="2v2"),
+        app_commands.Choice(name="3v3",               value="3v3"),
+        app_commands.Choice(name="4v4",               value="4v4"),
+        app_commands.Choice(name="5v5",               value="5v5"),
+        app_commands.Choice(name="Battle Royale",     value="battle_royale"),
+        app_commands.Choice(name="Squad (4 players)", value="squad"),
+        app_commands.Choice(name="Duo",               value="duo"),
+        app_commands.Choice(name="Custom",            value="custom"),
+    ]
+)
 @with_guild_context
 async def tournament_edit(
     interaction: discord.Interaction,
     tournament: str,
     name: Optional[str] = None,
     state: Optional[str] = None,
+    game: Optional[str] = None,
+    mode: Optional[app_commands.Choice[str]] = None,
     challonge_key: Optional[str] = None,
     bracket_link: Optional[str] = None,
     sheet_link: Optional[str] = None,
@@ -10859,6 +11086,8 @@ async def tournament_edit(
     t_data = tournaments[t_id_clean]
     if name:               t_data["name"] = name.strip()
     if state:              t_data["state"] = state
+    if game:               t_data["game"] = game.strip()
+    if mode:               t_data["mode"] = mode.value
     if challonge_key:      t_data["key"] = challonge_key.strip()
     if bracket_link:       t_data["challonge_bracket_link"] = bracket_link.strip()
     if sheet_link:         t_data["google_sheet_link"] = sheet_link.strip()
@@ -12113,17 +12342,725 @@ async def result_edit(
     await interaction.followup.send(embed=embed, ephemeral=False)
 
 
+
+
+
+
+# ===========================================================================
+# /embed COMMAND — Interactive Embed Builder
+# ===========================================================================
+
+class EmbedBuilderView(discord.ui.View):
+    """Persistent interactive embed builder with all editor buttons."""
+
+    def __init__(self, interaction: discord.Interaction, target_channel: discord.TextChannel):
+        super().__init__(timeout=300)
+        self.author_interaction = interaction
+        self.target_channel = target_channel
+
+        # Embed state
+        self.embed_title: str = ""
+        self.embed_description: str = "Your description here. This is a placeholder."
+        self.embed_color: int = 0x5865F2
+        self.embed_thumbnail: str = ""
+        self.embed_image: str = ""
+        self.embed_author_name: str = ""
+        self.embed_author_icon: str = ""
+        self.embed_footer: str = ""
+        self.link_buttons: list = []  # list of {"label": str, "url": str}
+        self.content: str = ""        # plain text above embed
+
+    def build_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title=self.embed_title or None,
+            description=self.embed_description or None,
+            color=self.embed_color,
+        )
+        if self.embed_thumbnail:
+            embed.set_thumbnail(url=self.embed_thumbnail)
+        if self.embed_image:
+            embed.set_image(url=self.embed_image)
+        if self.embed_author_name:
+            embed.set_author(
+                name=self.embed_author_name,
+                icon_url=self.embed_author_icon or discord.utils.MISSING
+            )
+        if self.embed_footer:
+            embed.set_footer(text=self.embed_footer)
+        return embed
+
+    def build_view_with_links(self) -> discord.ui.View:
+        """Build the final sendable view that only contains link buttons."""
+        v = discord.ui.View()
+        for btn in self.link_buttons:
+            v.add_item(discord.ui.Button(label=btn["label"], url=btn["url"], style=discord.ButtonStyle.link))
+        return v
+
+    async def refresh(self, interaction: discord.Interaction):
+        """Refresh the builder preview."""
+        try:
+            await interaction.response.edit_message(
+                content=f"\U0001f3a8 **Design your embed:**",
+                embed=self.build_embed(),
+                view=self
+            )
+        except Exception:
+            try:
+                await interaction.message.edit(
+                    content=f"\U0001f3a8 **Design your embed:**",
+                    embed=self.build_embed(),
+                    view=self
+                )
+            except Exception:
+                pass
+
+    # ── Edit Embed (title + description + footer) ──────────────────────────
+    @discord.ui.button(label="\U0001f4dd Edit Embed", style=discord.ButtonStyle.primary, row=0)
+    async def edit_embed_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_interaction.user.id:
+            await interaction.response.send_message("\u274c Only the command author can use this.", ephemeral=True)
+            return
+        modal = EmbedEditModal(self)
+        await interaction.response.send_modal(modal)
+
+    # ── Edit Images (thumbnail + image) ───────────────────────────────────
+    @discord.ui.button(label="\U0001f5bc\ufe0f Edit Images", style=discord.ButtonStyle.primary, row=0)
+    async def edit_images_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_interaction.user.id:
+            await interaction.response.send_message("\u274c Only the command author can use this.", ephemeral=True)
+            return
+        modal = EmbedImagesModal(self)
+        await interaction.response.send_modal(modal)
+
+    # ── Edit Color ─────────────────────────────────────────────────────────
+    @discord.ui.button(label="\U0001f3a8 Edit Color", style=discord.ButtonStyle.primary, row=0)
+    async def edit_color_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_interaction.user.id:
+            await interaction.response.send_message("\u274c Only the command author can use this.", ephemeral=True)
+            return
+        modal = EmbedColorModal(self)
+        await interaction.response.send_modal(modal)
+
+    # ── Link Button ────────────────────────────────────────────────────────
+    @discord.ui.button(label="\U0001f517 Link Button", style=discord.ButtonStyle.primary, row=0)
+    async def link_button_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_interaction.user.id:
+            await interaction.response.send_message("\u274c Only the command author can use this.", ephemeral=True)
+            return
+        modal = EmbedLinkButtonModal(self)
+        await interaction.response.send_modal(modal)
+
+    # ── Edit Author ────────────────────────────────────────────────────────
+    @discord.ui.button(label="\U0001f464 Edit Author", style=discord.ButtonStyle.secondary, row=1)
+    async def edit_author_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_interaction.user.id:
+            await interaction.response.send_message("\u274c Only the command author can use this.", ephemeral=True)
+            return
+        modal = EmbedAuthorModal(self)
+        await interaction.response.send_modal(modal)
+
+    # ── Send ───────────────────────────────────────────────────────────────
+    @discord.ui.button(label="\u2705 Send Message to #", style=discord.ButtonStyle.success, row=1)
+    async def send_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_interaction.user.id:
+            await interaction.response.send_message("\u274c Only the command author can use this.", ephemeral=True)
+            return
+
+        # Update button label to show channel name
+        button.label = f"\u2705 Send Message to #{self.target_channel.name}"
+
+        final_embed = self.build_embed()
+        final_view = self.build_view_with_links() if self.link_buttons else None
+
+        try:
+            if final_view and len(final_view.children) > 0:
+                await self.target_channel.send(content=self.content or None, embed=final_embed, view=final_view)
+            else:
+                await self.target_channel.send(content=self.content or None, embed=final_embed)
+
+            # Confirm and disable builder
+            for item in self.children:
+                item.disabled = True
+            await interaction.response.edit_message(
+                content=f"\u2705 Embed sent to {self.target_channel.mention}!",
+                embed=None,
+                view=self
+            )
+        except discord.Forbidden:
+            await interaction.response.send_message(f"\u274c I don't have permission to send messages in {self.target_channel.mention}.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"\u274c Error sending embed: {e}", ephemeral=True)
+
+    # ── Add Content (plain text above embed) ──────────────────────────────
+    @discord.ui.button(label="\U0001f4ac Add Content", style=discord.ButtonStyle.secondary, row=1)
+    async def add_content_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_interaction.user.id:
+            await interaction.response.send_message("\u274c Only the command author can use this.", ephemeral=True)
+            return
+        modal = EmbedContentModal(self)
+        await interaction.response.send_modal(modal)
+
+    # ── Cancel ─────────────────────────────────────────────────────────────
+    @discord.ui.button(label="\u274c Cancel", style=discord.ButtonStyle.danger, row=1)
+    async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_interaction.user.id:
+            await interaction.response.send_message("\u274c Only the command author can use this.", ephemeral=True)
+            return
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(content="\U0001f5d1\ufe0f Embed builder cancelled.", embed=None, view=self)
+
+
+# ── Modals ──────────────────────────────────────────────────────────────────
+
+class EmbedEditModal(discord.ui.Modal, title="\U0001f4dd Edit Embed"):
+    def __init__(self, builder: EmbedBuilderView):
+        super().__init__()
+        self.builder = builder
+        self.embed_title = discord.ui.TextInput(
+            label="Title",
+            placeholder="Enter embed title (leave blank for none)",
+            default=builder.embed_title,
+            max_length=256,
+            required=False
+        )
+        self.embed_description = discord.ui.TextInput(
+            label="Description",
+            placeholder="Enter embed description...",
+            default=builder.embed_description,
+            style=discord.TextStyle.paragraph,
+            max_length=4000,
+            required=False
+        )
+        self.embed_footer = discord.ui.TextInput(
+            label="Footer",
+            placeholder="Enter footer text (leave blank for none)",
+            default=builder.embed_footer,
+            max_length=2048,
+            required=False
+        )
+        self.add_item(self.embed_title)
+        self.add_item(self.embed_description)
+        self.add_item(self.embed_footer)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        self.builder.embed_title = self.embed_title.value.strip()
+        self.builder.embed_description = self.embed_description.value.strip()
+        self.builder.embed_footer = self.embed_footer.value.strip()
+        await self.builder.refresh(interaction)
+
+
+class EmbedImagesModal(discord.ui.Modal, title="\U0001f5bc\ufe0f Edit Images"):
+    def __init__(self, builder: EmbedBuilderView):
+        super().__init__()
+        self.builder = builder
+        self.thumbnail = discord.ui.TextInput(
+            label="Thumbnail URL (small image, top-right)",
+            placeholder="https://example.com/thumbnail.png",
+            default=builder.embed_thumbnail,
+            required=False
+        )
+        self.image = discord.ui.TextInput(
+            label="Main Image URL (large image, bottom)",
+            placeholder="https://example.com/image.png",
+            default=builder.embed_image,
+            required=False
+        )
+        self.add_item(self.thumbnail)
+        self.add_item(self.image)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        self.builder.embed_thumbnail = self.thumbnail.value.strip()
+        self.builder.embed_image = self.image.value.strip()
+        await self.builder.refresh(interaction)
+
+
+class EmbedColorModal(discord.ui.Modal, title="\U0001f3a8 Edit Color"):
+    def __init__(self, builder: EmbedBuilderView):
+        super().__init__()
+        self.builder = builder
+        current_hex = f"{builder.embed_color:06X}"
+        self.color_input = discord.ui.TextInput(
+            label="Hex Color (without #)",
+            placeholder="e.g. FF5733 or 5865F2",
+            default=current_hex,
+            max_length=6,
+            min_length=3,
+            required=True
+        )
+        self.add_item(self.color_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raw = self.color_input.value.strip().lstrip("#")
+        try:
+            self.builder.embed_color = int(raw, 16)
+        except ValueError:
+            await interaction.response.send_message("\u274c Invalid hex color. Please use format like `FF5733`.", ephemeral=True)
+            return
+        await self.builder.refresh(interaction)
+
+
+class EmbedLinkButtonModal(discord.ui.Modal, title="\U0001f517 Add Link Button"):
+    def __init__(self, builder: EmbedBuilderView):
+        super().__init__()
+        self.builder = builder
+        self.btn_label = discord.ui.TextInput(
+            label="Button Label",
+            placeholder="e.g. Visit Website",
+            max_length=80,
+            required=True
+        )
+        self.btn_url = discord.ui.TextInput(
+            label="Button URL",
+            placeholder="https://example.com",
+            required=True
+        )
+        self.add_item(self.btn_label)
+        self.add_item(self.btn_url)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        url = self.btn_url.value.strip()
+        if not url.startswith("http://") and not url.startswith("https://"):
+            await interaction.response.send_message("\u274c URL must start with `http://` or `https://`.", ephemeral=True)
+            return
+        if len(self.builder.link_buttons) >= 5:
+            await interaction.response.send_message("\u274c Maximum of **5 link buttons** allowed.", ephemeral=True)
+            return
+        self.builder.link_buttons.append({"label": self.btn_label.value.strip(), "url": url})
+        await interaction.response.send_message(
+            f"\u2705 Link button **{self.btn_label.value.strip()}** added. Total: {len(self.builder.link_buttons)}/5",
+            ephemeral=True
+        )
+
+
+class EmbedAuthorModal(discord.ui.Modal, title="\U0001f464 Edit Author"):
+    def __init__(self, builder: EmbedBuilderView):
+        super().__init__()
+        self.builder = builder
+        self.author_name = discord.ui.TextInput(
+            label="Author Name",
+            placeholder="e.g. Tournament Admin",
+            default=builder.embed_author_name,
+            max_length=256,
+            required=False
+        )
+        self.author_icon = discord.ui.TextInput(
+            label="Author Icon URL (optional)",
+            placeholder="https://example.com/avatar.png",
+            default=builder.embed_author_icon,
+            required=False
+        )
+        self.add_item(self.author_name)
+        self.add_item(self.author_icon)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        self.builder.embed_author_name = self.author_name.value.strip()
+        self.builder.embed_author_icon = self.author_icon.value.strip()
+        await self.builder.refresh(interaction)
+
+
+class EmbedContentModal(discord.ui.Modal, title="\U0001f4ac Add Content"):
+    def __init__(self, builder: EmbedBuilderView):
+        super().__init__()
+        self.builder = builder
+        self.content_input = discord.ui.TextInput(
+            label="Content (plain text above embed)",
+            placeholder="e.g. @everyone Check this out!",
+            default=builder.content,
+            style=discord.TextStyle.paragraph,
+            max_length=2000,
+            required=False
+        )
+        self.add_item(self.content_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        self.builder.content = self.content_input.value
+        await interaction.response.send_message(
+            f"\u2705 Content updated.",
+            ephemeral=True
+        )
+
+
+@tree.command(name="embed", description="Design and send a custom embed to any channel")
+@app_commands.describe(channel="The channel to send the embed to")
+@with_guild_context
+async def embed_builder_command(interaction: discord.Interaction, channel: discord.TextChannel):
+    if not interaction.guild:
+        await interaction.response.send_message("\u274c Server only.", ephemeral=True)
+        return
+    if not (interaction.user.guild_permissions.manage_messages or interaction.user.guild_permissions.administrator):
+        await interaction.response.send_message("\u274c You need **Manage Messages** permission to use this command.", ephemeral=True)
+        return
+
+    # Update send button label dynamically
+    view = EmbedBuilderView(interaction, channel)
+    # Patch send button label to include channel name
+    for item in view.children:
+        if hasattr(item, 'label') and "Send Message" in (item.label or ""):
+            item.label = f"\u2705 Send Message to \u2192 \U0001f6e1\ufe0f {channel.name.upper()}"
+            break
+
+    preview_embed = discord.Embed(
+        description="Your description here. This is a placeholder.",
+        color=0x5865F2
+    )
+
+    await interaction.response.send_message(
+        content="\U0001f3a8 **Design your embed:**",
+        embed=preview_embed,
+        view=view,
+        ephemeral=False
+    )
+
+
+# ===========================================================================
+# PURGE COMMAND GROUP (/purge all, amount, word)
+# ===========================================================================
+purge_group = app_commands.Group(name="purge", description="Delete messages from a channel")
+
+@purge_group.command(name="all", description="Delete ALL messages in the current channel")
+@with_guild_context
+async def purge_all(interaction: discord.Interaction):
+    if not interaction.guild:
+        await interaction.response.send_message("\u274c Server only.", ephemeral=True)
+        return
+    if not (interaction.user.guild_permissions.manage_messages or interaction.user.guild_permissions.administrator):
+        await interaction.response.send_message("\u274c You need **Manage Messages** permission.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    channel = interaction.channel
+    deleted = 0
+    try:
+        while True:
+            msgs = await channel.purge(limit=100)
+            deleted += len(msgs)
+            if len(msgs) < 100:
+                break
+            await asyncio.sleep(1)
+    except discord.Forbidden:
+        await interaction.followup.send("\u274c No permission to delete messages here.", ephemeral=True)
+        return
+    except Exception as e:
+        await interaction.followup.send(f"\u274c Error: {e}", ephemeral=True)
+        return
+    confirm = await channel.send(embed=discord.Embed(
+        title="\U0001f5d1\ufe0f Channel Purged",
+        description=f"Deleted **{deleted}** messages.\n*Self-destructing in 5 seconds...*",
+        color=discord.Color.red(), timestamp=discord.utils.utcnow()
+    ).set_footer(text=f"Purged by {interaction.user.display_name}"))
+    await asyncio.sleep(5)
+    try: await confirm.delete()
+    except Exception: pass
+    await interaction.followup.send(f"\u2705 Purged **{deleted}** messages from {channel.mention}.", ephemeral=True)
+
+
+@purge_group.command(name="amount", description="Delete a specified number of messages (1-1000)")
+@app_commands.describe(count="Number of messages to delete (1-1000)")
+@with_guild_context
+async def purge_amount(interaction: discord.Interaction, count: int):
+    if not interaction.guild:
+        await interaction.response.send_message("\u274c Server only.", ephemeral=True)
+        return
+    if not (interaction.user.guild_permissions.manage_messages or interaction.user.guild_permissions.administrator):
+        await interaction.response.send_message("\u274c You need **Manage Messages** permission.", ephemeral=True)
+        return
+    if count < 1 or count > 1000:
+        await interaction.response.send_message("\u274c Provide a number between **1** and **1000**.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    channel = interaction.channel
+    deleted = 0
+    remaining = count
+    try:
+        while remaining > 0:
+            batch = min(remaining, 100)
+            msgs = await channel.purge(limit=batch)
+            deleted += len(msgs)
+            remaining -= len(msgs)
+            if len(msgs) < batch:
+                break
+            await asyncio.sleep(1)
+    except discord.Forbidden:
+        await interaction.followup.send("\u274c No permission to delete messages here.", ephemeral=True)
+        return
+    except Exception as e:
+        await interaction.followup.send(f"\u274c Error: {e}", ephemeral=True)
+        return
+    confirm = await channel.send(embed=discord.Embed(
+        title="\U0001f5d1\ufe0f Messages Purged",
+        description=f"Deleted **{deleted}** message(s).\n*Self-destructing in 5 seconds...*",
+        color=discord.Color.orange(), timestamp=discord.utils.utcnow()
+    ).set_footer(text=f"Purged by {interaction.user.display_name}"))
+    await asyncio.sleep(5)
+    try: await confirm.delete()
+    except Exception: pass
+    await interaction.followup.send(f"\u2705 Deleted **{deleted}** message(s) from {channel.mention}.", ephemeral=True)
+
+
+@purge_group.command(name="word", description="Delete messages containing a specific word or phrase")
+@app_commands.describe(keyword="Word or phrase to search and delete")
+@with_guild_context
+async def purge_word(interaction: discord.Interaction, keyword: str):
+    if not interaction.guild:
+        await interaction.response.send_message("\u274c Server only.", ephemeral=True)
+        return
+    if not (interaction.user.guild_permissions.manage_messages or interaction.user.guild_permissions.administrator):
+        await interaction.response.send_message("\u274c You need **Manage Messages** permission.", ephemeral=True)
+        return
+    if not keyword.strip():
+        await interaction.response.send_message("\u274c Please provide a keyword.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    channel = interaction.channel
+    keyword_lower = keyword.strip().lower()
+    deleted = 0
+    try:
+        def contains_keyword(msg: discord.Message) -> bool:
+            return keyword_lower in msg.content.lower()
+        checked = 0
+        while checked < 1000:
+            msgs = await channel.purge(limit=100, check=contains_keyword)
+            deleted += len(msgs)
+            checked += 100
+            if len(msgs) == 0:
+                break
+            await asyncio.sleep(1)
+    except discord.Forbidden:
+        await interaction.followup.send("\u274c No permission to delete messages here.", ephemeral=True)
+        return
+    except Exception as e:
+        await interaction.followup.send(f"\u274c Error: {e}", ephemeral=True)
+        return
+    confirm = await channel.send(embed=discord.Embed(
+        title="\U0001f5d1\ufe0f Keyword Purge Complete",
+        description=f"Deleted **{deleted}** message(s) containing `{keyword}`.\n*Self-destructing in 5 seconds...*",
+        color=discord.Color.orange(), timestamp=discord.utils.utcnow()
+    ).set_footer(text=f"Purged by {interaction.user.display_name}"))
+    await asyncio.sleep(5)
+    try: await confirm.delete()
+    except Exception: pass
+    await interaction.followup.send(f"\u2705 Deleted **{deleted}** message(s) matching `{keyword}` from {channel.mention}.", ephemeral=True)
+
+
+# ===========================================================================
+# RECURRING EMBED COMMAND GROUP (/recurring embed set, edit, delete)
+# ===========================================================================
+
+RECURRING_EMBEDS_FILE = os.path.join(BASE_DIR, "recurring_embeds.json")
+
+def load_recurring_embeds() -> dict:
+    try:
+        if os.path.exists(RECURRING_EMBEDS_FILE):
+            with open(RECURRING_EMBEDS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"[RecurringEmbeds] Error loading: {e}")
+    return {}
+
+def save_recurring_embeds(data: dict):
+    try:
+        with open(RECURRING_EMBEDS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"[RecurringEmbeds] Error saving: {e}")
+
+recurring_embeds_store: dict = load_recurring_embeds()
+
+async def recurring_embed_loop():
+    await bot.wait_until_ready()
+    print("[RecurringEmbeds] Background loop started.")
+    while not bot.is_closed():
+        now = datetime.datetime.utcnow()
+        to_update = {}
+        for embed_id, cfg in list(recurring_embeds_store.items()):
+            try:
+                interval_hours = float(cfg.get("interval_hours", 24))
+                last_posted_str = cfg.get("last_posted")
+                last_posted = datetime.datetime.fromisoformat(last_posted_str) if last_posted_str else datetime.datetime.min
+                if (now - last_posted).total_seconds() < interval_hours * 3600:
+                    continue
+                channel_id = int(cfg.get("channel_id", 0))
+                channel = bot.get_channel(channel_id)
+                if not channel:
+                    try: channel = await bot.fetch_channel(channel_id)
+                    except Exception: continue
+                color_raw = cfg.get("color", 0x5865F2)
+                color_val = int(color_raw, 16) if isinstance(color_raw, str) else int(color_raw)
+                embed = discord.Embed(
+                    title=cfg.get("title", "\U0001f4e2 Announcement"),
+                    description=cfg.get("description", ""),
+                    color=color_val,
+                    timestamp=discord.utils.utcnow()
+                )
+                embed.set_footer(text=f"\U0001f4c5 Recurring \u2014 every {interval_hours:.0f}h")
+                await channel.send(embed=embed)
+                cfg["last_posted"] = now.isoformat()
+                to_update[embed_id] = cfg
+                print(f"[RecurringEmbeds] \u2705 Posted '{embed_id}'")
+            except Exception as e:
+                print(f"[RecurringEmbeds] Error on {embed_id}: {e}")
+        if to_update:
+            recurring_embeds_store.update(to_update)
+            save_recurring_embeds(recurring_embeds_store)
+        await asyncio.sleep(60)
+
+
+recurring_group = app_commands.Group(name="recurring", description="Manage recurring embeds in channels")
+recurring_embed_subgroup = app_commands.Group(name="embed", description="Manage recurring embeds", parent=recurring_group)
+
+
+@recurring_embed_subgroup.command(name="set", description="Set a new recurring embed that auto-posts at a set interval")
+@app_commands.describe(
+    embed_id="Unique ID for this embed (e.g. rules_reminder)",
+    channel="Channel to post the embed in",
+    title="Embed title",
+    description="Embed body text",
+    interval_hours="How often to re-post (in hours). Default: 24",
+    color="Hex color code (e.g. FF5733). Default: Discord blurple"
+)
+@with_guild_context
+async def recurring_embed_set(
+    interaction: discord.Interaction,
+    embed_id: str,
+    channel: discord.TextChannel,
+    title: str,
+    description: str,
+    interval_hours: float = 24.0,
+    color: Optional[str] = None
+):
+    if not interaction.guild:
+        await interaction.response.send_message("\u274c Server only.", ephemeral=True)
+        return
+    if not (interaction.user.guild_permissions.manage_messages or interaction.user.guild_permissions.administrator):
+        await interaction.response.send_message("\u274c You need **Manage Messages** permission.", ephemeral=True)
+        return
+    if interval_hours < 0.5:
+        await interaction.response.send_message("\u274c Minimum interval is **0.5 hours** (30 minutes).", ephemeral=True)
+        return
+    embed_id_clean = embed_id.strip().lower().replace(" ", "_")
+    guild_key = f"{interaction.guild_id}:{embed_id_clean}"
+    color_val = 0x5865F2
+    if color:
+        try: color_val = int(color.lstrip("#").lstrip("0x"), 16)
+        except ValueError: pass
+    recurring_embeds_store[guild_key] = {
+        "guild_id": str(interaction.guild_id),
+        "channel_id": str(channel.id),
+        "title": title,
+        "description": description,
+        "interval_hours": interval_hours,
+        "color": color_val,
+        "created_by": str(interaction.user.id),
+        "last_posted": None
+    }
+    save_recurring_embeds(recurring_embeds_store)
+    reply = discord.Embed(
+        title=f"\u2705 Recurring Embed Set \u2014 `{embed_id_clean}`",
+        description=(
+            f"**Channel:** {channel.mention}\n"
+            f"**Interval:** Every **{interval_hours:.1f}h**\n"
+            f"**Title:** {title}\n\n"
+            "The embed will post automatically at the configured interval."
+        ),
+        color=discord.Color.green(), timestamp=discord.utils.utcnow()
+    )
+    reply.set_footer(text=f"Set by {interaction.user.display_name}")
+    await interaction.response.send_message(embed=reply, ephemeral=False)
+
+
+@recurring_embed_subgroup.command(name="edit", description="Edit an existing recurring embed")
+@app_commands.describe(
+    embed_id="ID of the recurring embed to edit",
+    title="New title (leave blank to keep current)",
+    description="New description (leave blank to keep current)",
+    interval_hours="New interval in hours (leave blank to keep current)",
+    channel="New channel (leave blank to keep current)"
+)
+@with_guild_context
+async def recurring_embed_edit(
+    interaction: discord.Interaction,
+    embed_id: str,
+    title: Optional[str] = None,
+    description: Optional[str] = None,
+    interval_hours: Optional[float] = None,
+    channel: Optional[discord.TextChannel] = None
+):
+    if not interaction.guild:
+        await interaction.response.send_message("\u274c Server only.", ephemeral=True)
+        return
+    if not (interaction.user.guild_permissions.manage_messages or interaction.user.guild_permissions.administrator):
+        await interaction.response.send_message("\u274c You need **Manage Messages** permission.", ephemeral=True)
+        return
+    embed_id_clean = embed_id.strip().lower().replace(" ", "_")
+    guild_key = f"{interaction.guild_id}:{embed_id_clean}"
+    if guild_key not in recurring_embeds_store:
+        await interaction.response.send_message(f"\u274c No recurring embed found with ID `{embed_id_clean}`.", ephemeral=True)
+        return
+    cfg = recurring_embeds_store[guild_key]
+    changes = []
+    if title:
+        cfg["title"] = title; changes.append(f"**Title:** {title}")
+    if description:
+        cfg["description"] = description; changes.append("**Description:** updated")
+    if interval_hours is not None:
+        if interval_hours < 0.5:
+            await interaction.response.send_message("\u274c Minimum interval is **0.5 hours**.", ephemeral=True)
+            return
+        cfg["interval_hours"] = interval_hours; changes.append(f"**Interval:** every {interval_hours:.1f}h")
+    if channel:
+        cfg["channel_id"] = str(channel.id); changes.append(f"**Channel:** {channel.mention}")
+    if not changes:
+        await interaction.response.send_message("\u2139\ufe0f No changes provided \u2014 embed unchanged.", ephemeral=True)
+        return
+    recurring_embeds_store[guild_key] = cfg
+    save_recurring_embeds(recurring_embeds_store)
+    reply = discord.Embed(
+        title=f"\u270f\ufe0f Recurring Embed Updated \u2014 `{embed_id_clean}`",
+        description="\n".join(f"\u2022 {c}" for c in changes),
+        color=discord.Color.blue(), timestamp=discord.utils.utcnow()
+    )
+    reply.set_footer(text=f"Edited by {interaction.user.display_name}")
+    await interaction.response.send_message(embed=reply, ephemeral=False)
+
+
+@recurring_embed_subgroup.command(name="delete", description="Delete a recurring embed and stop it from posting")
+@app_commands.describe(embed_id="ID of the recurring embed to delete")
+@with_guild_context
+async def recurring_embed_delete(interaction: discord.Interaction, embed_id: str):
+    if not interaction.guild:
+        await interaction.response.send_message("\u274c Server only.", ephemeral=True)
+        return
+    if not (interaction.user.guild_permissions.manage_messages or interaction.user.guild_permissions.administrator):
+        await interaction.response.send_message("\u274c You need **Manage Messages** permission.", ephemeral=True)
+        return
+    embed_id_clean = embed_id.strip().lower().replace(" ", "_")
+    guild_key = f"{interaction.guild_id}:{embed_id_clean}"
+    if guild_key not in recurring_embeds_store:
+        await interaction.response.send_message(f"\u274c No recurring embed found with ID `{embed_id_clean}`.", ephemeral=True)
+        return
+    del recurring_embeds_store[guild_key]
+    save_recurring_embeds(recurring_embeds_store)
+    reply = discord.Embed(
+        title=f"\U0001f5d1\ufe0f Recurring Embed Deleted \u2014 `{embed_id_clean}`",
+        description="Removed and will no longer auto-post.",
+        color=discord.Color.red(), timestamp=discord.utils.utcnow()
+    )
+    reply.set_footer(text=f"Deleted by {interaction.user.display_name}")
+    await interaction.response.send_message(embed=reply, ephemeral=False)
+
 # Register Command Groups to Bot Tree
 bot.tree.add_command(tournament_group)
 bot.tree.add_command(link_group)
 bot.tree.add_command(staff_group)
 bot.tree.add_command(result_group)
+bot.tree.add_command(purge_group)
+bot.tree.add_command(recurring_group)
 
 if __name__ == "__main__":
     token = os.getenv("DISCORD_TOKEN") or os.getenv("BOT_TOKEN")
     if not token:
-        print("❌ Error: DISCORD_TOKEN is missing in environment variables!")
+        print("\u274c Error: DISCORD_TOKEN is missing in environment variables!")
     else:
-        print("🚀 Starting Tournament Bot...")
+        print("\U0001f680 Starting Tournament Bot...")
+        bot.loop.create_task(recurring_embed_loop())
         bot.run(token)
-
