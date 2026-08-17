@@ -1,10 +1,10 @@
 -- =========================================================================
--- SUPABASE ROW LEVEL SECURITY (RLS) FIX
--- Run this in your Supabase SQL Editor to allow the web dashboard
--- and Discord bot to read, write, and sync GuildConfig, logos, and brackets.
+-- SUPABASE DATABASE & COLUMN FIX
+-- Run this in your Supabase SQL Editor to ensure all tables, columns,
+-- and permissions are configured for server logos and tournaments.
 -- =========================================================================
 
--- Disable RLS on core tournament tables so bot & dashboard API keys can read/write
+-- 1. Disable Row Level Security (RLS) so bot and API keys can read/write
 ALTER TABLE IF EXISTS "GuildConfig" DISABLE ROW LEVEL SECURITY;
 ALTER TABLE IF EXISTS "Tournaments" DISABLE ROW LEVEL SECURITY;
 ALTER TABLE IF EXISTS "Events" DISABLE ROW LEVEL SECURITY;
@@ -13,12 +13,11 @@ ALTER TABLE IF EXISTS "Challonge_Uploads" DISABLE ROW LEVEL SECURITY;
 ALTER TABLE IF EXISTS "JudgeAssignments" DISABLE ROW LEVEL SECURITY;
 ALTER TABLE IF EXISTS "StaffStats" DISABLE ROW LEVEL SECURITY;
 ALTER TABLE IF EXISTS "Deadlines" DISABLE ROW LEVEL SECURITY;
-ALTER TABLE IF EXISTS "WebUsers" DISABLE ROW LEVEL SECURITY;
-ALTER TABLE IF EXISTS "TournamentSponsors" DISABLE ROW LEVEL SECURITY;
-ALTER TABLE IF EXISTS "AffiliateProducts" DISABLE ROW LEVEL SECURITY;
-ALTER TABLE IF EXISTS "SponsorClickLogs" DISABLE ROW LEVEL SECURITY;
-ALTER TABLE IF EXISTS "ActivityLogs" DISABLE ROW LEVEL SECURITY;
 
--- Ensure server_logo_path and server_logo_url columns exist in GuildConfig
+-- 2. Ensure server logo columns exist in GuildConfig table
 ALTER TABLE IF EXISTS "GuildConfig" ADD COLUMN IF NOT EXISTS "server_logo_path" TEXT;
 ALTER TABLE IF EXISTS "GuildConfig" ADD COLUMN IF NOT EXISTS "server_logo_url" TEXT;
+
+-- 3. Ensure Game column exists in Tournaments table
+ALTER TABLE IF EXISTS "Tournaments" ADD COLUMN IF NOT EXISTS "Game" TEXT;
+ALTER TABLE IF EXISTS "Tournaments" ADD COLUMN IF NOT EXISTS "game" TEXT;

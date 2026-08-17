@@ -61,6 +61,8 @@ CREATE TABLE "GuildConfig" (
     "Players_Role_ID" TEXT,
     "Organization_Name" TEXT DEFAULT 'Tournament Organizer',
     "Tournament_System_Name" TEXT DEFAULT 'Tournament System',
+    "server_logo_path" TEXT,
+    "server_logo_url" TEXT,
     "Updated_At" TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
 );
 
@@ -69,6 +71,7 @@ CREATE TABLE "Tournaments" (
     "Tournament_ID" TEXT PRIMARY KEY,
     "Guild_ID" TEXT REFERENCES "GuildConfig"("Guild_ID") ON DELETE CASCADE,
     "Tournament_Name" TEXT NOT NULL,
+    "Game" TEXT,
     "State" TEXT DEFAULT 'pending', -- pending, active, completed
     "Key" TEXT, -- Challonge API key/identifier
     "Challonge_Bracket_Link" TEXT,

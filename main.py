@@ -178,7 +178,7 @@ def load_guild_config(guild_id: int) -> dict:
                             pass
                             
                 # Branding and settings (only overlay if not empty in DB)
-                for key in ['organization_name', 'tournament_system_name', 'google_sheet_link', 'player_info_link', 'player_info_format']:
+                for key in ['organization_name', 'tournament_system_name', 'google_sheet_link', 'player_info_link', 'player_info_format', 'server_logo_path', 'server_logo_url']:
                     db_val = db_data.get(key)
                     if db_val not in (None, "", "None"):
                         config[key] = db_val
@@ -1510,6 +1510,13 @@ def _sync_save_guild_config_to_supabase(guild_id: int, cfg: dict):
         
         "Organization_Name": str(cfg.get('organization_name', '')),
         "Tournament_System_Name": str(cfg.get('tournament_system_name', '')),
+        "organization_name": str(cfg.get('organization_name', '')),
+        "tournament_system_name": str(cfg.get('tournament_system_name', '')),
+        "server_logo_path": str(cfg.get('server_logo_path', '')),
+        "server_logo_url": str(cfg.get('server_logo_url', '')),
+        "google_sheet_link": str(cfg.get('google_sheet_link', '')),
+        "player_info_link": str(cfg.get('player_info_link', '')),
+        "player_info_format": str(cfg.get('player_info_format', '')),
         "Updated_At": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     }
 
@@ -1523,6 +1530,7 @@ def _sync_save_guild_config_to_supabase(guild_id: int, cfg: dict):
         "Recorder_Role_ID": str(cfg.get('role_ids', {}).get('recorder') or ""),
         "Staff_Role_ID": str(cfg.get('role_ids', {}).get('staff') or ""),
         "Players_Role_ID": str(cfg.get('role_ids', {}).get('players') or ""),
+        "server_logo_path": str(cfg.get('server_logo_path', '')),
         "Updated_At": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     }
 
@@ -1564,6 +1572,7 @@ def _sync_save_tournament_to_supabase(guild_id: int, tournament_id: str, t_data:
         "Guild_ID": str(guild_id),
         "Tournament_Name": _get_val('name', 'Tournament_Name') or str(tournament_id),
         "State": _get_val('state', 'State') or "pending",
+        "Game": _get_val('game', 'Game'),
         "Key": _get_val('key', 'Key'),
         "Challonge_Bracket_Link": _get_val('challonge_bracket_link', 'Challonge_Bracket_Link', 'bracket'),
         "Google_Sheet_Link": _get_val('google_sheet_link', 'Google_Sheet_Link', 'captains_sheet_link', 'Captains_Sheet_Link', 'sheet_link'),
@@ -10398,6 +10407,7 @@ def load_guild_tournaments(guild_id: int) -> dict:
                         existing.update({
                             "name": row.get("Tournament_Name") or existing.get("name") or "",
                             "state": row.get("State") or existing.get("state") or "pending",
+                            "game": row.get("Game") or row.get("game") or existing.get("game") or "",
                             "key": row.get("Key") or existing.get("key") or "",
                             "challonge_bracket_link": row.get("challonge_bracket_link") or existing.get("challonge_bracket_link") or "",
                             "captains_sheet_link": row.get("Captains_Sheet_Link") or row.get("Sheet_Link") or existing.get("captains_sheet_link") or "",
@@ -10808,19 +10818,11 @@ async def build_tournament_embed(interaction: discord.Interaction, t_data: dict,
     bracket_str = f"[Click Here]({bracket_val})" if bracket_val.startswith("http") else (f"`{bracket_val}`" if bracket_val else "Not Set")
 
     key_val = t_data.get('key', '')
-    # Row 1: Tournament ID | State | Game | Mode
+    # Row 1: Tournament ID | State | Game
     game_val = t_data.get('game') or 'Not Set'
-    mode_val = t_data.get('mode', '') or 'Not Set'
-    mode_labels = {
-        '1v1': '1v1', '2v2': '2v2', '3v3': '3v3', '4v4': '4v4', '5v5': '5v5',
-        'battle_royale': 'Battle Royale', 'squad': 'Squad (4 players)',
-        'duo': 'Duo', 'custom': 'Custom'
-    }
-    mode_display = mode_labels.get(mode_val, mode_val.upper() if mode_val != 'Not Set' else 'Not Set')
     embed.add_field(name="🏆 Tournament ID",   value=f"`{t_data['id']}`",    inline=True)
     embed.add_field(name="📊 Tournament State", value=f"`{t_data['state']}`", inline=True)
     embed.add_field(name="🎮 Game",             value=f"`{game_val}`",        inline=True)
-    embed.add_field(name="⚔️ Mode",             value=f"`{mode_display}`",    inline=True)
     key_str = f"`{mask_api_key(key_val)}`"
 
     # Thumbnail channel logic
@@ -10911,7 +10913,6 @@ tournament_group = app_commands.Group(name="tournament", description="Manage mul
     tournament_id="Unique identifier for the tournament (e.g. t1, apex2024)",
     name="Full name of the tournament",
     game="Game for this tournament (e.g. Modern Warship, BGMI, Valorant, etc.)",
-    mode="Game mode for this tournament (e.g. 5v5, 1v1, Battle Royale)",
     challonge_key="Challonge API Key or Bracket Identifier",
     bracket_link="Challonge or tournament bracket URL",
     sheet_link="Google Sheet link for player roster / team info",
@@ -10930,24 +10931,12 @@ tournament_group = app_commands.Group(name="tournament", description="Manage mul
     auto_room="Toggle automatic room creation for this tournament"
 )
 @app_commands.autocomplete(game=game_autocomplete)
-@app_commands.choices(mode=[
-    app_commands.Choice(name="1v1",              value="1v1"),
-    app_commands.Choice(name="2v2",              value="2v2"),
-    app_commands.Choice(name="3v3",              value="3v3"),
-    app_commands.Choice(name="4v4",              value="4v4"),
-    app_commands.Choice(name="5v5",              value="5v5"),
-    app_commands.Choice(name="Battle Royale",    value="battle_royale"),
-    app_commands.Choice(name="Squad (4 players)",value="squad"),
-    app_commands.Choice(name="Duo",              value="duo"),
-    app_commands.Choice(name="Custom",           value="custom"),
-])
 @with_guild_context
 async def tournament_add(
     interaction: discord.Interaction,
     tournament_id: str,
     name: str,
     game: Optional[str] = None,
-    mode: Optional[app_commands.Choice[str]] = None,
     challonge_key: Optional[str] = None,
     bracket_link: Optional[str] = None,
     sheet_link: Optional[str] = None,
@@ -10981,7 +10970,6 @@ async def tournament_add(
     t_data["name"] = name.strip()
     t_data["state"] = "pending"
     if game:                t_data["game"] = game.strip()
-    if mode:                t_data["mode"] = mode.value
     if challonge_key:       t_data["key"] = challonge_key.strip()
     if bracket_link:        t_data["challonge_bracket_link"] = bracket_link.strip()
     if sheet_link:          t_data["google_sheet_link"] = sheet_link.strip()
@@ -11015,7 +11003,6 @@ async def tournament_add(
     name="Updated name for the tournament",
     state="Tournament state (pending, active, completed)",
     game="Updated game for template posters (e.g. Modern Warship, BGMI, Valorant)",
-    mode="Game mode for this tournament (e.g. 5v5, 1v1, Battle Royale)",
     challonge_key="Challonge API Key or Identifier",
     bracket_link="Challonge bracket URL",
     sheet_link="Google Sheet link for player roster",
@@ -11039,17 +11026,6 @@ async def tournament_add(
         app_commands.Choice(name="pending",   value="pending"),
         app_commands.Choice(name="active",    value="active"),
         app_commands.Choice(name="completed", value="completed")
-    ],
-    mode=[
-        app_commands.Choice(name="1v1",               value="1v1"),
-        app_commands.Choice(name="2v2",               value="2v2"),
-        app_commands.Choice(name="3v3",               value="3v3"),
-        app_commands.Choice(name="4v4",               value="4v4"),
-        app_commands.Choice(name="5v5",               value="5v5"),
-        app_commands.Choice(name="Battle Royale",     value="battle_royale"),
-        app_commands.Choice(name="Squad (4 players)", value="squad"),
-        app_commands.Choice(name="Duo",               value="duo"),
-        app_commands.Choice(name="Custom",            value="custom"),
     ]
 )
 @with_guild_context
@@ -11059,7 +11035,6 @@ async def tournament_edit(
     name: Optional[str] = None,
     state: Optional[str] = None,
     game: Optional[str] = None,
-    mode: Optional[app_commands.Choice[str]] = None,
     challonge_key: Optional[str] = None,
     bracket_link: Optional[str] = None,
     sheet_link: Optional[str] = None,
@@ -11092,7 +11067,6 @@ async def tournament_edit(
     if name:               t_data["name"] = name.strip()
     if state:              t_data["state"] = state
     if game:               t_data["game"] = game.strip()
-    if mode:               t_data["mode"] = mode.value
     if challonge_key:      t_data["key"] = challonge_key.strip()
     if bracket_link:       t_data["challonge_bracket_link"] = bracket_link.strip()
     if sheet_link:         t_data["google_sheet_link"] = sheet_link.strip()
