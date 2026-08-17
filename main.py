@@ -10220,8 +10220,8 @@ async def settings_show(interaction: discord.Interaction):
 
     # Branding/Links section
     branding_value = (
-        f"🏢 **Server Name:** {get_setting_str('organization_name', 'TASK FORCE TRIDENT')}\n"
-        f"⚙️ **Tournament Bot Name:** {get_setting_str('tournament_system_name', 'Tournament Organizer')}"
+        f"🏢 **Server Name:** {get_setting_str('organization_name', 'Tournament Server')}\n"
+        f"⚙️ **Tournament Bot Name:** {get_setting_str('tournament_system_name', 'Tournament Bot')}"
     )
     embed.add_field(name="🏆 Branding & Links", value=branding_value, inline=False)
 

@@ -1,0 +1,207 @@
+{% extends "base.html" %}
+
+{% block title %}{{ tournament.Tournament_Name or tournament.tournament_name }} - Bracket & Live Schedule{% endblock %}
+
+{% block content %}
+    <!-- Breadcrumbs -->
+    <div style="margin-bottom: 1.5rem; font-size: 0.88rem; color: var(--text-muted);">
+        <a href="/" style="color: var(--text-secondary);">&larr; Back to All Tournaments</a> / 
+        <span style="color: var(--primary-cyan);">{{ tournament.Tournament_Name or tournament.tournament_name }}</span>
+    </div>
+
+    <!-- Tournament Header Card -->
+    <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-lg); padding: 2.2rem; margin-bottom: 2rem; backdrop-filter: blur(12px);">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem;">
+            <div>
+                <span class="user-role-tag" style="background: rgba(0, 242, 254, 0.15); color: var(--primary-cyan); border: 1px solid rgba(0, 242, 254, 0.3);">
+                    {{ guild.organization_name or "Tournament Series" }}
+                </span>
+                <h1 style="font-family: var(--font-heading); font-size: 2.4rem; font-weight: 800; margin: 0.5rem 0;">
+                    {{ tournament.Tournament_Name or tournament.tournament_name }}
+                </h1>
+                <p style="color: var(--text-secondary); font-size: 0.95rem;">
+                    Format: <strong>{{ guild.player_info_format or "Standard Bracket" }}</strong> &bull; 
+                    Status: <span style="color: #10b981; font-weight: 700;">{{ tournament.State or tournament.state or "ACTIVE" }}</span>
+                </p>
+            </div>
+
+            <div style="display: flex; gap: 10px;">
+                {% if tournament.challonge_bracket_link %}
+                <a href="{{ tournament.challonge_bracket_link }}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">
+                    Open in Challonge ↗
+                </a>
+                {% endif %}
+                {% if is_organizer %}
+                <a href="/dashboard" class="btn btn-primary">
+                    ⚙️ Manage Scores
+                </a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Monetization: Featured Tournament Sponsor Slot -->
+    {% if sponsors and sponsors|length > 0 %}
+        {% set tourney_sponsor = sponsors[0] %}
+        <div class="sponsor-banner-slot">
+            <a href="/api/public/click/{{ tourney_sponsor.id }}" target="_blank" rel="noopener noreferrer" class="sponsor-banner-link" style="background-image: linear-gradient(rgba(0,0,0,0.3), rgba(0,0,0,0.7)), url('{{ tourney_sponsor.banner_image_url }}');">
+                <span class="sponsor-badge-tag">⭐ Tournament Official Sponsor</span>
+                <span class="sponsor-cta-tag">Visit {{ tourney_sponsor.sponsor_name }} &rarr;</span>
+            </a>
+        </div>
+    {% endif %}
+
+    <!-- Live Bracket Viewer -->
+    <section class="bracket-container">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.2rem; flex-wrap: wrap; gap: 1rem;">
+            <div>
+                <h2 class="section-title">📊 Live Bracket Tree</h2>
+                <span style="font-size: 0.82rem; color: var(--text-muted);">
+                    {% if tournament.challonge_bracket_link and 'challonge.com' in tournament.challonge_bracket_link %}
+                        Auto-refreshed with Challonge sync
+                    {% else %}
+                        Live Interactive Web Bracket &bull; Auto-synced scores & standings
+                    {% endif %}
+                </span>
+            </div>
+            {% if is_organizer %}
+            <div style="display: flex; gap: 10px; align-items: center;">
+                <button type="button" id="saveLiveBracketBtn" class="btn btn-primary btn-sm" data-tid="{{ tournament.Tournament_ID or tournament.id }}">
+                    💾 Save Match Scores & Winners
+                </button>
+                <span id="liveBracketSaveStatus" style="font-size: 0.85rem; font-weight: 600;"></span>
+            </div>
+            {% endif %}
+        </div>
+
+        {% if tournament.challonge_bracket_link and 'challonge.com' in tournament.challonge_bracket_link %}
+            {% set bracket_url = tournament.challonge_bracket_link %}
+            {% if "http" in bracket_url %}
+                <iframe src="{{ bracket_url }}/module?theme=7387" class="challonge-iframe" allowtransparency="true"></iframe>
+            {% else %}
+                <div style="padding: 3rem; text-align: center; color: var(--text-secondary);">
+                    <p>Bracket Link: <a href="https://challonge.com/{{ bracket_url }}" target="_blank">https://challonge.com/{{ bracket_url }}</a></p>
+                </div>
+            {% endif %}
+        {% else %}
+            <!-- Interactive Live Website Bracket Tree -->
+            <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 1.8rem; overflow-x: auto;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem;">
+                    <div>
+                        <h3 id="publicPreviewTitle" style="font-family: var(--font-heading); font-size: 1.3rem; font-weight: 800; color: var(--text-primary);">
+                            {{ tournament.Tournament_Name or tournament.tournament_name }} - Bracket Tree
+                        </h3>
+                        <p style="color: var(--text-secondary); font-size: 0.85rem;">
+                            {% if is_organizer %}
+                                ⚡ Organizer Mode: Edit scores in number inputs and click ▶ (or team slot) to advance winners, then click "Save Match Scores"
+                            {% else %}
+                                👁️ Live Spectator View: Real-time match scores and bracket winner progression
+                            {% endif %}
+                        </p>
+                    </div>
+                    <div id="publicChampionBadgeBox" style="display: none; background: rgba(251, 191, 36, 0.15); border: 1px solid rgba(251, 191, 36, 0.4); padding: 6px 14px; border-radius: 20px;">
+                        <span style="color: var(--accent-gold); font-weight: 800; font-size: 0.88rem;">👑 CROWNED: <span id="publicChampionName">Team Alpha</span></span>
+                    </div>
+                </div>
+
+                <!-- Challonge Top Banner Notice -->
+                <div style="background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.08); border-radius: var(--radius-sm); padding: 9px 14px; margin-bottom: 1rem; font-size: 0.8rem; color: #94a3b8; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span>🔒 <strong>Single Elimination Seeded Bracket</strong> &bull; {% if is_organizer %}Click match ▶ to advance winner &bull; Save when finished{% else %}Live Spectator View{% endif %}</span>
+                    </div>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <span style="display: inline-flex; align-items: center; gap: 5px; color: #ef4444; font-weight: 800; font-size: 0.75rem; letter-spacing: 0.5px;">
+                            <span style="width: 7px; height: 7px; border-radius: 50%; background: #ef4444; animation: blinkPulse 1.5s infinite;"></span> LIVE
+                        </span>
+                        <span style="color: #64748b; font-size: 0.75rem; font-weight: 700;">&lt;/&gt; FULL BRACKET</span>
+                    </div>
+                </div>
+
+                <div id="publicBracketVisualContainer" class="bracket-visual-stage">
+                    <!-- Dynamic Bracket Columns & Match Nodes Injected by JS -->
+                </div>
+            </div>
+        {% endif %}
+    </section>
+
+    <!-- Embedded Tournament Data for Client JS -->
+    <script id="publicTournamentDataJson" type="application/json">
+        {{ tournament | tojson }}
+    </script>
+
+    <!-- Recent Match Schedule & Results -->
+    <section style="margin: 3rem 0;">
+        <h2 class="section-title" style="margin-bottom: 1.2rem;">📅 Match Schedule & Results</h2>
+        <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); overflow: hidden;">
+            {% if events and events|length > 0 %}
+                <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.92rem;">
+                    <thead>
+                        <tr style="background: rgba(0,0,0,0.3); border-bottom: 1px solid var(--border-color); color: var(--text-secondary);">
+                            <th style="padding: 1rem;">Match / Event</th>
+                            <th style="padding: 1rem;">Round</th>
+                            <th style="padding: 1rem;">Match Name</th>
+                            <th style="padding: 1rem;">Scheduled Time</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for ev in events %}
+                        <tr style="border-bottom: 1px solid rgba(255,255,255,0.04);">
+                            <td style="padding: 1rem; font-weight: 600; color: var(--primary-cyan);">
+                                {{ ev.Event_ID or ev.event_id or "Match #" ~ loop.index }}
+                            </td>
+                            <td style="padding: 1rem; color: var(--text-secondary);">
+                                {{ ev.Round or ev.round or "Group Stage" }}
+                            </td>
+                            <td style="padding: 1rem; font-weight: 600;">
+                                {{ ev.Match_Name or ev.match_name or "Team 1 vs Team 2" }}
+                            </td>
+                            <td style="padding: 1rem; color: var(--text-muted);">
+                                {{ ev.Timestamp or ev.timestamp or "Scheduled" }}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% else %}
+                <div style="padding: 2.5rem; text-align: center; color: var(--text-secondary);">
+                    No matches scheduled for this tournament yet.
+                </div>
+            {% endif %}
+        </div>
+    </section>
+
+    <!-- Monetization: Contextual Game Gear Recommendations -->
+    {% if affiliates and affiliates|length > 0 %}
+    <section class="affiliate-section">
+        <div class="section-header">
+            <div>
+                <h2 class="section-title">⚡ Recommended Gear for {{ game_category }}</h2>
+                <p class="section-subtitle">Gear and instant in-game currency partner widgets curated for this game</p>
+            </div>
+        </div>
+
+        <div class="affiliate-grid">
+            {% for p in affiliates %}
+            <div class="affiliate-card">
+                <span class="affiliate-badge">{{ p.badge_text or "Pro Pick" }}</span>
+                <div class="affiliate-img-wrapper">
+                    <img src="{{ p.image_url }}" alt="{{ p.product_name }}" class="affiliate-img" loading="lazy">
+                </div>
+                <div>
+                    <span style="font-size: 0.72rem; color: var(--primary-cyan); font-weight: 700; text-transform: uppercase;">
+                        {{ p.product_category }}
+                    </span>
+                    <h4 class="affiliate-name">{{ p.product_name }}</h4>
+                </div>
+                <div class="affiliate-footer">
+                    <div class="affiliate-price">{{ p.price_display or "Check Deal" }}</div>
+                    <a href="{{ p.affiliate_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-sm">
+                        View Deal &rarr;
+                    </a>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </section>
+    {% endif %}
+{% endblock %}

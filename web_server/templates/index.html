@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+
+{% block title %}Tournaments & Live Brackets - Tournament Bot{% endblock %}
+
+{% block content %}
+    <!-- Hero Banner -->
+    <section class="hero-banner">
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 2rem; flex-wrap: wrap;">
+            <div style="flex: 1; min-width: 300px;">
+                <div style="display: inline-flex; align-items: center; gap: 8px; background: rgba(0, 242, 254, 0.1); border: 1px solid rgba(0, 242, 254, 0.25); padding: 5px 14px; border-radius: 30px; margin-bottom: 1rem;">
+                    <span style="width: 8px; height: 8px; border-radius: 50%; background: var(--primary-cyan); display: inline-block; animation: pulseGlow 1.5s infinite;"></span>
+                    <span style="font-size: 0.8rem; font-weight: 700; color: var(--primary-cyan); letter-spacing: 0.5px;">OFFICIAL ESPORTS ENGINE</span>
+                </div>
+                <h1 class="hero-title">COMPETE. DOMINATE. ASCEND.</h1>
+                <p class="hero-desc">The central command hub for official multi-server esports tournaments, real-time live brackets, automated match posters, and competitive prize pools.</p>
+                <div style="display: flex; gap: 15px; flex-wrap: wrap;">
+                    <a href="#tournaments-list" class="btn btn-primary">🏆 Browse Tournaments</a>
+                    <a href="#affiliate-store" class="btn btn-secondary">⚡ Pro Gaming Gear & Deals</a>
+                </div>
+            </div>
+            <div style="text-align: center;">
+                <img src="/static/img/tournament_bot_logo.png" alt="Tournament Bot Hero Logo" class="hero-brand-logo">
+            </div>
+        </div>
+    </section>
+
+    <!-- Monetization: Featured Top Sponsor Banner Slot -->
+    {% if sponsors and sponsors|length > 0 %}
+        {% set hero_sponsor = sponsors[0] %}
+        <div class="sponsor-banner-slot">
+            <a href="/api/public/click/{{ hero_sponsor.id }}" target="_blank" rel="noopener noreferrer" class="sponsor-banner-link" style="background-image: linear-gradient(rgba(0,0,0,0.35), rgba(0,0,0,0.65)), url('{{ hero_sponsor.banner_image_url }}');">
+                <span class="sponsor-badge-tag">⭐ Featured Platform Sponsor</span>
+                <span class="sponsor-cta-tag">Visit {{ hero_sponsor.sponsor_name }} &rarr;</span>
+            </a>
+        </div>
+    {% endif %}
+
+    <!-- Active Tournaments List -->
+    <section id="tournaments-list" style="margin-top: 3rem;">
+        <div class="section-header">
+            <div>
+                <h2 class="section-title">🏆 Active & Upcoming Tournaments</h2>
+                <p class="section-subtitle">Real-time brackets and scheduled matches officiated by the Tournament Bot</p>
+            </div>
+        </div>
+
+        <div class="tournament-grid">
+            {% if tournaments and tournaments|length > 0 %}
+                {% for t in tournaments %}
+                <div class="tournament-card">
+                    <div>
+                        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1rem;">
+                            <span class="tournament-badge {% if t.State == 'live' or t.state == 'live' %}badge-live{% else %}badge-upcoming{% endif %}">
+                                {{ t.State or t.state or "ACTIVE" }}
+                            </span>
+                            <span style="font-size: 0.78rem; color: var(--text-muted);">ID: {{ t.Tournament_ID or t.tournament_id }}</span>
+                        </div>
+                        <h3 style="font-family: var(--font-heading); font-size: 1.3rem; font-weight: 700; margin-bottom: 0.5rem;">
+                            {{ t.Tournament_Name or t.tournament_name or "Tournament #" ~ loop.index }}
+                        </h3>
+                        <p style="font-size: 0.88rem; color: var(--text-secondary); margin-bottom: 1.2rem;">
+                            Multi-Server Matchup &bull; Challonge Bracket Officiated
+                        </p>
+                    </div>
+
+                    <div style="display: flex; gap: 10px; margin-top: 1rem;">
+                        <a href="/tournament/{{ t.Tournament_ID or t.tournament_id }}" class="btn btn-primary btn-sm" style="flex: 1;">
+                            View Live Bracket &rarr;
+                        </a>
+                        {% if t.challonge_bracket_link %}
+                        <a href="{{ t.challonge_bracket_link }}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm" title="Open Challonge Bracket">
+                            🔗
+                        </a>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endfor %}
+            {% else %}
+                <div style="grid-column: 1 / -1; background: var(--bg-card); padding: 3rem; text-align: center; border-radius: var(--radius-md); border: 1px dashed var(--border-color);">
+                    <div style="font-size: 2.5rem; margin-bottom: 0.8rem;">🎮</div>
+                    <h3 style="font-family: var(--font-heading); margin-bottom: 0.5rem;">No active tournaments currently displayed</h3>
+                    <p style="color: var(--text-secondary); font-size: 0.9rem;">Organizers can create events using <code>/event_create</code> in Discord or through the Organizer Dashboard.</p>
+                </div>
+            {% endif %}
+        </div>
+    </section>
+
+    <!-- Monetization: Affiliate Gear & Gaming Store Integration -->
+    <section id="affiliate-store" class="affiliate-section">
+        <div class="section-header">
+            <div>
+                <h2 class="section-title">🛒 Pro Player Gear & Game Credits</h2>
+                <p class="section-subtitle">Recommended esports peripherals and instant in-game currency top-up partner widgets</p>
+            </div>
+            <div>
+                <span class="user-role-tag" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3);">
+                    Verified Partners
+                </span>
+            </div>
+        </div>
+
+        <div class="affiliate-grid">
+            {% if affiliates and affiliates|length > 0 %}
+                {% for p in affiliates %}
+                <div class="affiliate-card">
+                    <span class="affiliate-badge">{{ p.badge_text or "Top Pick" }}</span>
+                    <div class="affiliate-img-wrapper">
+                        <img src="{{ p.image_url }}" alt="{{ p.product_name }}" class="affiliate-img" loading="lazy">
+                    </div>
+                    <div>
+                        <span style="font-size: 0.72rem; color: var(--primary-cyan); font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;">
+                            {{ p.game_category }} &bull; {{ p.product_category }}
+                        </span>
+                        <h4 class="affiliate-name">{{ p.product_name }}</h4>
+                    </div>
+                    <div class="affiliate-footer">
+                        <div class="affiliate-price">{{ p.price_display or "Best Deal" }}</div>
+                        <a href="{{ p.affiliate_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-sm">
+                            Buy Now &rarr;
+                        </a>
+                    </div>
+                </div>
+                {% endfor %}
+            {% else %}
+                <p style="color: var(--text-muted);">No products listed yet.</p>
+            {% endif %}
+        </div>
+    </section>
+{% endblock %}

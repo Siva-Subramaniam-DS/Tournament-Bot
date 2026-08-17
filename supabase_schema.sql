@@ -1,6 +1,6 @@
 -- =========================================================================
 -- SUPABASE / POSTGRESQL SCHEMA MIGRATION SCRIPT
--- Bot: Task Force Trident Tournament Bot
+-- Bot: Tournament Bot
 -- Purpose: Create/Rearrange tables to match exact column header orders.
 -- =========================================================================
 

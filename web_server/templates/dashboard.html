@@ -1,0 +1,849 @@
+{% extends "base.html" %}
+
+{% block title %}Organizer Command Center - Tournament Bot{% endblock %}
+
+{% block content %}
+    <div style="margin-bottom: 2rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
+            <div style="display: flex; align-items: center; gap: 15px;">
+                <img src="/static/img/tournament_bot_logo.png" alt="Logo" style="width: 48px; height: 48px; border-radius: 10px; border: 1px solid var(--border-color); box-shadow: 0 0 15px rgba(0, 242, 254, 0.2);">
+                <div>
+                    <h1 style="font-family: var(--font-heading); font-size: 2rem; font-weight: 800;">
+                        Organizer Command Center
+                    </h1>
+                    <p style="color: var(--text-secondary); font-size: 0.9rem;">
+                        Logged in as <strong>{{ user.username }}</strong> &bull; Role: <span class="user-role-tag tag-{{ user.role }}">{{ user.role }}</span>
+                    </p>
+                </div>
+            </div>
+            <div style="display: flex; gap: 10px;">
+                <a href="/" class="btn btn-secondary btn-sm">&larr; Public Arena View</a>
+            </div>
+        </div>
+    </div>
+
+    <!-- Quick Analytics Stats Row -->
+    <div class="stats-grid">
+        <div class="stat-box">
+            <div class="stat-value">{{ tournaments|length }}</div>
+            <div class="stat-label">Active Tournaments</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-value" style="color: var(--primary-cyan);">{{ guilds|length }}</div>
+            <div class="stat-label">Connected Servers</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-value">{{ sponsors|length }}</div>
+            <div class="stat-label">Sponsor Banners</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-value" style="color: #34d399;">
+                {% set total_clicks = sponsors|map(attribute='clicks_count')|map('int')|sum %}
+                {{ total_clicks }}
+            </div>
+            <div class="stat-label">Total Sponsor Clicks</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-value" style="color: var(--accent-gold);">
+                {{ affiliates|length }}
+            </div>
+            <div class="stat-label">Affiliate Store Items</div>
+        </div>
+    </div>
+
+    <!-- Dashboard Navigation Tabs -->
+    <div class="dashboard-nav">
+        <button class="dash-tab-btn active" data-panel="tournaments-panel">🏆 My Tournaments</button>
+        <button class="dash-tab-btn" data-panel="bracket-studio-panel" style="color: var(--primary-cyan); font-weight: 700;">⚡ Bracket Creator Studio</button>
+        <button class="dash-tab-btn" data-panel="server-commands-panel" style="color: #60a5fa; font-weight: 700;">⚙️ Server Config & Commands</button>
+        <button class="dash-tab-btn" data-panel="sponsors-panel">💰 Sponsor Banners</button>
+        <button class="dash-tab-btn" data-panel="affiliates-panel">🎮 Gaming Store & Affiliates</button>
+        {% if is_admin or is_super_admin %}
+        <button class="dash-tab-btn" data-panel="admin-panel" style="color: #fca5a5;">🔑 Admin & Accounts</button>
+        {% endif %}
+    </div>
+
+    <!-- =========================================================================
+         PANEL 1: TOURNAMENTS MANAGER
+         ========================================================================= -->
+    <div id="tournaments-panel" class="dash-panel" style="display: block;">
+        <div class="section-header" style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <h2 class="section-title">🏆 Managed Tournaments</h2>
+                <p class="section-subtitle">View, update, simulate scores, and manage tournament brackets across your authorized Discord servers</p>
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="switchDashboardTab('bracket-studio-panel')">
+                ➕ Create New Bracket
+            </button>
+        </div>
+
+        <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); overflow: hidden;">
+            {% if tournaments and tournaments|length > 0 %}
+                <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.92rem;">
+                    <thead>
+                        <tr style="background: rgba(0,0,0,0.3); border-bottom: 1px solid var(--border-color); color: var(--text-secondary);">
+                            <th style="padding: 1rem;">Tournament ID</th>
+                            <th style="padding: 1rem;">Tournament Name</th>
+                            <th style="padding: 1rem;">Game</th>
+                            <th style="padding: 1rem;">State</th>
+                            <th style="padding: 1rem;">Public Bracket Link</th>
+                            <th style="padding: 1rem; text-align: right;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tournamentsTableBody">
+                        {% for t in tournaments %}
+                        {% set t_id = t.Tournament_ID or t.tournament_id or t.id %}
+                        {% set t_name = t.Tournament_Name or t.tournament_name or t.name %}
+                        <tr style="border-bottom: 1px solid rgba(255,255,255,0.04);" id="tourney-row-{{ t_id }}">
+                            <td style="padding: 1rem; font-family: var(--font-mono); color: var(--primary-cyan);">
+                                {{ t_id }}
+                            </td>
+                            <td style="padding: 1rem; font-weight: 700;">
+                                {{ t_name }}
+                            </td>
+                            <td style="padding: 1rem;">
+                                <span class="game-tag">{{ t.game_category or "General" }}</span>
+                            </td>
+                            <td style="padding: 1rem;">
+                                <span class="tournament-badge badge-upcoming">{{ t.State or t.state or "ACTIVE" }}</span>
+                            </td>
+                            <td style="padding: 1rem;">
+                                {% if t.challonge_bracket_link and 'challonge.com' in t.challonge_bracket_link %}
+                                <div style="display: flex; align-items: center; gap: 6px;">
+                                    <a href="{{ t.challonge_bracket_link }}" target="_blank" style="font-size: 0.85rem; color: var(--primary-cyan); font-weight: 600;">🏆 Challonge ↗</a>
+                                    <button type="button" class="btn-copy-link" data-link="{{ t.challonge_bracket_link }}" title="Copy Bracket Link" style="background: none; border: none; cursor: pointer; font-size: 0.85rem;">📋</button>
+                                </div>
+                                {% else %}
+                                {% set web_link = '/tournament/' ~ t_id %}
+                                <div style="display: flex; align-items: center; gap: 6px;">
+                                    <a href="{{ web_link }}" target="_blank" style="font-size: 0.85rem; color: #34d399; font-weight: 600;">🌐 Web Bracket ↗</a>
+                                    <button type="button" class="btn-copy-link" data-link="{{ web_link }}" title="Copy Bracket Link" style="background: none; border: none; cursor: pointer; font-size: 0.85rem;">📋</button>
+                                </div>
+                                {% endif %}
+                            </td>
+                            <td style="padding: 1rem; text-align: right; white-space: nowrap;">
+                                <a href="/tournament/{{ t_id }}" class="btn btn-secondary btn-sm" title="View Bracket">
+                                    👁️ View
+                                </a>
+                                <button type="button" class="btn btn-secondary btn-sm edit-tourney-btn" 
+                                        data-tid="{{ t_id }}"
+                                        data-name="{{ t_name }}"
+                                        data-game="{{ t.game_category or 'General' }}"
+                                        data-state="{{ t.State or t.state or 'ACTIVE' }}"
+                                        data-challonge="{{ t.challonge_bracket_link or '' }}"
+                                        title="Edit Info">
+                                    ✏️ Edit
+                                </button>
+                                <button type="button" class="btn btn-sm delete-tourney-btn" 
+                                        data-tid="{{ t_id }}"
+                                        data-name="{{ t_name }}"
+                                        style="background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.3); color: #fca5a5;"
+                                        title="Delete Tournament">
+                                    🗑️
+                                </button>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% else %}
+                <div style="padding: 3.5rem 2rem; text-align: center; color: var(--text-secondary);">
+                    <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">🏆</div>
+                    <p style="font-size: 1.1rem; font-weight: 600; color: var(--text-primary);">No tournaments found</p>
+                    <p style="font-size: 0.88rem; margin-top: 4px; margin-bottom: 1.5rem;">Create your first tournament bracket with the new Bracket Creator Studio!</p>
+                    <button class="btn btn-primary" onclick="switchDashboardTab('bracket-studio-panel')">
+                        ⚡ Open Bracket Creator Studio
+                    </button>
+                </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Quick Edit Tournament Modal -->
+    <div id="editTournamentModal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 1000; align-items: center; justify-content: center; backdrop-filter: blur(4px);">
+        <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 2rem; width: 90%; max-width: 500px; box-shadow: 0 10px 40px rgba(0,0,0,0.6);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.2rem;">
+                <h3 style="font-family: var(--font-heading); font-size: 1.3rem; color: var(--primary-cyan);">✏️ Edit Tournament</h3>
+                <button type="button" id="closeEditModalBtn" style="background: none; border: none; font-size: 1.5rem; color: var(--text-muted); cursor: pointer;">&times;</button>
+            </div>
+            <form id="quickEditTourneyForm">
+                <input type="hidden" id="editTourneyId">
+                <div class="form-group">
+                    <label class="form-label">Tournament Name</label>
+                    <input type="text" id="editTourneyName" class="form-input" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Game Category</label>
+                    <input type="text" id="editTourneyGame" class="form-input" placeholder="e.g. Modern Warships, Valorant, BGMI" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Tournament State</label>
+                    <select id="editTourneyState" class="form-input">
+                        <option value="ACTIVE">ACTIVE / UNDERWAY</option>
+                        <option value="PENDING">PENDING / REGISTRATION</option>
+                        <option value="COMPLETED">COMPLETED</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Bracket Link (Challonge or Web Bracket)</label>
+                    <input type="text" id="editTourneyChallonge" class="form-input" placeholder="https://challonge.com/... or /tournament/xyz">
+                </div>
+                <div style="display: flex; gap: 10px; margin-top: 1.5rem;">
+                    <button type="submit" class="btn btn-primary" style="flex: 1;">💾 Save Changes</button>
+                    <button type="button" id="cancelEditModalBtn" class="btn btn-secondary">Cancel</button>
+                </div>
+                <div id="editTourneyFeedback" style="margin-top: 10px; font-size: 0.85rem; text-align: center;"></div>
+            </form>
+        </div>
+    </div>
+
+    <!-- =========================================================================
+         PANEL 2: INTERACTIVE ANIMATED BRACKET CREATOR STUDIO
+         ========================================================================= -->
+    <div id="bracket-studio-panel" class="dash-panel" style="display: none;">
+        <div class="section-header">
+            <h2 class="section-title">⚡ Interactive Bracket Creator Studio</h2>
+            <p class="section-subtitle">Generate animated single/double elimination brackets, import team CSVs, edit live scores, sync Challonge API, and publish instantly</p>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 380px 1fr; gap: 2rem; align-items: flex-start;">
+            <!-- Left Column: Wizard Controls -->
+            <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 1.8rem;">
+                <h3 style="font-family: var(--font-heading); font-size: 1.25rem; margin-bottom: 1.2rem; color: var(--primary-cyan);">
+                    🛠️ Tournament Setup Wizard
+                </h3>
+
+                <form id="bracketStudioForm">
+                    <div class="form-group">
+                        <label class="form-label">Target Discord Server</label>
+                        <select id="studioGuildId" class="form-input">
+                            {% for g in guilds %}
+                            <option value="{{ g.guild_id }}">{{ g.organization_name }} ({{ g.guild_id }})</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Tournament Name</label>
+                        <input type="text" id="studioTournamentName" class="form-input" placeholder="e.g. Modern Warships Champions League" value="Championship Series 2026" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Game Category</label>
+                        <div class="game-select-grid">
+                            <button type="button" class="game-select-btn active" data-game="Valorant">🎯 Valorant</button>
+                            <button type="button" class="game-select-btn" data-game="Modern Warships">⚓ Modern Warships</button>
+                            <button type="button" class="game-select-btn" data-game="BGMI">📱 BGMI</button>
+                            <button type="button" class="game-select-btn" data-game="Free Fire">🔥 Free Fire</button>
+                            <button type="button" class="game-select-btn" data-game="Call of Duty">💥 COD</button>
+                            <button type="button" class="game-select-btn" data-game="Brawl Stars">⭐ Brawl Stars</button>
+                            <button type="button" class="game-select-btn" data-game="General">🎮 General</button>
+                            <button type="button" class="game-select-btn" data-game="custom" id="customGameToggleBtn">➕ Other Game...</button>
+                        </div>
+                        <div id="customGameInputContainer" style="display: none; margin-top: 8px;">
+                            <input type="text" id="studioCustomGameName" class="form-input" placeholder="Type custom game name (e.g. Rocket League, CS2, FIFA...)">
+                        </div>
+                        <input type="hidden" id="studioGameCategory" value="Valorant">
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                        <div class="form-group">
+                            <label class="form-label">Bracket Type</label>
+                            <select id="studioBracketType" class="form-input">
+                                <option value="single_elimination">Single Elimination (R1 ➔ Final)</option>
+                                <option value="group_stage">Group Stage (Group A-Z ➔ Playoffs)</option>
+                                <option value="double_elimination">Double Elimination</option>
+                                <option value="round_robin">Round Robin</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Match Format</label>
+                            <select id="studioFormat" class="form-input">
+                                <option value="5 vs 5">5 vs 5</option>
+                                <option value="4 vs 4">4 vs 4</option>
+                                <option value="2 vs 2">2 vs 2</option>
+                                <option value="1 vs 1">1 vs 1</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Group Stage Settings (Shown when Group Stage is selected) -->
+                    <div id="studioGroupSettingsBox" style="display: none; background: rgba(0,0,0,0.25); padding: 10px 14px; border-radius: var(--radius-sm); border: 1px solid rgba(255,255,255,0.06); margin-bottom: 0.8rem;">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label class="form-label" style="font-size: 0.78rem;">Number of Groups</label>
+                                <select id="studioGroupCount" class="form-input" style="font-size: 0.82rem;">
+                                    <option value="auto">Auto (Calculated)</option>
+                                    <option value="2">2 Groups (Group A, B)</option>
+                                    <option value="4">4 Groups (Group A - D)</option>
+                                    <option value="8">8 Groups (Group A - H)</option>
+                                    <option value="16">16 Groups (Group A - P)</option>
+                                    <option value="26">26 Groups (Group A - Z)</option>
+                                </select>
+                            </div>
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label class="form-label" style="font-size: 0.78rem;">Advancing per Group</label>
+                                <select id="studioGroupAdvanceCount" class="form-input" style="font-size: 0.82rem;">
+                                    <option value="1">Top 1 per Group</option>
+                                    <option value="2">Top 2 per Group</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="form-group" style="margin-top: 0.5rem;">
+                        <label class="form-label" style="display: flex; justify-content: space-between; align-items: center;">
+                            <span>Teams & Seeds Manager</span>
+                            <span id="studioTeamCount" style="color: var(--primary-cyan); font-weight: 700; font-size: 0.8rem;">0 / 256 Teams</span>
+                        </label>
+                        <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                            <input type="text" id="studioNewTeamInput" class="form-input" placeholder="Enter team name..." style="flex: 1;">
+                            <button type="button" id="studioAddTeamBtn" class="btn btn-secondary btn-sm" style="white-space: nowrap;">➕ Add</button>
+                        </div>
+                        <div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 8px;">
+                            <button type="button" id="studioQuick4Btn" class="btn-chip">⚡ 4</button>
+                            <button type="button" id="studioQuick8Btn" class="btn-chip">⚡ 8</button>
+                            <button type="button" id="studioQuick16Btn" class="btn-chip">⚡ 16</button>
+                            <button type="button" id="studioQuick32Btn" class="btn-chip">⚡ 32</button>
+                            <button type="button" id="studioQuick64Btn" class="btn-chip">⚡ 64</button>
+                            <button type="button" id="studioQuick128Btn" class="btn-chip">⚡ 128</button>
+                            <button type="button" id="studioQuick256Btn" class="btn-chip">⚡ 256 (Max)</button>
+                            <button type="button" id="studioShuffleBtn" class="btn-chip" style="color: var(--accent-gold);">🎲 Shuffle</button>
+                            <button type="button" id="studioClearTeamsBtn" class="btn-chip" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.3);">🗑️ Clear</button>
+                            <label for="csvFileInput" class="btn-chip" style="cursor: pointer; background: rgba(52, 211, 153, 0.15); border-color: rgba(52, 211, 153, 0.4); color: #34d399; display: inline-flex; align-items: center; gap: 4px;">
+                                📂 Upload CSV / TXT
+                            </label>
+                            <input type="file" id="csvFileInput" accept=".csv,.txt" style="display: none;">
+                        </div>
+                        <p style="font-size: 0.74rem; color: var(--text-muted); margin-bottom: 6px;">
+                            💡 Supports up to <strong>256 teams</strong> with automated R1...R5, Quarterfinal, Semifinal & Final progression. Upload CSV/TXT or choose a preset.
+                        </p>
+                        <div id="studioTeamTagsContainer" class="team-tags-container">
+                            <!-- Injected dynamically by JS -->
+                        </div>
+                    </div>
+
+                    <!-- Bracket Engine & Challonge API Sync -->
+                    <div class="form-group" style="margin-top: 0.8rem; background: rgba(0,0,0,0.25); padding: 12px; border-radius: var(--radius-sm); border: 1px solid rgba(255,255,255,0.06);">
+                        <label class="form-label" style="color: var(--primary-cyan); font-size: 0.85rem; margin-bottom: 6px;">🔗 Bracket Link & Engine</label>
+                        <div style="display: flex; gap: 8px; margin-bottom: 10px;">
+                            <button type="button" id="engineWebBtn" class="btn-chip active engine-btn" data-engine="web">🌐 Website Bracket (Free)</button>
+                            <button type="button" id="engineChallongeBtn" class="btn-chip engine-btn" data-engine="challonge">🏆 Challonge API Sync</button>
+                        </div>
+                        
+                        <div id="webBracketInfoBox" style="font-size: 0.78rem; color: var(--text-secondary); line-height: 1.5;">
+                            ✨ Live interactive animated bracket will be generated at <code>/tournament/&lt;id&gt;</code> with instant public sharing.
+                        </div>
+
+                        <div id="challongeApiBox" style="display: none; margin-top: 6px;">
+                            <div class="form-group" style="margin-bottom: 8px;">
+                                <label class="form-label" style="font-size: 0.75rem;">Challonge API Key (Optional)</label>
+                                <input type="password" id="studioChallongeApiKey" class="form-input" placeholder="Enter Challonge API Key">
+                            </div>
+                            <div class="form-group" style="margin-bottom: 8px;">
+                                <label class="form-label" style="font-size: 0.75rem;">Or Existing Challonge Bracket URL</label>
+                                <input type="url" id="studioChallongeLink" class="form-input" placeholder="https://challonge.com/yourbracket">
+                            </div>
+                            <button type="button" id="createOnChallongeBtn" class="btn btn-secondary btn-sm" style="width: 100%; border-color: var(--primary-cyan); color: var(--primary-cyan);">
+                                ⚡ Auto-Generate Bracket on Challonge API
+                            </button>
+                            <div id="challongeApiFeedback" style="margin-top: 6px; font-size: 0.78rem; text-align: center;"></div>
+                        </div>
+                    </div>
+
+                    <button type="button" id="studioGenerateBracketBtn" class="btn btn-primary" style="width: 100%; padding: 0.85rem; font-size: 1rem; margin-bottom: 8px;">
+                        ⚡ Generate & Animate Bracket
+                    </button>
+                    <button type="button" id="studioPublishBtn" class="btn btn-secondary" style="width: 100%; border-color: #34d399; color: #34d399;">
+                        🚀 Save & Publish Tournament
+                    </button>
+                    <div id="studioFeedback" style="margin-top: 10px; font-size: 0.85rem; text-align: center;"></div>
+                </form>
+            </div>
+
+            <!-- Right Column: Interactive Animated Bracket Canvas -->
+            <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 1.8rem; overflow-x: auto;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+                    <div>
+                        <h3 id="previewTitle" style="font-family: var(--font-heading); font-size: 1.4rem; font-weight: 800; color: var(--text-primary);">
+                            Championship Series 2026
+                        </h3>
+                        <p id="previewSubtitle" style="color: var(--text-secondary); font-size: 0.85rem;">
+                            Live Interactive Bracket Preview &bull; Click match winners to simulate advancing
+                        </p>
+                    </div>
+                    <div id="championBadgeBox" style="display: none; background: rgba(251, 191, 36, 0.15); border: 1px solid rgba(251, 191, 36, 0.4); padding: 6px 14px; border-radius: 20px;">
+                        <span style="color: var(--accent-gold); font-weight: 800; font-size: 0.88rem;">👑 CROWNED: <span id="championName">Team Alpha</span></span>
+                    </div>
+                </div>
+
+                <!-- Challonge Top Banner Notice -->
+                <div style="background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.08); border-radius: var(--radius-sm); padding: 9px 14px; margin-bottom: 1rem; font-size: 0.8rem; color: #94a3b8; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span>🔒 <strong>Single Elimination Seeded Bracket</strong> &bull; Click match ▶ or team slot to advance winner</span>
+                    </div>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <span style="display: inline-flex; align-items: center; gap: 5px; color: #ef4444; font-weight: 800; font-size: 0.75rem; letter-spacing: 0.5px;">
+                            <span style="width: 7px; height: 7px; border-radius: 50%; background: #ef4444; animation: blinkPulse 1.5s infinite;"></span> LIVE
+                        </span>
+                        <span style="color: #64748b; font-size: 0.75rem; font-weight: 700;">&lt;/&gt; FULL BRACKET</span>
+                    </div>
+                </div>
+
+                <!-- Animated Bracket Stage View -->
+                <div id="bracketVisualContainer" class="bracket-visual-stage">
+                    <!-- Dynamic Bracket Columns & Match Nodes Injected by JS -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- =========================================================================
+         PANEL 3: SERVER CONFIGURATION & COMMAND EXECUTION (WEB CONSOLE)
+         ========================================================================= -->
+    <div id="server-commands-panel" class="dash-panel" style="display: none;">
+        <div class="section-header">
+            <h2 class="section-title">⚙️ Server Config & Web Command Console</h2>
+            <p class="section-subtitle">Configure Discord channels, roles, and execute server bot commands directly from the website</p>
+        </div>
+
+        <!-- Top Guild Selector Bar -->
+        <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 1.2rem 1.5rem; margin-bottom: 2rem; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem;">
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <span style="font-size: 1.2rem;">🏢</span>
+                <div>
+                    <label class="form-label" style="margin-bottom: 0; font-size: 0.8rem;">Select Target Discord Server</label>
+                    <select id="serverSelectDropdown" class="form-input" style="padding: 0.4rem 0.8rem; font-weight: 600;">
+                        {% for g in guilds %}
+                        <option value="{{ g.guild_id }}">{{ g.organization_name }} (ID: {{ g.guild_id }})</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+            <div style="display: flex; gap: 10px;">
+                <button type="button" id="reloadServerConfigBtn" class="btn btn-secondary btn-sm">🔄 Refresh Config</button>
+            </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; align-items: flex-start;">
+            <!-- Left Box: Server Configuration Form -->
+            <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 1.8rem;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.2rem;">
+                    <h3 style="font-family: var(--font-heading); font-size: 1.25rem;">
+                        ⚙️ Server Roles & Channels Setup
+                    </h3>
+                    <span id="configSyncStatus" style="font-size: 0.78rem; color: #34d399; font-weight: 600;">Synced with Supabase</span>
+                </div>
+
+                <form id="serverConfigForm">
+                    <!-- Branding Settings -->
+                    <div style="margin-bottom: 1.5rem; background: rgba(0,0,0,0.2); padding: 1rem; border-radius: var(--radius-sm); border: 1px solid rgba(255,255,255,0.05);">
+                        <h4 style="font-size: 0.9rem; color: var(--primary-cyan); margin-bottom: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px;">🏢 Server Identity & Branding</h4>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                            <div class="form-group">
+                                <label class="form-label">Server / Organization Name</label>
+                                <input type="text" id="cfgOrgName" class="form-input" placeholder="Tournament Server">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Tournament Bot Name</label>
+                                <input type="text" id="cfgBotName" class="form-input" placeholder="Tournament Bot">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Role Configuration Accordion -->
+                    <div style="margin-bottom: 1.5rem; background: rgba(0,0,0,0.2); padding: 1rem; border-radius: var(--radius-sm); border: 1px solid rgba(255,255,255,0.05);">
+                        <h4 style="font-size: 0.9rem; color: #a78bfa; margin-bottom: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px;">👑 Discord Role IDs</h4>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                            <div class="form-group">
+                                <label class="form-label">Admin Role ID</label>
+                                <input type="text" id="cfgRoleAdmin" class="form-input" placeholder="1303887060754497569">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Organizer Role ID</label>
+                                <input type="text" id="cfgRoleOrganizer" class="form-input" placeholder="1513503574494281860">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Helper Team Role ID</label>
+                                <input type="text" id="cfgRoleHelper" class="form-input" placeholder="1513503340133089440">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Judge Role ID</label>
+                                <input type="text" id="cfgRoleJudge" class="form-input" placeholder="1513503429979410462">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Recorder Role ID</label>
+                                <input type="text" id="cfgRoleRecorder" class="form-input" placeholder="1513503486703173684">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Staff Role ID</label>
+                                <input type="text" id="cfgRoleStaff" class="form-input" placeholder="1513503527715082290">
+                            </div>
+                            <div class="form-group" style="grid-column: span 2;">
+                                <label class="form-label">Players Role ID</label>
+                                <input type="text" id="cfgRolePlayers" class="form-input" placeholder="1513844296581779537">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Channel Configuration Accordion -->
+                    <div style="margin-bottom: 1.5rem; background: rgba(0,0,0,0.2); padding: 1rem; border-radius: var(--radius-sm); border: 1px solid rgba(255,255,255,0.05);">
+                        <h4 style="font-size: 0.9rem; color: #34d399; margin-bottom: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px;">📢 Discord Channel IDs</h4>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                            <div class="form-group">
+                                <label class="form-label">Rules Channel ID</label>
+                                <input type="text" id="cfgChanRules" class="form-input" placeholder="Channel ID">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Bracket Channel ID</label>
+                                <input type="text" id="cfgChanBracket" class="form-input" placeholder="Channel ID">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Results Channel ID</label>
+                                <input type="text" id="cfgChanResults" class="form-input" placeholder="Channel ID">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Schedule Channel ID</label>
+                                <input type="text" id="cfgChanSchedule" class="form-input" placeholder="Channel ID">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Bot Logs Channel ID</label>
+                                <input type="text" id="cfgChanBotLogs" class="form-input" placeholder="Channel ID">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Challonge Logs Channel ID</label>
+                                <input type="text" id="cfgChanChallongeLogs" class="form-input" placeholder="Channel ID">
+                            </div>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary" style="width: 100%; padding: 0.85rem; font-size: 1rem;">
+                        💾 Save Server Configuration
+                    </button>
+                    <div id="configSaveFeedback" style="margin-top: 10px; font-size: 0.85rem; text-align: center;"></div>
+                </form>
+            </div>
+
+            <!-- Right Box: Web Command Runner & Terminal Console -->
+            <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 1.8rem;">
+                <h3 style="font-family: var(--font-heading); font-size: 1.25rem; margin-bottom: 1.2rem; color: #60a5fa;">
+                    💻 Web Command Runner & Terminal
+                </h3>
+                <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1.2rem;">
+                    Run bot commands directly from the website with parameter inputs or raw command syntax.
+                </p>
+
+                <!-- Quick Action Buttons -->
+                <div style="margin-bottom: 1.2rem;">
+                    <label class="form-label">Quick Action Presets</label>
+                    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                        <button type="button" class="btn-chip active cmd-preset-btn" data-cmd="!test_webhook">⚡ Bot Status</button>
+                        <button type="button" class="btn-chip cmd-preset-btn" data-cmd="!sync_bracket">🔄 Sync Bracket</button>
+                        <button type="button" class="btn-chip cmd-preset-btn" data-cmd="!announce">📢 Broadcast</button>
+                        <button type="button" class="btn-chip cmd-preset-btn" data-cmd="!generate_poster">🎨 Match Poster</button>
+                        <button type="button" class="btn-chip cmd-preset-btn" data-cmd="!set_schedule">⏰ Set Schedule</button>
+                        <button type="button" class="btn-chip cmd-preset-btn" data-cmd="custom">✍️ Custom Command</button>
+                    </div>
+                </div>
+
+                <!-- Command Parameter Form -->
+                <form id="webCommandForm">
+                    <div class="form-group">
+                        <label class="form-label" for="cmdInputName">Selected Command</label>
+                        <input type="text" id="cmdInputName" class="form-input" value="!test_webhook" required style="font-family: var(--font-mono); color: var(--primary-cyan);">
+                    </div>
+
+                    <!-- Dynamic Input Box for Announce / Parameters -->
+                    <div id="cmdDynamicParamsContainer" style="display: none; margin-bottom: 1rem;">
+                        <div class="form-group" id="cmdParamMessageGroup" style="display: none;">
+                            <label class="form-label">Announcement Message Body</label>
+                            <textarea id="cmdParamMessage" class="form-input" rows="2" placeholder="Match starting in 15 minutes! Please be present in your voice channels."></textarea>
+                        </div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;" id="cmdParamTeamsGroup" style="display: none;">
+                            <div class="form-group">
+                                <label class="form-label">Team 1 Name</label>
+                                <input type="text" id="cmdParamTeamA" class="form-input" placeholder="Team Alpha">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Team 2 Name</label>
+                                <input type="text" id="cmdParamTeamB" class="form-input" placeholder="Team Omega">
+                            </div>
+                        </div>
+                    </div>
+
+                    <button type="submit" id="executeCmdBtn" class="btn btn-primary" style="width: 100%; padding: 0.8rem; font-size: 0.95rem; margin-bottom: 1.2rem;">
+                        ▶️ Execute Command
+                    </button>
+                </form>
+
+                <!-- Dark Web Terminal Window -->
+                <div class="terminal-window">
+                    <div class="terminal-header">
+                        <div style="display: flex; gap: 6px;">
+                            <span class="term-dot dot-red"></span>
+                            <span class="term-dot dot-yellow"></span>
+                            <span class="term-dot dot-green"></span>
+                        </div>
+                        <span style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-muted);">tournament-bot-console@v2.0</span>
+                        <button type="button" id="clearTerminalBtn" style="background: none; border: none; color: var(--text-muted); font-size: 0.75rem; cursor: pointer;">Clear</button>
+                    </div>
+                    <div id="terminalLogOutput" class="terminal-body">
+[2026-08-17 02:48:00 UTC] [SYSTEM] Tournament Bot Web Console Ready.
+[2026-08-17 02:48:00 UTC] [STATUS] Connected to Database & Discord API Engine.
+[2026-08-17 02:48:00 UTC] [INFO] Select a command preset or type an input above and click Execute.
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- =========================================================================
+         PANEL 4: SPONSOR BANNERS (MONETIZATION MANAGEMENT)
+         ========================================================================= -->
+    <div id="sponsors-panel" class="dash-panel" style="display: none;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; align-items: flex-start;">
+            <!-- Form to Add/Edit Sponsor -->
+            <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 1.8rem;">
+                <h3 style="font-family: var(--font-heading); font-size: 1.3rem; margin-bottom: 1.2rem;">
+                    ➕ Add / Edit Sponsor Banner
+                </h3>
+
+                <form id="addSponsorForm">
+                    <div class="form-group">
+                        <label class="form-label">Discord Server Guild</label>
+                        <select id="sponsorGuildId" class="form-input">
+                            {% for g in guilds %}
+                            <option value="{{ g.guild_id }}">{{ g.organization_name }} ({{ g.guild_id }})</option>
+                            {% endfor %}
+                            <option value="global">Global (Platform Wide)</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Sponsor / Brand Name</label>
+                        <input type="text" id="sponsorName" class="form-input" placeholder="e.g. Red Bull / HyperX" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Banner Image URL</label>
+                        <input type="url" id="sponsorImageUrl" class="form-input" placeholder="https://example.com/banner.png" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Target Redirect URL (Affiliate / Sponsor Landing)</label>
+                        <input type="url" id="sponsorTargetUrl" class="form-input" placeholder="https://sponsor.com?ref=tournament" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Placement Slot</label>
+                        <select id="sponsorSlotPosition" class="form-input">
+                            <option value="top_banner">Top Hero Banner (728x90 / Responsive)</option>
+                            <option value="stage_sponsor">Stage / Round Sponsor Tile</option>
+                            <option value="bracket_footer">Bracket Footer</option>
+                        </select>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary" style="width: 100%;">
+                        💾 Save Sponsor Banner
+                    </button>
+                    <div id="sponsorFormFeedback" style="margin-top: 10px; font-size: 0.85rem; text-align: center;"></div>
+                </form>
+            </div>
+
+            <!-- Active Sponsors & Performance Analytics -->
+            <div>
+                <h3 style="font-family: var(--font-heading); font-size: 1.3rem; margin-bottom: 1.2rem;">
+                    📊 Active Sponsor Performance
+                </h3>
+
+                <div style="display: flex; flex-direction: column; gap: 1rem;">
+                    {% for sp in sponsors %}
+                    <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 1.2rem;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                            <h4 style="font-weight: 700; color: var(--text-primary);">{{ sp.sponsor_name }}</h4>
+                            <span class="user-role-tag" style="background: rgba(0, 242, 254, 0.15); color: var(--primary-cyan);">
+                                {{ sp.slot_position }}
+                            </span>
+                        </div>
+                        <p style="font-size: 0.8rem; color: var(--text-muted); word-break: break-all; margin-bottom: 0.8rem;">
+                            Target: <a href="{{ sp.target_url }}" target="_blank">{{ sp.target_url }}</a>
+                        </p>
+                        <div style="display: flex; gap: 15px; font-size: 0.85rem;">
+                            <div>👁️ Impressions: <strong>{{ sp.impressions_count or 0 }}</strong></div>
+                            <div>🖱️ Clicks: <strong style="color: #34d399;">{{ sp.clicks_count or 0 }}</strong></div>
+                            <div>
+                                {% set imps = sp.impressions_count or 1 %}
+                                {% set clks = sp.clicks_count or 0 %}
+                                📈 CTR: <strong>{{ ((clks / (imps if imps > 0 else 1)) * 100)|round(1) }}%</strong>
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- =========================================================================
+         PANEL 5: GAMING STORE & AFFILIATES
+         ========================================================================= -->
+    <div id="affiliates-panel" class="dash-panel" style="display: none;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; align-items: flex-start;">
+            <!-- Form to Add Affiliate Item -->
+            <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 1.8rem;">
+                <h3 style="font-family: var(--font-heading); font-size: 1.3rem; margin-bottom: 1.2rem;">
+                    ➕ Add Affiliate Product / Currency Widget
+                </h3>
+
+                <form id="addAffiliateForm">
+                    <div class="form-group">
+                        <label class="form-label">Game Category</label>
+                        <select id="affGameCategory" class="form-input">
+                            <option value="General">General Gaming</option>
+                            <option value="Valorant">Valorant</option>
+                            <option value="BGMI">BGMI / PUBG</option>
+                            <option value="Free Fire">Free Fire</option>
+                            <option value="Call of Duty">Call of Duty Mobile</option>
+                            <option value="Rocket League">Rocket League</option>
+                            <option value="Brawl Stars">Brawl Stars</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Product / Service Name</label>
+                        <input type="text" id="affProductName" class="form-input" placeholder="e.g. Razer Viper V3 Pro" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Category</label>
+                        <select id="affProductCategory" class="form-input">
+                            <option value="mouse">Gaming Mouse</option>
+                            <option value="headset">Headset</option>
+                            <option value="currency">In-Game Currency / Diamonds</option>
+                            <option value="keyboard">Keyboard</option>
+                            <option value="controller">Controller</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Product Image URL</label>
+                        <input type="url" id="affImageUrl" class="form-input" placeholder="https://example.com/product.jpg" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Affiliate URL (with your tag)</label>
+                        <input type="url" id="affUrl" class="form-input" placeholder="https://amazon.com/dp/xyz?tag=yourtag-20" required>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                        <div class="form-group">
+                            <label class="form-label">Badge Text</label>
+                            <input type="text" id="affBadge" class="form-input" placeholder="e.g. 10% Off">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Price / Promo Text</label>
+                            <input type="text" id="affPrice" class="form-input" placeholder="e.g. $149.99">
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary" style="width: 100%;">
+                        🛒 Add to Gaming Store
+                    </button>
+                    <div id="affiliateFormFeedback" style="margin-top: 10px; font-size: 0.85rem; text-align: center;"></div>
+                </form>
+            </div>
+
+            <!-- List of Current Affiliate Products -->
+            <div>
+                <h3 style="font-family: var(--font-heading); font-size: 1.3rem; margin-bottom: 1.2rem;">
+                    🛍️ Active Store Cards
+                </h3>
+                <div style="display: flex; flex-direction: column; gap: 1rem;">
+                    {% for p in affiliates %}
+                    <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 1.2rem; display: flex; gap: 15px; align-items: center;">
+                        <img src="{{ p.image_url }}" alt="" style="width: 60px; height: 60px; object-fit: cover; border-radius: var(--radius-sm);">
+                        <div style="flex: 1;">
+                            <span style="font-size: 0.72rem; color: var(--primary-cyan); font-weight: 700; text-transform: uppercase;">
+                                {{ p.game_category }} &bull; {{ p.product_category }}
+                            </span>
+                            <h4 style="font-size: 0.95rem; font-weight: 600;">{{ p.product_name }}</h4>
+                            <span style="font-size: 0.85rem; color: var(--accent-gold); font-weight: 700;">{{ p.price_display }}</span>
+                        </div>
+                        <a href="{{ p.affiliate_url }}" target="_blank" class="btn btn-secondary btn-sm">Test ↗</a>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- =========================================================================
+         PANEL 6: ADMIN SUITE (ADMIN ACCOUNTS & VAULT)
+         ========================================================================= -->
+    {% if is_admin or is_super_admin %}
+    <div id="admin-panel" class="dash-panel" style="display: none;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; align-items: flex-start;">
+            <!-- Create Admin User Form -->
+            <div style="background: var(--bg-card); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: var(--radius-md); padding: 1.8rem;">
+                <h3 style="font-family: var(--font-heading); font-size: 1.3rem; color: #fca5a5; margin-bottom: 1.2rem;">
+                    🔑 Create Admin / Organizer User
+                </h3>
+                <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1.2rem;">
+                    Create a dedicated username and password for platform administration and server management.
+                </p>
+
+                <form id="createMasterUserForm">
+                    <div class="form-group">
+                        <label class="form-label">Username</label>
+                        <input type="text" id="newMasterUsername" class="form-input" placeholder="e.g. tournament_staff" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Password</label>
+                        <input type="password" id="newMasterPassword" class="form-input" placeholder="••••••••••••" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Role</label>
+                        <select id="newMasterRole" class="form-input">
+                            <option value="admin">Admin (Global Administration)</option>
+                            <option value="organizer">Tournament Organizer</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Discord User ID (Optional link)</label>
+                        <input type="text" id="newMasterDiscordId" class="form-input" placeholder="e.g. 1303887060754497569">
+                    </div>
+
+                    <button type="submit" class="btn btn-primary" style="width: 100%;">
+                        ➕ Create User Account
+                    </button>
+                    <div id="createUserFeedback" style="margin-top: 10px; font-size: 0.85rem; text-align: center;"></div>
+                </form>
+            </div>
+
+            <!-- Platform Architecture & Deployment Notes -->
+            <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 1.8rem;">
+                <h3 style="font-family: var(--font-heading); font-size: 1.3rem; margin-bottom: 1.2rem;">
+                    🌐 Hostinger & VPS Deployment Guide
+                </h3>
+                <div style="font-size: 0.88rem; color: var(--text-secondary); line-height: 1.7;">
+                    <p style="margin-bottom: 10px;">
+                        <strong>1. Production Start Command:</strong><br>
+                        <code>python run_web.py</code> or via systemd service.
+                    </p>
+                    <p style="margin-bottom: 10px;">
+                        <strong>2. Discord OAuth2 Redirect URI in Developer Portal:</strong><br>
+                        Add <code>http://localhost:8000/api/auth/discord/callback</code> or <code>https://yourdomain.com/api/auth/discord/callback</code>.
+                    </p>
+                    <p>
+                        <strong>3. Dual Process (Bot + Web):</strong><br>
+                        Run both <code>main.py</code> and <code>run_web.py</code> simultaneously in your VPS using <code>pm2</code> or <code>systemd</code>.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+{% endblock %}
