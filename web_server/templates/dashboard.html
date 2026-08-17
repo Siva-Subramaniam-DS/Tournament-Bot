@@ -16,8 +16,9 @@
                     </p>
                 </div>
             </div>
-            <div style="display: flex; gap: 10px;">
-                <a href="/" class="btn btn-secondary btn-sm">&larr; Public Arena View</a>
+            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                <a href="/commands" target="_blank" class="btn btn-secondary btn-sm">📖 Command Guide</a>
+                <a href="/" class="btn btn-secondary btn-sm">&larr; Public Arena</a>
             </div>
         </div>
     </div>
@@ -55,7 +56,8 @@
     <div class="dashboard-nav">
         <button class="dash-tab-btn active" data-panel="tournaments-panel">🏆 My Tournaments</button>
         <button class="dash-tab-btn" data-panel="bracket-studio-panel" style="color: var(--primary-cyan); font-weight: 700;">⚡ Bracket Creator Studio</button>
-        <button class="dash-tab-btn" data-panel="server-commands-panel" style="color: #60a5fa; font-weight: 700;">⚙️ Server Config & Commands</button>
+        <button class="dash-tab-btn" data-panel="server-commands-panel" style="color: #60a5fa; font-weight: 700;">⚙️ Bot Commands & Config</button>
+        <button class="dash-tab-btn" data-panel="activity-logs-panel" style="color: #34d399; font-weight: 700;">📋 Audit & Activity Logs</button>
         <button class="dash-tab-btn" data-panel="sponsors-panel">💰 Sponsor Banners</button>
         <button class="dash-tab-btn" data-panel="affiliates-panel">🎮 Gaming Store & Affiliates</button>
         {% if is_admin or is_super_admin %}
@@ -246,12 +248,32 @@
                         <input type="hidden" id="studioGameCategory" value="Valorant">
                     </div>
 
+                    <!-- Tournament Type (Single Stage vs Two Stage Groups -> Final Bracket) -->
+                    <div class="form-group" style="margin-bottom: 0.8rem;">
+                        <label class="form-label" style="font-weight: 700; color: #f1f5f9;">Type</label>
+                        <div style="display: flex; flex-direction: column; gap: 8px; background: rgba(0,0,0,0.25); padding: 12px; border-radius: var(--radius-sm); border: 1px solid rgba(255,255,255,0.08);">
+                            <label style="display: flex; align-items: flex-start; gap: 10px; cursor: pointer; font-size: 0.84rem; color: #f1f5f9;">
+                                <input type="radio" name="studioStageType" id="stageTypeSingle" value="single_stage" checked style="margin-top: 3px; accent-color: var(--primary-cyan);">
+                                <div>
+                                    <strong style="color: #ffffff;">Single Stage Tournament</strong>
+                                    <div style="font-size: 0.74rem; color: var(--text-muted); line-height: 1.4;">All participants play in one unified single-elimination bracket tree leading to Final.</div>
+                                </div>
+                            </label>
+                            <label style="display: flex; align-items: flex-start; gap: 10px; cursor: pointer; font-size: 0.84rem; color: #f1f5f9;">
+                                <input type="radio" name="studioStageType" id="stageTypeTwo" value="two_stage" style="margin-top: 3px; accent-color: var(--primary-cyan);">
+                                <div>
+                                    <strong style="color: var(--primary-cyan);">Two Stage Tournament (Groups ➔ Final Bracket)</strong>
+                                    <div style="font-size: 0.74rem; color: var(--text-muted); line-height: 1.4;">Split participants into groups, each playing its own single-elimination bracket. Once every group finishes, the group winners advance into one final single-elimination bracket.</div>
+                                </div>
+                            </label>
+                        </div>
+                    </div>
+
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
                         <div class="form-group">
-                            <label class="form-label">Bracket Type</label>
+                            <label class="form-label">Format *</label>
                             <select id="studioBracketType" class="form-input">
-                                <option value="single_elimination">Single Elimination (R1 ➔ Final)</option>
-                                <option value="group_stage">Group Stage (Group A-Z ➔ Playoffs)</option>
+                                <option value="single_elimination">Single Elimination</option>
                                 <option value="double_elimination">Double Elimination</option>
                                 <option value="round_robin">Round Robin</option>
                             </select>
@@ -267,27 +289,18 @@
                         </div>
                     </div>
 
-                    <!-- Group Stage Settings (Shown when Group Stage is selected) -->
+                    <!-- Group Stage Settings (Shown when Two Stage Tournament is selected) -->
                     <div id="studioGroupSettingsBox" style="display: none; background: rgba(0,0,0,0.25); padding: 10px 14px; border-radius: var(--radius-sm); border: 1px solid rgba(255,255,255,0.06); margin-bottom: 0.8rem;">
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                            <div class="form-group" style="margin-bottom: 0;">
-                                <label class="form-label" style="font-size: 0.78rem;">Number of Groups</label>
-                                <select id="studioGroupCount" class="form-input" style="font-size: 0.82rem;">
-                                    <option value="auto">Auto (Calculated)</option>
-                                    <option value="2">2 Groups (Group A, B)</option>
-                                    <option value="4">4 Groups (Group A - D)</option>
-                                    <option value="8">8 Groups (Group A - H)</option>
-                                    <option value="16">16 Groups (Group A - P)</option>
-                                    <option value="26">26 Groups (Group A - Z)</option>
-                                </select>
-                            </div>
-                            <div class="form-group" style="margin-bottom: 0;">
-                                <label class="form-label" style="font-size: 0.78rem;">Advancing per Group</label>
-                                <select id="studioGroupAdvanceCount" class="form-input" style="font-size: 0.82rem;">
-                                    <option value="1">Top 1 per Group</option>
-                                    <option value="2">Top 2 per Group</option>
-                                </select>
-                            </div>
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label class="form-label" style="font-size: 0.78rem;">Number of Groups</label>
+                            <select id="studioGroupCount" class="form-input" style="font-size: 0.82rem;">
+                                <option value="auto">Auto (Calculated from team count)</option>
+                                <option value="2">2 Groups (Group A & Group B)</option>
+                                <option value="4">4 Groups (Group A to Group D)</option>
+                                <option value="8">8 Groups (Group A to Group H)</option>
+                                <option value="16">16 Groups (Group A to Group P)</option>
+                                <option value="26">26 Groups (Group A to Group Z)</option>
+                            </select>
                         </div>
                     </div>
 
@@ -436,17 +449,36 @@
                 </div>
 
                 <form id="serverConfigForm">
-                    <!-- Branding Settings -->
-                    <div style="margin-bottom: 1.5rem; background: rgba(0,0,0,0.2); padding: 1rem; border-radius: var(--radius-sm); border: 1px solid rgba(255,255,255,0.05);">
-                        <h4 style="font-size: 0.9rem; color: var(--primary-cyan); margin-bottom: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px;">🏢 Server Identity & Branding</h4>
+                    <!-- Branding Settings & Server Logo Upload -->
+                    <div style="margin-bottom: 1.5rem; background: rgba(0,0,0,0.25); padding: 1.2rem; border-radius: var(--radius-sm); border: 1px solid rgba(255,255,255,0.06);">
+                        <h4 style="font-size: 0.9rem; color: var(--primary-cyan); margin-bottom: 1rem; text-transform: uppercase; letter-spacing: 0.5px;">🏢 Server Identity &amp; Branding</h4>
+                        
+                        <!-- Server Logo Upload & Preview Widget -->
+                        <div style="display: flex; align-items: center; gap: 16px; background: rgba(0,0,0,0.3); padding: 12px 14px; border-radius: var(--radius-sm); border: 1px dashed rgba(0, 242, 254, 0.3); margin-bottom: 1.2rem;">
+                            <div style="position: relative;">
+                                <img id="cfgServerLogoPreview" src="/static/img/tournament_bot_logo.png" alt="Server Logo" style="width: 58px; height: 58px; border-radius: 12px; object-fit: cover; border: 2px solid var(--primary-cyan); box-shadow: 0 0 15px rgba(0, 242, 254, 0.25);">
+                            </div>
+                            <div style="flex: 1;">
+                                <div style="font-size: 0.85rem; font-weight: 700; color: #f8fafc; margin-bottom: 2px;">Official Server Logo</div>
+                                <div style="font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 6px;">Used on match posters, victory embeds, and live brackets. Stored in database.</div>
+                                <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                                    <input type="file" id="cfgServerLogoFileInput" accept="image/png,image/jpeg,image/webp,image/gif" style="display: none;">
+                                    <button type="button" class="btn btn-secondary btn-sm" id="cfgUploadLogoTriggerBtn" style="font-size: 0.78rem; padding: 4px 10px; border-color: rgba(0, 242, 254, 0.4); color: var(--primary-cyan);">
+                                        📁 Upload Image
+                                    </button>
+                                    <span id="cfgLogoUploadStatus" style="font-size: 0.75rem; color: #34d399; font-weight: 600;"></span>
+                                </div>
+                            </div>
+                        </div>
+
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
                             <div class="form-group">
                                 <label class="form-label">Server / Organization Name</label>
-                                <input type="text" id="cfgOrgName" class="form-input" placeholder="Tournament Server">
+                                <input type="text" id="cfgOrgName" class="form-input" placeholder="e.g. Ghost Fleet GR">
                             </div>
                             <div class="form-group">
                                 <label class="form-label">Tournament Bot Name</label>
-                                <input type="text" id="cfgBotName" class="form-input" placeholder="Tournament Bot">
+                                <input type="text" id="cfgBotName" class="form-input" placeholder="e.g. Tournament Bot">
                             </div>
                         </div>
                     </div>
@@ -524,81 +556,169 @@
                 </form>
             </div>
 
-            <!-- Right Box: Web Command Runner & Terminal Console -->
+            <!-- Right Box: Discord Bot Commands & Message Templates Customizer -->
             <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 1.8rem;">
-                <h3 style="font-family: var(--font-heading); font-size: 1.25rem; margin-bottom: 1.2rem; color: #60a5fa;">
-                    💻 Web Command Runner & Terminal
-                </h3>
-                <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1.2rem;">
-                    Run bot commands directly from the website with parameter inputs or raw command syntax.
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.8rem;">
+                    <h3 style="font-family: var(--font-heading); font-size: 1.25rem; color: #60a5fa; margin: 0;">
+                        🎮 Discord Bot Commands & Templates
+                    </h3>
+                    <span style="font-size: 0.75rem; background: rgba(96, 165, 250, 0.15); color: #60a5fa; padding: 2px 8px; border-radius: 4px; font-weight: 700; font-family: var(--font-mono);">
+                        Live Discord Sync
+                    </span>
+                </div>
+                <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1.2rem; line-height: 1.4;">
+                    Customize what your Discord bot outputs in channels when organizers or players run slash commands. Edit messages, rules, embeds, and permissions.
                 </p>
 
-                <!-- Quick Action Buttons -->
+                <!-- Command Selector Pills -->
                 <div style="margin-bottom: 1.2rem;">
-                    <label class="form-label">Quick Action Presets</label>
-                    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                        <button type="button" class="btn-chip active cmd-preset-btn" data-cmd="!test_webhook">⚡ Bot Status</button>
-                        <button type="button" class="btn-chip cmd-preset-btn" data-cmd="!sync_bracket">🔄 Sync Bracket</button>
-                        <button type="button" class="btn-chip cmd-preset-btn" data-cmd="!announce">📢 Broadcast</button>
-                        <button type="button" class="btn-chip cmd-preset-btn" data-cmd="!generate_poster">🎨 Match Poster</button>
-                        <button type="button" class="btn-chip cmd-preset-btn" data-cmd="!set_schedule">⏰ Set Schedule</button>
-                        <button type="button" class="btn-chip cmd-preset-btn" data-cmd="custom">✍️ Custom Command</button>
+                    <label class="form-label" style="font-size: 0.78rem;">Select Command to Customize</label>
+                    <div style="display: flex; gap: 6px; flex-wrap: wrap;" id="commandSelectorPills">
+                        <button type="button" class="btn-chip active cmd-tab-pill" data-command="tournaments">🏆 /tournaments</button>
+                        <button type="button" class="btn-chip cmd-tab-pill" data-command="bracket">⚔️ /bracket</button>
+                        <button type="button" class="btn-chip cmd-tab-pill" data-command="register">📝 /register</button>
+                        <button type="button" class="btn-chip cmd-tab-pill" data-command="schedule">⏰ /schedule</button>
+                        <button type="button" class="btn-chip cmd-tab-pill" data-command="scores">📊 /scores</button>
+                        <button type="button" class="btn-chip cmd-tab-pill" data-command="rules">📜 /rules</button>
+                        <button type="button" class="btn-chip cmd-tab-pill" data-command="broadcast">📢 /broadcast</button>
+                        <button type="button" class="btn-chip cmd-tab-pill" data-command="coinflip">🪙 /coinflip</button>
+                        <button type="button" class="btn-chip cmd-tab-pill" data-command="settings">⚙️ /settings</button>
                     </div>
                 </div>
 
-                <!-- Command Parameter Form -->
-                <form id="webCommandForm">
+                <!-- Active Command Customization Form -->
+                <form id="botCommandConfigForm">
+                    <input type="hidden" id="activeCommandKey" value="tournaments">
+                    
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 1rem;">
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label class="form-label" style="font-size: 0.78rem;">Command Status</label>
+                            <select id="cmdConfigEnabled" class="form-input" style="font-size: 0.82rem;">
+                                <option value="true">🟢 Enabled</option>
+                                <option value="false">🔴 Disabled</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label class="form-label" style="font-size: 0.78rem;">Required Permission Role</label>
+                            <select id="cmdConfigPermission" class="form-input" style="font-size: 0.82rem;">
+                                <option value="@everyone">@everyone (Public)</option>
+                                <option value="Helper Team">Helper Team</option>
+                                <option value="Head Organizer">Head Organizer</option>
+                                <option value="Administrator">Administrator</option>
+                                <option value="Bot Owner">Bot Owner Only</option>
+                            </select>
+                        </div>
+                    </div>
+
                     <div class="form-group">
-                        <label class="form-label" for="cmdInputName">Selected Command</label>
-                        <input type="text" id="cmdInputName" class="form-input" value="!test_webhook" required style="font-family: var(--font-mono); color: var(--primary-cyan);">
+                        <label class="form-label" style="display: flex; justify-content: space-between; font-size: 0.78rem;">
+                            <span>Custom Response / Message Body</span>
+                            <span style="color: #94a3b8; font-size: 0.7rem;">Supported: {tournament_name}, {bracket_url}, {message_body}</span>
+                        </label>
+                        <textarea id="cmdConfigResponseTemplate" class="form-input" rows="3" style="font-size: 0.82rem; font-family: var(--font-mono); line-height: 1.4;"></textarea>
                     </div>
 
-                    <!-- Dynamic Input Box for Announce / Parameters -->
-                    <div id="cmdDynamicParamsContainer" style="display: none; margin-bottom: 1rem;">
-                        <div class="form-group" id="cmdParamMessageGroup" style="display: none;">
-                            <label class="form-label">Announcement Message Body</label>
-                            <textarea id="cmdParamMessage" class="form-input" rows="2" placeholder="Match starting in 15 minutes! Please be present in your voice channels."></textarea>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 1rem;">
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label class="form-label" style="font-size: 0.78rem;">Embed Accent Color</label>
+                            <select id="cmdConfigEmbedColor" class="form-input" style="font-size: 0.82rem;">
+                                <option value="#00f2fe">💠 Cyan (#00f2fe)</option>
+                                <option value="#3b82f6">🔵 Electric Blue (#3b82f6)</option>
+                                <option value="#34d399">🟢 Emerald (#34d399)</option>
+                                <option value="#a855f7">🟣 Neon Purple (#a855f7)</option>
+                                <option value="#fbbf24">🟡 Gold (#fbbf24)</option>
+                                <option value="#ef4444">🔴 Crimson (#ef4444)</option>
+                            </select>
                         </div>
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;" id="cmdParamTeamsGroup" style="display: none;">
-                            <div class="form-group">
-                                <label class="form-label">Team 1 Name</label>
-                                <input type="text" id="cmdParamTeamA" class="form-input" placeholder="Team Alpha">
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label class="form-label" style="font-size: 0.78rem;">Include Sponsor Banner</label>
+                            <select id="cmdConfigShowBanner" class="form-input" style="font-size: 0.82rem;">
+                                <option value="true">✅ Yes (Show Top Sponsor)</option>
+                                <option value="false">❌ No (Clean Embed)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Live Discord Message Preview -->
+                    <div style="margin-bottom: 1.2rem;">
+                        <div style="font-size: 0.72rem; font-weight: 700; color: #94a3b8; text-transform: uppercase; margin-bottom: 6px;">
+                            💬 Live Discord Embed Preview
+                        </div>
+                        <div class="discord-preview-card" id="discordEmbedPreview" style="background: #2b2d31; border-left: 4px solid var(--primary-cyan); border-radius: 4px; padding: 12px 14px;">
+                            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+                                <span style="font-size: 0.82rem; font-weight: 700; color: #ffffff;" id="previewBotName">Tournament Bot</span>
+                                <span style="font-size: 0.65rem; background: #5865f2; color: #ffffff; padding: 1px 4px; border-radius: 3px; font-weight: 700;">BOT</span>
                             </div>
-                            <div class="form-group">
-                                <label class="form-label">Team 2 Name</label>
-                                <input type="text" id="cmdParamTeamB" class="form-input" placeholder="Team Omega">
+                            <div id="previewEmbedTitle" style="font-size: 0.95rem; font-weight: 700; color: #f1f5f9; margin-bottom: 4px;">
+                                🏆 Active Esports Tournaments
+                            </div>
+                            <div id="previewEmbedDescription" style="font-size: 0.82rem; color: #dbdee1; white-space: pre-line; line-height: 1.4;">
+                                Browse through live tournaments, check brackets, and register your team.
                             </div>
                         </div>
                     </div>
 
-                    <button type="submit" id="executeCmdBtn" class="btn btn-primary" style="width: 100%; padding: 0.8rem; font-size: 0.95rem; margin-bottom: 1.2rem;">
-                        ▶️ Execute Command
+                    <button type="submit" id="saveCmdConfigBtn" class="btn btn-primary" style="width: 100%; padding: 0.8rem; font-size: 0.95rem;">
+                        💾 Save Command Customization
                     </button>
+                    <div id="cmdSaveFeedback" style="margin-top: 8px; font-size: 0.82rem; text-align: center;"></div>
                 </form>
-
-                <!-- Dark Web Terminal Window -->
-                <div class="terminal-window">
-                    <div class="terminal-header">
-                        <div style="display: flex; gap: 6px;">
-                            <span class="term-dot dot-red"></span>
-                            <span class="term-dot dot-yellow"></span>
-                            <span class="term-dot dot-green"></span>
-                        </div>
-                        <span style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-muted);">tournament-bot-console@v2.0</span>
-                        <button type="button" id="clearTerminalBtn" style="background: none; border: none; color: var(--text-muted); font-size: 0.75rem; cursor: pointer;">Clear</button>
-                    </div>
-                    <div id="terminalLogOutput" class="terminal-body">
-[2026-08-17 02:48:00 UTC] [SYSTEM] Tournament Bot Web Console Ready.
-[2026-08-17 02:48:00 UTC] [STATUS] Connected to Database & Discord API Engine.
-[2026-08-17 02:48:00 UTC] [INFO] Select a command preset or type an input above and click Execute.
-                    </div>
-                </div>
             </div>
         </div>
     </div>
 
     <!-- =========================================================================
-         PANEL 4: SPONSOR BANNERS (MONETIZATION MANAGEMENT)
+         PANEL 4: AUDIT & ACTIVITY LOGS (ORGANIZERS & ADMINS)
+         ========================================================================= -->
+    <div id="activity-logs-panel" class="dash-panel" style="display: none;">
+        <div class="section-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+            <div>
+                <h2 class="section-title">📋 Live Activity & Audit Logs</h2>
+                <p class="section-subtitle">Real-time audit tracking of organizer bracket changes, match scores, server configs, and admin operations</p>
+            </div>
+            <div style="display: flex; gap: 8px; align-items: center;">
+                <button type="button" id="refreshLogsBtn" class="btn btn-secondary btn-sm">
+                    🔄 Refresh Logs
+                </button>
+            </div>
+        </div>
+
+        <!-- Log Filters & Search Bar -->
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 12px 18px; margin-bottom: 1.5rem;">
+            <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+                <button type="button" class="btn-chip active log-filter-btn" data-log-cat="all">🌐 All Activity</button>
+                <button type="button" class="btn-chip log-filter-btn" data-log-cat="organizer">🏆 Organizer Actions</button>
+                <button type="button" class="btn-chip log-filter-btn" data-log-cat="admin">🔑 Admin & System</button>
+            </div>
+            <div style="flex: 1; max-width: 380px;">
+                <input type="text" id="logSearchInput" class="form-input" placeholder="🔍 Search logs by user, tournament, action..." style="padding: 6px 12px; font-size: 0.85rem;">
+            </div>
+        </div>
+
+        <!-- Logs Stream Container -->
+        <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); overflow: hidden;">
+            <div style="overflow-x: auto;">
+                <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.86rem;" id="activityLogsTable">
+                    <thead>
+                        <tr style="background: rgba(0,0,0,0.35); border-bottom: 1px solid var(--border-color); color: var(--text-secondary); font-size: 0.78rem; text-transform: uppercase;">
+                            <th style="padding: 0.9rem 1.2rem; width: 170px;">Timestamp</th>
+                            <th style="padding: 0.9rem; width: 140px;">Actor / User</th>
+                            <th style="padding: 0.9rem; width: 140px;">Category</th>
+                            <th style="padding: 0.9rem; width: 180px;">Action Type</th>
+                            <th style="padding: 0.9rem;">Description & Details</th>
+                            <th style="padding: 0.9rem; width: 180px;">Target Resource</th>
+                        </tr>
+                    </thead>
+                    <tbody id="activityLogsTableBody">
+                        <!-- Dynamic rows populated by JavaScript -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- =========================================================================
+         PANEL 5: SPONSOR BANNERS (MONETIZATION MANAGEMENT)
          ========================================================================= -->
     <div id="sponsors-panel" class="dash-panel" style="display: none;">
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; align-items: flex-start;">

@@ -10,7 +10,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@600;700;800;900&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
     <!-- Main Style -->
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/style.css?v=1.4.2">
     {% block head_extra %}{% endblock %}
 </head>
 <body>
@@ -25,6 +25,7 @@
 
             <ul class="nav-links">
                 <li><a href="/" class="nav-link">🏆 Tournaments</a></li>
+                <li><a href="/commands" class="nav-link">📖 Commands &amp; Guide</a></li>
                 <li><a href="/#affiliate-store" class="nav-link">⚡ Gaming Store</a></li>
                 {% if is_organizer or is_admin %}
                 <li><a href="/dashboard" class="nav-link" style="color: var(--primary-cyan); font-weight: 700;">⚙️ Organizer Center</a></li>
@@ -63,20 +64,22 @@
     <footer class="footer">
         <div class="footer-content">
             <div style="display: flex; align-items: center; gap: 12px;">
-                <img src="/static/img/tournament_bot_logo.png" alt="Logo" style="width: 32px; height: 32px; border-radius: 6px;">
+                <img src="/static/img/tournament_bot_logo.png" alt="Logo" style="width: 34px; height: 34px; border-radius: 8px; border: 1px solid rgba(0, 242, 254, 0.25);">
                 <div>
-                    <p><strong>Tournament Bot System</strong> &bull; Powered by Discord & Challonge</p>
-                    <p style="font-size: 0.78rem; margin-top: 4px;">Disclosure: Some store links are affiliate links that support community tournament prize pools.</p>
+                    <p style="font-weight: 700; color: #f8fafc; font-size: 0.92rem;">Tournament Bot Esports Engine</p>
+                    <p style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 2px;">Multi-Server Officiating &bull; Challonge Bracket Sync &bull; Automated Match Posters</p>
                 </div>
             </div>
-            <div>
-                <a href="/login" style="color: var(--text-muted); font-size: 0.82rem; margin-left: 1rem;">Portal Login</a>
+            <div style="display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap;">
+                <a href="/commands" style="color: var(--primary-cyan); font-size: 0.88rem; font-weight: 600;">📖 Commands Guide</a>
+                <a href="/login" style="color: var(--text-secondary); font-size: 0.88rem;">Organizer Portal</a>
+                <a href="/" style="color: var(--text-secondary); font-size: 0.88rem;">Public Arena</a>
             </div>
         </div>
     </footer>
 
     <!-- Client JS -->
-    <script src="/static/js/app.js"></script>
+    <script src="/static/js/app.js?v=1.4.2"></script>
     {% block scripts_extra %}{% endblock %}
 </body>
 </html>

@@ -105,6 +105,11 @@ def tournament_page(tournament_id):
         is_organizer=is_organizer
     )
 
+@app.route("/commands")
+def commands_page():
+    """Discord Command Reference & Operational Guide."""
+    return render_template("commands.html")
+
 @app.route("/login")
 def login_page():
     """Dual Login Portal (Discord OAuth2 + Master Admin Credentials)."""

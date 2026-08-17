@@ -4,7 +4,8 @@ from flask import Blueprint, request, jsonify
 from web_server.auth import organizer_required
 from web_server.database import (
     get_tournaments, get_sponsors, add_or_update_sponsor,
-    get_affiliate_products, add_or_update_affiliate
+    get_affiliate_products, add_or_update_affiliate,
+    log_activity
 )
 
 organizer_bp = Blueprint("organizer", __name__, url_prefix="/api/organizer")
@@ -145,6 +146,69 @@ def manage_guild_config(user):
             
     config = get_full_guild_config(str(guild_id))
     return jsonify({"status": "success", "config": config})
+
+@organizer_bp.route("/upload-logo", methods=["POST"])
+@organizer_required
+def upload_server_logo(user):
+    """
+    Upload, store and database-sync custom server logo for a guild.
+    Saves image to static/uploads/logos/ and updates Supabase & local config.
+    """
+    import shutil
+    from pathlib import Path
+    from web_server.config import BASE_DIR
+    from web_server.database import save_full_guild_config
+    
+    guild_id = request.form.get("guild_id", "").strip()
+    if not guild_id:
+        return jsonify({"error": "guild_id is required"}), 400
+        
+    auth_guilds = user.get("authorized_guild_ids", [])
+    is_admin = user.get("is_admin") or user.get("is_super_admin") or "*" in auth_guilds
+    if not is_admin and guild_id not in [str(g) for g in auth_guilds]:
+        return jsonify({"error": "Unauthorized to upload logo for this server"}), 403
+
+    if "file" not in request.files:
+        return jsonify({"error": "No image file provided"}), 400
+        
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"error": "No file selected"}), 400
+
+    # Validate extension
+    allowed_extensions = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in allowed_extensions:
+        return jsonify({"error": f"Invalid format. Allowed: {', '.join(allowed_extensions)}"}), 400
+
+    upload_dir = BASE_DIR / "web_server" / "static" / "uploads" / "logos"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    
+    filename = f"server_logo_{guild_id}{ext}"
+    target_path = upload_dir / filename
+    file.save(str(target_path))
+    
+    # Save root fallback copy for Discord Bot poster engine
+    try:
+        root_fallback = BASE_DIR / filename
+        shutil.copyfile(str(target_path), str(root_fallback))
+    except Exception as e:
+        print(f"[Upload Logo] Root fallback copy error: {e}")
+
+    public_url = f"/static/uploads/logos/{filename}"
+    
+    # Save directly to Supabase & local JSON store
+    save_full_guild_config(guild_id, {
+        "server_logo_path": filename,
+        "server_logo_url": public_url
+    })
+    
+    return jsonify({
+        "status": "success",
+        "message": f"Server logo for guild {guild_id} updated and stored in database successfully!",
+        "logo_url": public_url,
+        "logo_path": filename
+    })
 
 @organizer_bp.route("/execute-command", methods=["POST"])
 @organizer_required
@@ -303,6 +367,16 @@ def create_tournament_studio(user):
 
     t_id = record.get("Tournament_ID") or record.get("id")
 
+    log_activity(
+        action_type="TOURNAMENT_CREATE",
+        actor=user.get("username", "organizer"),
+        description=f"Created & published tournament '{name}' ({data.get('format', '5 vs 5')}) with {len(data.get('participants', []))} teams",
+        target=name,
+        category="organizer",
+        guild_id=guild_id,
+        metadata={"game": data.get("game_category"), "bracket_type": data.get("bracket_type")}
+    )
+
     return jsonify({
         "status": "success",
         "message": f"Tournament '{name}' created and published successfully!",
@@ -421,6 +495,16 @@ def update_tournament_studio(user, tournament_id):
     data = request.get_json(silent=True) or {}
     updated = update_tournament_record(tournament_id, data)
 
+    t_name = existing.get("Tournament_Name") or existing.get("name") or tournament_id
+    log_activity(
+        action_type="SCORE_UPDATE",
+        actor=user.get("username", "organizer"),
+        description=f"Updated live match scores and bracket progression for tournament '{t_name}'",
+        target=t_name,
+        category="organizer",
+        guild_id=guild_id
+    )
+
     return jsonify({
         "status": "success",
         "message": f"Tournament '{tournament_id}' updated successfully!",
@@ -444,8 +528,17 @@ def delete_tournament_studio(user, tournament_id):
     if not is_admin and guild_id and guild_id not in [str(g) for g in auth_guilds]:
         return jsonify({"error": "Unauthorized to delete this tournament"}), 403
 
+    t_name = existing.get("Tournament_Name") or existing.get("name") or tournament_id
     success = delete_tournament_record(tournament_id)
     if success:
+        log_activity(
+            action_type="TOURNAMENT_DELETE",
+            actor=user.get("username", "organizer"),
+            description=f"Deleted tournament '{t_name}' (ID: {tournament_id})",
+            target=t_name,
+            category="organizer",
+            guild_id=guild_id
+        )
         return jsonify({
             "status": "success",
             "message": f"Tournament '{tournament_id}' deleted successfully!"

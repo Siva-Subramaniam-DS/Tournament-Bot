@@ -162,7 +162,59 @@ class TestWebPortal(unittest.TestCase):
             res = self.app.get(f"/api/public/click/{sp_id}")
             self.assertEqual(res.status_code, 302)
 
+    def test_activity_logs_api(self):
+        # Login
+        res = self.app.post("/api/auth/master-login", json={
+            "username": "Hokageadmin",
+            "password": "MyHokageadmin2004"
+        })
+        token = res.get_json().get("token")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Fetch all logs
+        logs_res = self.app.get("/api/admin/logs?category=all", headers=headers)
+        self.assertEqual(logs_res.status_code, 200)
+        data = logs_res.get_json()
+        self.assertEqual(data.get("status"), "success")
+        self.assertIsInstance(data.get("logs"), list)
+        self.assertGreater(len(data.get("logs")), 0)
+
+        # Fetch organizer logs
+        org_res = self.app.get("/api/admin/logs?category=organizer", headers=headers)
+        self.assertEqual(org_res.status_code, 200)
+        self.assertEqual(org_res.get_json().get("status"), "success")
+
+    def test_command_configs_api(self):
+        # Login
+        res = self.app.post("/api/auth/master-login", json={
+            "username": "Hokageadmin",
+            "password": "MyHokageadmin2004"
+        })
+        token = res.get_json().get("token")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Fetch default command configs
+        get_res = self.app.get("/api/admin/commands?guild_id=1303670721796640799", headers=headers)
+        self.assertEqual(get_res.status_code, 200)
+        data = get_res.get_json()
+        self.assertEqual(data.get("status"), "success")
+        self.assertIn("bracket", data.get("commands", {}))
+
+        # Save customized command config
+        custom_payload = data.get("commands", {})
+        custom_payload["bracket"]["response_template"] = "⚔️ Custom Championship Live Bracket: {bracket_url}"
+        custom_payload["bracket"]["permission"] = "Helper Team"
+
+        save_res = self.app.post("/api/admin/commands", json={
+            "guild_id": "1303670721796640799",
+            "commands": custom_payload
+        }, headers=headers)
+        self.assertEqual(save_res.status_code, 200)
+        saved_data = save_res.get_json()
+        self.assertEqual(saved_data.get("status"), "success")
+
 if __name__ == "__main__":
     unittest.main()
+
 
 

@@ -21,10 +21,16 @@ document.addEventListener("DOMContentLoaded", () => {
     // 5. Initialize Public Tournament Live Bracket Viewer (/tournament/<id>)
     initPublicTournamentBracketViewer();
 
-    // 6. Initialize Server Configuration & Web Command Console
-    initServerConfigAndCommandConsole();
+    // 6. Initialize Server Configuration Form
+    initServerConfigForm();
 
-    // 7. Initialize Tournament Table Actions (Edit & Delete)
+    // 7. Initialize Discord Bot Commands & Templates Customizer
+    initCommandConfigEditor();
+
+    // 8. Initialize Audit & Activity Logs Viewer
+    initActivityLogsViewer();
+
+    // 9. Initialize Tournament Table Actions (Edit & Delete)
     initTournamentTableActions();
 });
 
@@ -430,27 +436,27 @@ function initBracketCreatorStudio() {
         });
     }
 
-    // Dynamic Tournament Generation (Single Elimination & Group Stage A-Z)
-    const bracketTypeSelect = document.getElementById("studioBracketType");
+    // Dynamic Tournament Generation (Single Stage vs Two Stage Groups -> Final Bracket)
+    const stageTypeRadios = document.querySelectorAll('input[name="studioStageType"]');
     const groupSettingsBox = document.getElementById("studioGroupSettingsBox");
     const groupCountSelect = document.getElementById("studioGroupCount");
-    const groupAdvanceSelect = document.getElementById("studioGroupAdvanceCount");
+    const bracketTypeSelect = document.getElementById("studioBracketType");
 
-    if (bracketTypeSelect) {
-        bracketTypeSelect.addEventListener("change", () => {
-            const val = bracketTypeSelect.value;
+    stageTypeRadios.forEach(radio => {
+        radio.addEventListener("change", () => {
+            const isTwoStage = document.getElementById("stageTypeTwo")?.checked;
             if (groupSettingsBox) {
-                groupSettingsBox.style.display = (val === "group_stage") ? "block" : "none";
+                groupSettingsBox.style.display = isTwoStage ? "block" : "none";
             }
             generateAnimatedBracket();
         });
-    }
+    });
 
     if (groupCountSelect) {
         groupCountSelect.addEventListener("change", generateAnimatedBracket);
     }
-    if (groupAdvanceSelect) {
-        groupAdvanceSelect.addEventListener("change", generateAnimatedBracket);
+    if (bracketTypeSelect) {
+        bracketTypeSelect.addEventListener("change", generateAnimatedBracket);
     }
 
     function generateAnimatedBracket() {
@@ -483,15 +489,15 @@ function initBracketCreatorStudio() {
         const championNameEl = document.getElementById("championName");
         if (championBadgeBox) championBadgeBox.style.display = "none";
 
-        const bracketType = bracketTypeSelect ? bracketTypeSelect.value : "single_elimination";
+        const isTwoStage = document.getElementById("stageTypeTwo")?.checked;
 
-        if (bracketType === "group_stage") {
-            const groupCountOpt = document.getElementById("studioGroupCount") ? document.getElementById("studioGroupCount").value : "auto";
-            const groupAdvOpt = document.getElementById("studioGroupAdvanceCount") ? document.getElementById("studioGroupAdvanceCount").value : "1";
-            const groupData = buildGroupStageTournament(currentTeams, groupCountOpt, groupAdvOpt);
-            renderGroupStageDOM(bracketVisualContainer, groupData, true, championBadgeBox, championNameEl);
+        if (isTwoStage) {
+            // Two Stage Tournament (Groups each playing Single Elimination -> Final Bracket)
+            const groupCountOpt = groupCountSelect ? groupCountSelect.value : "auto";
+            const twoStageData = buildTwoStageTournament(currentTeams, groupCountOpt);
+            renderTwoStageDOM(bracketVisualContainer, twoStageData, true, championBadgeBox, championNameEl);
         } else {
-            // Challonge Single Elimination (Play-ins in Round 1 aligned with Round 2, Round 2 waiting slots, Round 3.. Semifinals.. Final)
+            // Single Stage Tournament (Unified Challonge Single Elimination Tree)
             const rounds = buildChallongeBracketTree(currentTeams);
             renderBracketTreeDOM(bracketVisualContainer, rounds, true, championBadgeBox, championNameEl);
         }
@@ -601,7 +607,8 @@ function initBracketCreatorStudio() {
             const name = document.getElementById("studioTournamentName").value.trim();
             const guildId = document.getElementById("studioGuildId").value;
             const game = document.getElementById("studioGameCategory").value;
-            const bracketType = document.getElementById("studioBracketType").value;
+            const isTwoStage = document.getElementById("stageTypeTwo")?.checked;
+            const bracketType = isTwoStage ? "two_stage" : (document.getElementById("studioBracketType")?.value || "single_elimination");
             const format = document.getElementById("studioFormat").value;
             const challongeLink = document.getElementById("studioChallongeLink") ? document.getElementById("studioChallongeLink").value.trim() : "";
 
@@ -618,10 +625,9 @@ function initBracketCreatorStudio() {
                 publishBtn.textContent = "Publishing...";
 
                 let currentTree = {};
-                if (bracketType === "group_stage") {
-                    const groupCountOpt = document.getElementById("studioGroupCount") ? document.getElementById("studioGroupCount").value : "auto";
-                    const groupAdvOpt = document.getElementById("studioGroupAdvanceCount") ? document.getElementById("studioGroupAdvanceCount").value : "1";
-                    currentTree = buildGroupStageTournament(currentTeams, groupCountOpt, groupAdvOpt);
+                if (isTwoStage) {
+                    const groupCountOpt = groupCountSelect ? groupCountSelect.value : "auto";
+                    currentTree = buildTwoStageTournament(currentTeams, groupCountOpt);
                 } else {
                     currentTree = extractBracketTreeFromDOM(bracketVisualContainer);
                 }
@@ -695,14 +701,55 @@ function initPublicTournamentBracketViewer() {
     const champNameEl = document.getElementById("publicChampionName");
 
     const participants = Array.isArray(tournamentData.participants) ? tournamentData.participants : [];
-    const isGroupType = tournamentData.bracket_type === "group_stage" || (tournamentData.bracket_tree && tournamentData.bracket_tree.is_group_stage);
+    const isTwoStage = tournamentData.bracket_type === "two_stage" || tournamentData.bracket_type === "group_stage" || (tournamentData.bracket_tree && (tournamentData.bracket_tree.is_two_stage || tournamentData.bracket_tree.is_group_stage));
 
-    if (isGroupType) {
-        let groupData = tournamentData.bracket_tree && tournamentData.bracket_tree.groups ? tournamentData.bracket_tree : null;
-        if (!groupData) {
-            groupData = buildGroupStageTournament(participants, "auto", "1");
+    if (isTwoStage) {
+        let twoStageData = tournamentData.bracket_tree && tournamentData.bracket_tree.groups ? tournamentData.bracket_tree : null;
+        if (!twoStageData) {
+            twoStageData = buildTwoStageTournament(participants, "auto");
         }
-        renderGroupStageDOM(publicStage, groupData, isOrganizer, champBadge, champNameEl);
+        renderTwoStageDOM(publicStage, twoStageData, isOrganizer, champBadge, champNameEl);
+
+        if (saveBtn) {
+            saveBtn.addEventListener("click", async () => {
+                const tid = saveBtn.getAttribute("data-tid");
+                try {
+                    saveBtn.disabled = true;
+                    saveBtn.textContent = "Saving...";
+                    if (saveStatus) saveStatus.textContent = "";
+
+                    const res = await fetch(`/api/organizer/tournaments/${tid}`, {
+                        method: "PUT",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            bracket_tree: twoStageData
+                        })
+                    });
+
+                    const data = await res.json();
+                    if (res.ok && data.status === "success") {
+                        if (saveStatus) {
+                            saveStatus.style.color = "#34d399";
+                            saveStatus.textContent = "✅ Saved successfully!";
+                            setTimeout(() => { if (saveStatus) saveStatus.textContent = ""; }, 3000);
+                        }
+                    } else {
+                        if (saveStatus) {
+                            saveStatus.style.color = "#ef4444";
+                            saveStatus.textContent = `❌ ${data.error || "Failed to save"}`;
+                        }
+                    }
+                } catch (err) {
+                    if (saveStatus) {
+                        saveStatus.style.color = "#ef4444";
+                        saveStatus.textContent = "❌ Connection error";
+                    }
+                } finally {
+                    saveBtn.disabled = false;
+                    saveBtn.textContent = "💾 Save Match Scores & Winners";
+                }
+            });
+        }
         return;
     }
 
@@ -1027,353 +1074,244 @@ function buildChallongeBracketTree(participants) {
 
 // =========================================================================
 // =========================================================================
-// HELPER: BUILD GROUP STAGE TOURNAMENT (GROUP A, B ... Z ➔ PLAYOFFS)
+// HELPER: BUILD TWO STAGE TOURNAMENT (GROUPS AS SINGLE ELIM ➔ FINAL BRACKET)
 // =========================================================================
-function buildGroupStageTournament(participants, groupCountOption, advancePerGroupOption) {
+function buildTwoStageTournament(participants, groupCountOption) {
     const N = Math.min(participants.length, 256);
-    if (N < 2) return { is_group_stage: true, groups: [], playoffs: [] };
+    if (N < 2) return { is_two_stage: true, groups: [], final_stage: [] };
 
     const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     let numGroups = 4;
 
     if (groupCountOption === "auto" || !groupCountOption) {
         if (N <= 4) numGroups = 2;
-        else if (N <= 12) numGroups = 4;
-        else if (N <= 32) numGroups = 8;
-        else if (N <= 64) numGroups = 16;
+        else if (N <= 16) numGroups = 4;
+        else if (N <= 64) numGroups = 8;
+        else if (N <= 128) numGroups = 16;
         else numGroups = 26;
     } else {
         numGroups = parseInt(groupCountOption) || 4;
     }
     numGroups = Math.max(2, Math.min(numGroups, Math.min(26, N)));
 
-    const advancePerGroup = parseInt(advancePerGroupOption) || 1;
-
-    // Distribute teams into groups
-    const groups = [];
-    for (let g = 0; g < numGroups; g++) {
-        groups.push({
-            id: `group-${alphabet[g]}`,
-            letter: alphabet[g],
-            name: `Group ${alphabet[g]}`,
-            teams: [],
-            matches: []
-        });
-    }
-
-    // Seed/distribute participants evenly
+    // 1. Distribute teams into groups
+    const groupTeams = Array.from({ length: numGroups }, () => []);
     participants.forEach((team, idx) => {
-        const groupIdx = idx % numGroups;
-        groups[groupIdx].teams.push({
-            seed: idx + 1,
-            name: team,
-            played: 0,
-            won: 0,
-            lost: 0,
-            points: 0,
-            scoreDiff: 0
-        });
+        const gIdx = idx % numGroups;
+        groupTeams[gIdx].push(team);
     });
 
-    // Build Round-Robin matches for each group
-    let groupMatchCounter = 1;
-    groups.forEach((g) => {
-        const tList = g.teams;
-        for (let i = 0; i < tList.length; i++) {
-            for (let j = i + 1; j < tList.length; j++) {
-                g.matches.push({
-                    match_id: `${g.letter}-${i}-${j}`,
-                    match_number: groupMatchCounter++,
-                    group: g.letter,
-                    team1: tList[i].name,
-                    seed1: tList[i].seed,
-                    score1: 0,
-                    winner1: false,
-                    team2: tList[j].name,
-                    seed2: tList[j].seed,
-                    score2: 0,
-                    winner2: false
-                });
+    // 2. Build Single Elimination Bracket for each group
+    const groups = [];
+    const qualifierTeams = [];
+
+    for (let g = 0; g < numGroups; g++) {
+        const letter = alphabet[g];
+        const gName = `Group ${letter}`;
+        const gRoster = groupTeams[g];
+
+        // Build single elimination bracket for this group
+        const gRounds = buildChallongeBracketTree(gRoster);
+
+        // Check if group already has a crowned winner in its final round
+        let groupWinner = null;
+        if (gRounds.length > 0) {
+            const finalRound = gRounds[gRounds.length - 1];
+            if (finalRound && finalRound.matches && finalRound.matches.length > 0) {
+                const finalMatch = finalRound.matches[0];
+                if (finalMatch.winner1 && finalMatch.team1 !== "TBD" && finalMatch.team1 !== "BYE") {
+                    groupWinner = finalMatch.team1;
+                } else if (finalMatch.winner2 && finalMatch.team2 !== "TBD" && finalMatch.team2 !== "BYE") {
+                    groupWinner = finalMatch.team2;
+                }
             }
         }
-    });
 
-    // Determine playoff qualifiers (e.g. Winner Group A, Winner Group B...)
-    const playoffTeams = [];
-    for (let adv = 0; adv < advancePerGroup; adv++) {
-        groups.forEach((g) => {
-            const teamName = g.teams[adv] ? g.teams[adv].name : `Winner Group ${g.letter}`;
-            playoffTeams.push(teamName);
+        groups.push({
+            id: `group-${letter.toLowerCase()}`,
+            letter: letter,
+            name: gName,
+            teams: gRoster,
+            rounds: gRounds,
+            winner: groupWinner
         });
+
+        qualifierTeams.push(groupWinner || `Winner Group ${letter}`);
     }
 
-    // Build Playoff Bracket for the qualifiers
-    const playoffTree = buildChallongeBracketTree(playoffTeams);
+    // 3. Build Stage 2: Final Single Elimination Bracket (Group Winners)
+    const finalStageTree = buildChallongeBracketTree(qualifierTeams);
 
     return {
-        is_group_stage: true,
-        advance_per_group: advancePerGroup,
+        is_two_stage: true,
         groups: groups,
-        playoffs: playoffTree
+        final_stage: finalStageTree
     };
 }
 
-function recalculateGroupStandingsAndPlayoffs(groupData) {
-    if (!groupData || !groupData.groups) return;
+function syncTwoStageFinalQualifiers(twoStageData) {
+    if (!twoStageData || !twoStageData.groups || !twoStageData.final_stage) return;
 
-    const advancePerGroup = groupData.advance_per_group || 1;
-
-    groupData.groups.forEach(g => {
-        const stats = {};
-        g.teams.forEach(t => {
-            stats[t.name] = { seed: t.seed, name: t.name, played: 0, won: 0, lost: 0, points: 0, scoreDiff: 0 };
-        });
-
-        g.matches.forEach(m => {
-            const s1 = parseInt(m.score1) || 0;
-            const s2 = parseInt(m.score2) || 0;
-            const hasPlayed = m.winner1 || m.winner2 || s1 > 0 || s2 > 0;
-
-            if (hasPlayed && stats[m.team1] && stats[m.team2]) {
-                stats[m.team1].played++;
-                stats[m.team2].played++;
-                stats[m.team1].scoreDiff += (s1 - s2);
-                stats[m.team2].scoreDiff += (s2 - s1);
-
-                if (m.winner1 || s1 > s2) {
-                    stats[m.team1].won++;
-                    stats[m.team1].points += 3;
-                    stats[m.team2].lost++;
-                } else if (m.winner2 || s2 > s1) {
-                    stats[m.team2].won++;
-                    stats[m.team2].points += 3;
-                    stats[m.team1].lost++;
-                } else {
-                    stats[m.team1].points += 1;
-                    stats[m.team2].points += 1;
+    // Check each group's final match winner
+    const qualifiers = [];
+    twoStageData.groups.forEach((g) => {
+        let groupWinner = null;
+        if (g.rounds && g.rounds.length > 0) {
+            const finalRound = g.rounds[g.rounds.length - 1];
+            if (finalRound && finalRound.matches && finalRound.matches.length > 0) {
+                const fm = finalRound.matches[0];
+                if (fm.winner1 && fm.team1 !== "TBD" && fm.team1 !== "BYE") {
+                    groupWinner = fm.team1;
+                } else if (fm.winner2 && fm.team2 !== "TBD" && fm.team2 !== "BYE") {
+                    groupWinner = fm.team2;
                 }
             }
-        });
-
-        g.teams = Object.values(stats).sort((a, b) => {
-            if (b.points !== a.points) return b.points - a.points;
-            if (b.won !== a.won) return b.won - a.won;
-            if (b.scoreDiff !== a.scoreDiff) return b.scoreDiff - a.scoreDiff;
-            return a.seed - b.seed;
-        });
+        }
+        g.winner = groupWinner;
+        qualifiers.push(groupWinner || `Winner Group ${g.letter}`);
     });
 
-    // Feed top teams into Playoff bracket
-    const playoffTeams = [];
-    for (let adv = 0; adv < advancePerGroup; adv++) {
-        groupData.groups.forEach(g => {
-            const qualifiedTeam = g.teams[adv];
-            const name = qualifiedTeam ? qualifiedTeam.name : `Winner Group ${g.letter}`;
-            playoffTeams.push(name);
-        });
-    }
-
-    if (groupData.playoffs && groupData.playoffs.length > 0) {
-        const firstRound = groupData.playoffs[0];
-        if (firstRound && firstRound.matches) {
-            firstRound.matches.forEach((m, mIdx) => {
-                const t1 = playoffTeams[mIdx * 2];
-                const t2 = playoffTeams[mIdx * 2 + 1];
-                if (t1) m.team1 = t1;
-                if (t2) m.team2 = t2;
+    // Feed into Final Stage Round 1 (or prelim round)
+    if (twoStageData.final_stage && twoStageData.final_stage.length > 0) {
+        const r1 = twoStageData.final_stage[0];
+        if (r1 && r1.matches) {
+            r1.matches.forEach((m, idx) => {
+                const s1 = m.seed1;
+                const s2 = m.seed2;
+                if (s1 && qualifiers[s1 - 1]) m.team1 = qualifiers[s1 - 1];
+                if (s2 && qualifiers[s2 - 1]) m.team2 = qualifiers[s2 - 1];
             });
         }
     }
 }
 
 // =========================================================================
-// RENDERER: GROUP STAGE (GROUP A, B ... Z) + KNOCKOUT PLAYOFF BRACKET
+// RENDERER: TWO STAGE TOURNAMENT (GROUPS SINGLE ELIM ➔ FINAL BRACKET)
 // =========================================================================
-function renderGroupStageDOM(container, groupData, isEditable, champBadge, champNameEl, activeView = "all", activeGroupFilter = "all") {
-    if (!container || !groupData) return;
+function renderTwoStageDOM(container, twoStageData, isEditable, champBadge, champNameEl, activeTab = "all") {
+    if (!container || !twoStageData) return;
     container.innerHTML = "";
-    container.classList.add("group-stage-mode");
-
-    const advancePerGroup = groupData.advance_per_group || 1;
-    const numGroups = (groupData.groups || []).length;
+    container.classList.add("two-stage-mode");
 
     const wrapper = document.createElement("div");
-    wrapper.className = "group-stage-container";
+    wrapper.className = "two-stage-container";
+
+    const numGroups = (twoStageData.groups || []).length;
 
     // 1. Interactive Navigation & Filter Bar
     const navBar = document.createElement("div");
     navBar.className = "group-stage-nav-bar";
     navBar.innerHTML = `
         <div class="group-tabs-group">
-            <button type="button" class="group-tab-btn ${activeView === 'all' ? 'active' : ''}" data-view="all">🌐 All Stages</button>
-            <button type="button" class="group-tab-btn ${activeView === 'groups' ? 'active' : ''}" data-view="groups">📊 Groups (${numGroups})</button>
-            <button type="button" class="group-tab-btn ${activeView === 'playoffs' ? 'active' : ''}" data-view="playoffs">🔥 Playoff Bracket</button>
+            <button type="button" class="group-tab-btn ${activeTab === 'all' ? 'active' : ''}" data-tab="all">🌐 All Stages (${numGroups} Groups + Finals)</button>
+            <button type="button" class="group-tab-btn ${activeTab === 'final' ? 'active' : ''}" data-tab="final">🔥 Final Stage Bracket</button>
         </div>
         <div class="group-tabs-group">
-            <span style="font-size: 0.72rem; color: #64748b; font-weight: 700; text-transform: uppercase;">Filter:</span>
-            <button type="button" class="group-tab-btn ${activeGroupFilter === 'all' ? 'active' : ''}" data-group-filter="all">All</button>
-            ${(groupData.groups || []).map(g => `
-                <button type="button" class="group-tab-btn ${activeGroupFilter === g.letter ? 'active' : ''}" data-group-filter="${g.letter}">${g.letter}</button>
+            <span style="font-size: 0.72rem; color: #64748b; font-weight: 700; text-transform: uppercase;">Group Brackets:</span>
+            ${(twoStageData.groups || []).map(g => `
+                <button type="button" class="group-tab-btn ${activeTab === g.id ? 'active' : ''}" data-tab="${g.id}">Group ${g.letter}</button>
             `).join("")}
         </div>
     `;
     wrapper.appendChild(navBar);
 
-    // 2. Group Stage Grid (Group A, Group B, Group C... Group Z)
-    if (activeView === "all" || activeView === "groups") {
+    // 2. Group Single-Elimination Brackets Grid
+    if (activeTab === "all" || activeTab.startsWith("group-")) {
         const grid = document.createElement("div");
-        grid.className = "group-stage-grid";
+        grid.className = "group-brackets-grid";
 
-        (groupData.groups || []).forEach(g => {
-            if (activeGroupFilter !== "all" && activeGroupFilter !== g.letter) return;
+        (twoStageData.groups || []).forEach((g) => {
+            if (activeTab !== "all" && activeTab !== g.id) return;
 
             const card = document.createElement("div");
-            card.className = "group-card";
+            card.className = "group-bracket-card";
             card.innerHTML = `
-                <div class="group-card-header">
-                    <div class="group-card-title">🏆 ${g.name}</div>
-                    <div class="group-team-badge">${g.teams.length} Teams &bull; Top ${advancePerGroup} Qualify</div>
-                </div>
-                <table class="group-standings-table">
-                    <thead>
-                        <tr>
-                            <th style="width: 28px;">#</th>
-                            <th>Team</th>
-                            <th style="text-align: center; width: 28px;">P</th>
-                            <th style="text-align: center; width: 28px;">W</th>
-                            <th style="text-align: center; width: 28px;">L</th>
-                            <th style="text-align: right; width: 34px;">Pts</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${g.teams.map((t, idx) => {
-                            const isQualifying = idx < advancePerGroup;
-                            return `
-                                <tr class="${isQualifying ? 'qualifying-team' : ''}">
-                                    <td style="font-family: var(--font-mono); color: ${isQualifying ? '#34d399' : '#64748b'}; font-weight: 700;">${idx + 1}</td>
-                                    <td>
-                                        <span style="font-weight: 600;">${t.name}</span>
-                                        ${isQualifying ? '<span class="group-qualify-tag">🟢 Advancing</span>' : ''}
-                                    </td>
-                                    <td style="text-align: center; font-family: var(--font-mono);">${t.played}</td>
-                                    <td style="text-align: center; font-family: var(--font-mono); color: #34d399;">${t.won}</td>
-                                    <td style="text-align: center; font-family: var(--font-mono); color: #ef4444;">${t.lost}</td>
-                                    <td style="text-align: right; font-family: var(--font-mono); font-weight: 800; color: var(--primary-cyan);">${t.points}</td>
-                                </tr>
-                            `;
-                        }).join("")}
-                    </tbody>
-                </table>
-                <div style="font-size: 0.72rem; font-weight: 800; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">⚔️ Group Matches</div>
-                <div class="group-matches-list">
-                    ${g.matches.map((m, mIdx) => `
-                        <div class="group-match-item" data-group="${g.letter}" data-match="${mIdx}">
-                            <div style="display: flex; align-items: center; gap: 6px; overflow: hidden; flex: 1;">
-                                <span style="font-size: 0.7rem; color: #64748b; font-family: var(--font-mono);">#${m.match_number}</span>
-                                <span style="font-weight: ${m.winner1 ? '700' : '500'}; color: ${m.winner1 ? '#34d399' : '#f1f5f9'};">${m.team1}</span>
-                                <span style="color: #64748b; font-size: 0.7rem;">vs</span>
-                                <span style="font-weight: ${m.winner2 ? '700' : '500'}; color: ${m.winner2 ? '#34d399' : '#f1f5f9'};">${m.team2}</span>
-                            </div>
-                            ${isEditable ? `
-                                <div style="display: flex; align-items: center; gap: 3px;">
-                                    <input type="number" class="bracket-score-input group-score-1" value="${m.score1}" min="0" max="999" style="width: 32px; height: 22px; font-size: 0.75rem;">
-                                    <button type="button" class="bracket-advance-btn group-win-1-btn" style="height: 22px; padding: 1px 4px; font-size: 0.65rem;" title="Mark ${m.team1} Winner">▶</button>
-                                    <span style="color: #475569;">-</span>
-                                    <input type="number" class="bracket-score-input group-score-2" value="${m.score2}" min="0" max="999" style="width: 32px; height: 22px; font-size: 0.75rem;">
-                                    <button type="button" class="bracket-advance-btn group-win-2-btn" style="height: 22px; padding: 1px 4px; font-size: 0.65rem;" title="Mark ${m.team2} Winner">▶</button>
-                                </div>
-                            ` : `
-                                <span class="bracket-score-display" style="font-size: 0.75rem;">${m.score1} - ${m.score2}</span>
-                            `}
-                        </div>
-                    `).join("")}
+                <div class="group-bracket-header">
+                    <div class="group-bracket-title">
+                        <span>🏆 ${g.name} Bracket</span>
+                        <span style="font-size: 0.72rem; color: #64748b; font-weight: 600;">(${g.teams.length} Teams &bull; Single Elim)</span>
+                    </div>
+                    <div>
+                        ${g.winner ? `
+                            <span class="group-advancing-badge">👑 Advancing: ${g.winner}</span>
+                        ` : `
+                            <span style="font-size: 0.74rem; color: #94a3b8; font-weight: 600;">⚔️ In Progress</span>
+                        `}
+                    </div>
                 </div>
             `;
+
+            // Mini single elimination stage container for this group
+            const groupStageBox = document.createElement("div");
+            groupStageBox.className = "bracket-visual-stage";
+            groupStageBox.style.minHeight = "auto";
+            groupStageBox.style.padding = "0.8rem 0";
+            groupStageBox.id = `stage-${g.id}`;
+            card.appendChild(groupStageBox);
             grid.appendChild(card);
+
+            // Render group's bracket tree inside its stage box
+            renderBracketTreeDOM(groupStageBox, g.rounds, isEditable, null, null);
         });
+
         wrapper.appendChild(grid);
     }
 
-    // 3. Playoff / Knockout Bracket (Group Winners ➔ Semifinals ➔ Finals)
-    if ((activeView === "all" || activeView === "playoffs") && groupData.playoffs && groupData.playoffs.length > 0) {
-        const playoffSection = document.createElement("div");
-        playoffSection.className = "group-playoff-divider";
-        playoffSection.innerHTML = `
-            <div class="group-playoff-title">
-                <span>🔥 Playoff Knockout Stage &bull; Group Winners Meet in Semifinals & Finals</span>
+    // 3. Stage 2: Final Single-Elimination Bracket (Group Winners)
+    if (activeTab === "all" || activeTab === "final") {
+        const finalCard = document.createElement("div");
+        finalCard.className = "final-stage-card";
+        finalCard.innerHTML = `
+            <div class="final-stage-header">
+                <div>
+                    <div class="final-stage-title">🔥 Stage 2: Final Single-Elimination Bracket</div>
+                    <div style="font-size: 0.78rem; color: #94a3b8; margin-top: 2px;">
+                        Group winners from Stage 1 meet in Semifinals & Finals to determine the Tournament Champion.
+                    </div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span style="font-size: 0.76rem; color: var(--accent-gold); font-weight: 700; font-family: var(--font-mono);">
+                        🏆 ${numGroups} Group Winners
+                    </span>
+                </div>
             </div>
         `;
 
-        const playoffStage = document.createElement("div");
-        playoffStage.className = "bracket-visual-stage";
-        playoffStage.id = "groupPlayoffsStage";
-        playoffSection.appendChild(playoffStage);
-        wrapper.appendChild(playoffSection);
+        const finalStageBox = document.createElement("div");
+        finalStageBox.className = "bracket-visual-stage";
+        finalStageBox.id = "finalStageVisualContainer";
+        finalStageBox.style.minHeight = "auto";
+        finalStageBox.style.padding = "1rem 0";
+        finalCard.appendChild(finalStageBox);
+        wrapper.appendChild(finalCard);
 
-        // Render the playoff bracket inside playoffStage
-        renderBracketTreeDOM(playoffStage, groupData.playoffs, isEditable, champBadge, champNameEl);
+        // Render the Final Stage bracket tree
+        renderBracketTreeDOM(finalStageBox, twoStageData.final_stage, isEditable, champBadge, champNameEl);
     }
 
     container.appendChild(wrapper);
 
-    // Bind navigation tab clicks
-    navBar.querySelectorAll("[data-view]").forEach(btn => {
+    // Bind tab clicks
+    navBar.querySelectorAll("[data-tab]").forEach(btn => {
         btn.addEventListener("click", () => {
-            const v = btn.getAttribute("data-view");
-            renderGroupStageDOM(container, groupData, isEditable, champBadge, champNameEl, v, activeGroupFilter);
-        });
-    });
-
-    navBar.querySelectorAll("[data-group-filter]").forEach(btn => {
-        btn.addEventListener("click", () => {
-            const f = btn.getAttribute("data-group-filter");
-            renderGroupStageDOM(container, groupData, isEditable, champBadge, champNameEl, activeView, f);
+            const t = btn.getAttribute("data-tab");
+            renderTwoStageDOM(container, twoStageData, isEditable, champBadge, champNameEl, t);
         });
     });
 
     if (!isEditable) return;
 
-    // Handle group match score edits and winner clicks
-    wrapper.querySelectorAll(".group-win-1-btn, .group-win-2-btn").forEach(btn => {
-        btn.addEventListener("click", (e) => {
-            const item = btn.closest(".group-match-item");
-            const gLetter = item.getAttribute("data-group");
-            const mIdx = parseInt(item.getAttribute("data-match"));
-            const isTeam1 = btn.classList.contains("group-win-1-btn");
-
-            const grp = groupData.groups.find(g => g.letter === gLetter);
-            if (!grp || !grp.matches[mIdx]) return;
-
-            const m = grp.matches[mIdx];
-            m.winner1 = isTeam1;
-            m.winner2 = !isTeam1;
-            if (isTeam1 && m.score1 <= m.score2) m.score1 = m.score2 + 1;
-            if (!isTeam1 && m.score2 <= m.score1) m.score2 = m.score1 + 1;
-
-            recalculateGroupStandingsAndPlayoffs(groupData);
-            renderGroupStageDOM(container, groupData, isEditable, champBadge, champNameEl, activeView, activeGroupFilter);
-        });
-    });
-
-    wrapper.querySelectorAll(".group-score-1, .group-score-2").forEach(input => {
-        input.addEventListener("change", () => {
-            const item = input.closest(".group-match-item");
-            const gLetter = item.getAttribute("data-group");
-            const mIdx = parseInt(item.getAttribute("data-match"));
-            const grp = groupData.groups.find(g => g.letter === gLetter);
-            if (!grp || !grp.matches[mIdx]) return;
-
-            const m = grp.matches[mIdx];
-            const s1 = parseInt(item.querySelector(".group-score-1").value) || 0;
-            const s2 = parseInt(item.querySelector(".group-score-2").value) || 0;
-            m.score1 = s1;
-            m.score2 = s2;
-            m.winner1 = (s1 > s2);
-            m.winner2 = (s2 > s1);
-
-            recalculateGroupStandingsAndPlayoffs(groupData);
-            renderGroupStageDOM(container, groupData, isEditable, champBadge, champNameEl, activeView, activeGroupFilter);
-        });
+    // Observe clicks within any group bracket to auto-advance winners into the Final Bracket
+    container.addEventListener("click", (e) => {
+        if (e.target && e.target.classList.contains("bracket-advance-btn")) {
+            setTimeout(() => {
+                syncTwoStageFinalQualifiers(twoStageData);
+                const finalBox = container.querySelector("#finalStageVisualContainer");
+                if (finalBox) {
+                    renderBracketTreeDOM(finalBox, twoStageData.final_stage, isEditable, champBadge, champNameEl);
+                }
+            }, 50);
+        }
     });
 }
 
@@ -2225,4 +2163,879 @@ function initCreateUserForm() {
             }
         }
     });
+}
+
+// =========================================================================
+// SERVER CONFIGURATION FORM
+// =========================================================================
+function initServerConfigForm() {
+    const form = document.getElementById("serverConfigForm");
+    const guildSelect = document.getElementById("configGuildSelector");
+    if (!form) return;
+
+    async function loadGuildConfig(guildId) {
+        if (!guildId) return;
+        try {
+            const res = await fetch(`/api/organizer/guild-config?guild_id=${guildId}`);
+            const data = await res.json();
+            if (res.ok && data.status === "success" && data.config) {
+                const c = data.config;
+                const setVal = (id, val) => {
+                    const el = document.getElementById(id);
+                    if (el) el.value = val || "";
+                };
+                setVal("cfgOrgName", c.organization_name);
+                setVal("cfgBotName", c.tournament_system_name);
+                
+                const roles = c.role_ids || {};
+                setVal("cfgRoleAdmin", roles.admin);
+                setVal("cfgRoleOrganizer", roles.head_organizer);
+                setVal("cfgRoleHelper", roles.helper_team);
+                setVal("cfgRoleRecorder", roles.recorder);
+
+                const chans = c.channel_ids || {};
+                setVal("cfgChanRules", chans.rules);
+                setVal("cfgChanBracket", chans.bracket);
+                setVal("cfgChanResults", chans.results);
+                setVal("cfgChanSchedule", chans.schedule);
+                setVal("cfgChanBotLogs", chans.bot_logs);
+                setVal("cfgChanChallongeLogs", chans.challonge_logs);
+
+                // Update preview bot name
+                const pName = document.getElementById("previewBotName");
+                if (pName) pName.textContent = c.tournament_system_name || "Tournament Bot";
+            }
+        } catch (err) {
+            console.error("Failed to load guild config", err);
+        }
+    }
+
+    if (guildSelect) {
+        guildSelect.addEventListener("change", () => {
+            loadGuildConfig(guildSelect.value);
+            if (window.loadCommandConfigsForGuild) {
+                window.loadCommandConfigsForGuild(guildSelect.value);
+            }
+        });
+        // Initial load
+        loadGuildConfig(guildSelect.value);
+    }
+
+    form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const feedback = document.getElementById("configSaveFeedback");
+        const getVal = (id) => (document.getElementById(id) ? document.getElementById(id).value.trim() : "");
+        const gid = guildSelect ? guildSelect.value : "1303670721796640799";
+
+        const payload = {
+            guild_id: gid,
+            organization_name: getVal("cfgOrgName"),
+            tournament_system_name: getVal("cfgBotName"),
+            role_ids: {
+                admin: getVal("cfgRoleAdmin"),
+                head_organizer: getVal("cfgRoleOrganizer"),
+                helper_team: getVal("cfgRoleHelper"),
+                recorder: getVal("cfgRoleRecorder")
+            },
+            channel_ids: {
+                rules: getVal("cfgChanRules"),
+                bracket: getVal("cfgChanBracket"),
+                results: getVal("cfgChanResults"),
+                schedule: getVal("cfgChanSchedule"),
+                bot_logs: getVal("cfgChanBotLogs"),
+                challonge_logs: getVal("cfgChanChallongeLogs")
+            }
+        };
+
+        try {
+            const res = await fetch("/api/organizer/guild-config", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (res.ok && data.status === "success") {
+                if (feedback) {
+                    feedback.style.color = "#34d399";
+                    feedback.textContent = "✅ Server configuration saved successfully!";
+                    setTimeout(() => { if (feedback) feedback.textContent = ""; }, 3500);
+                }
+            } else {
+                if (feedback) {
+                    feedback.style.color = "#ef4444";
+                    feedback.textContent = `❌ ${data.error || "Failed to save configuration"}`;
+                }
+            }
+        } catch (err) {
+            if (feedback) {
+                feedback.style.color = "#ef4444";
+                feedback.textContent = "❌ Connection error";
+            }
+        }
+    });
+}
+
+// =========================================================================
+// DISCORD BOT COMMANDS & MESSAGE TEMPLATES CUSTOMIZER
+// =========================================================================
+function initCommandConfigEditor() {
+    const form = document.getElementById("botCommandConfigForm");
+    const pillsContainer = document.getElementById("commandSelectorPills");
+    const guildSelect = document.getElementById("configGuildSelector");
+    if (!form || !pillsContainer) return;
+
+    let currentConfigs = {};
+    let activeCmd = "tournaments";
+
+    function updatePreview() {
+        const cmdData = currentConfigs[activeCmd] || {};
+        const enabledSelect = document.getElementById("cmdConfigEnabled");
+        const respTextarea = document.getElementById("cmdConfigResponseTemplate");
+        const colorSelect = document.getElementById("cmdConfigEmbedColor");
+
+        const previewCard = document.getElementById("discordEmbedPreview");
+        const titleEl = document.getElementById("previewEmbedTitle");
+        const descEl = document.getElementById("previewEmbedDescription");
+
+        const isEnabled = enabledSelect ? enabledSelect.value === "true" : true;
+        const color = colorSelect ? colorSelect.value : (cmdData.embed_color || "#00f2fe");
+        const text = respTextarea ? respTextarea.value : (cmdData.response_template || "");
+
+        if (previewCard) {
+            previewCard.style.borderLeftColor = isEnabled ? color : "#ef4444";
+            previewCard.style.opacity = isEnabled ? "1" : "0.55";
+        }
+        if (titleEl) {
+            titleEl.textContent = `${cmdData.label || activeCmd} ${!isEnabled ? '(DISABLED)' : ''}`;
+        }
+        if (descEl) {
+            descEl.textContent = text || "No custom template defined.";
+        }
+    }
+
+    function populateFormForCommand(cmdKey) {
+        activeCmd = cmdKey;
+        const keyInput = document.getElementById("activeCommandKey");
+        if (keyInput) keyInput.value = cmdKey;
+
+        const cmdData = currentConfigs[cmdKey] || {};
+
+        const enabledSelect = document.getElementById("cmdConfigEnabled");
+        const permSelect = document.getElementById("cmdConfigPermission");
+        const respTextarea = document.getElementById("cmdConfigResponseTemplate");
+        const colorSelect = document.getElementById("cmdConfigEmbedColor");
+        const bannerSelect = document.getElementById("cmdConfigShowBanner");
+
+        if (enabledSelect) enabledSelect.value = (cmdData.enabled !== false) ? "true" : "false";
+        if (permSelect) permSelect.value = cmdData.permission || "@everyone";
+        if (respTextarea) respTextarea.value = cmdData.response_template || "";
+        if (colorSelect) colorSelect.value = cmdData.embed_color || "#00f2fe";
+        if (bannerSelect) bannerSelect.value = (cmdData.show_banner !== false) ? "true" : "false";
+
+        updatePreview();
+    }
+
+    async function fetchCommandConfigs(guildId) {
+        try {
+            const gid = guildId || (guildSelect ? guildSelect.value : "default");
+            const res = await fetch(`/api/admin/commands?guild_id=${gid}`);
+            const data = await res.json();
+            if (res.ok && data.status === "success" && data.commands) {
+                currentConfigs = data.commands;
+                populateFormForCommand(activeCmd);
+            }
+        } catch (err) {
+            console.error("Failed to fetch command configs", err);
+        }
+    }
+
+    window.loadCommandConfigsForGuild = fetchCommandConfigs;
+
+    // Pill click listener
+    pillsContainer.querySelectorAll(".cmd-tab-pill").forEach(pill => {
+        pill.addEventListener("click", () => {
+            pillsContainer.querySelectorAll(".cmd-tab-pill").forEach(p => p.classList.remove("active"));
+            pill.classList.add("active");
+            const cmdKey = pill.getAttribute("data-command");
+            populateFormForCommand(cmdKey);
+        });
+    });
+
+    // Realtime input updates for preview
+    ["cmdConfigEnabled", "cmdConfigPermission", "cmdConfigResponseTemplate", "cmdConfigEmbedColor", "cmdConfigShowBanner"].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.addEventListener("input", updatePreview);
+            el.addEventListener("change", updatePreview);
+        }
+    });
+
+    // Form submit
+    form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const feedback = document.getElementById("cmdSaveFeedback");
+        const gid = guildSelect ? guildSelect.value : "default";
+
+        // Save current form state into activeCmd object
+        if (!currentConfigs[activeCmd]) currentConfigs[activeCmd] = {};
+        currentConfigs[activeCmd].enabled = document.getElementById("cmdConfigEnabled").value === "true";
+        currentConfigs[activeCmd].permission = document.getElementById("cmdConfigPermission").value;
+        currentConfigs[activeCmd].response_template = document.getElementById("cmdConfigResponseTemplate").value;
+        currentConfigs[activeCmd].embed_color = document.getElementById("cmdConfigEmbedColor").value;
+        currentConfigs[activeCmd].show_banner = document.getElementById("cmdConfigShowBanner").value === "true";
+
+        try {
+            const res = await fetch("/api/admin/commands", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    guild_id: gid,
+                    commands: currentConfigs
+                })
+            });
+            const data = await res.json();
+            if (res.ok && data.status === "success") {
+                if (feedback) {
+                    feedback.style.color = "#34d399";
+                    feedback.textContent = `✅ Settings & message template for '${activeCmd}' saved!`;
+                    setTimeout(() => { if (feedback) feedback.textContent = ""; }, 3500);
+                }
+            } else {
+                if (feedback) {
+                    feedback.style.color = "#ef4444";
+                    feedback.textContent = `❌ ${data.error || "Failed to save command settings"}`;
+                }
+            }
+        } catch (err) {
+            if (feedback) {
+                feedback.style.color = "#ef4444";
+                feedback.textContent = "❌ Connection error";
+            }
+        }
+    });
+
+    // Initial load
+    fetchCommandConfigs();
+}
+
+// =========================================================================
+// AUDIT & ACTIVITY LOGS VIEWER (ORGANIZER & ADMIN ACTIVITIES)
+// =========================================================================
+function initActivityLogsViewer() {
+    const tableBody = document.getElementById("activityLogsTableBody");
+    const refreshBtn = document.getElementById("refreshLogsBtn");
+    const searchInput = document.getElementById("logSearchInput");
+    const filterBtns = document.querySelectorAll(".log-filter-btn");
+    if (!tableBody) return;
+
+    let cachedLogs = [];
+    let activeCategory = "all";
+
+    function formatTimestamp(isoStr) {
+        if (!isoStr) return "-";
+        try {
+            const d = new Date(isoStr);
+            return d.toLocaleString("en-US", {
+                month: "short",
+                day: "numeric",
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+                hour12: false
+            });
+        } catch (e) {
+            return isoStr;
+        }
+    }
+
+    function getActionBadge(actionType) {
+        const act = (actionType || "LOG").toUpperCase();
+        let bg = "rgba(0, 242, 254, 0.15)";
+        let color = "var(--primary-cyan)";
+
+        if (act.includes("CREATE")) {
+            bg = "rgba(52, 211, 153, 0.15)";
+            color = "#34d399";
+        } else if (act.includes("DELETE")) {
+            bg = "rgba(239, 68, 68, 0.15)";
+            color = "#ef4444";
+        } else if (act.includes("UPDATE") || act.includes("SCORE")) {
+            bg = "rgba(96, 165, 250, 0.15)";
+            color = "#60a5fa";
+        } else if (act.includes("SPONSOR") || act.includes("AFFILIATE")) {
+            bg = "rgba(251, 191, 36, 0.15)";
+            color = "#fbbf24";
+        } else if (act.includes("AUTH") || act.includes("LOGIN") || act.includes("USER")) {
+            bg = "rgba(168, 85, 247, 0.15)";
+            color = "#a855f7";
+        }
+
+        return `<span style="background: ${bg}; color: ${color}; padding: 3px 8px; border-radius: 4px; font-weight: 700; font-family: var(--font-mono); font-size: 0.72rem;">${act}</span>`;
+    }
+
+    function renderLogsTable(logsToRender) {
+        tableBody.innerHTML = "";
+
+        const query = searchInput ? searchInput.value.toLowerCase().trim() : "";
+        const filtered = logsToRender.filter(l => {
+            if (!query) return true;
+            const text = `${l.actor} ${l.action_type} ${l.description} ${l.target} ${l.category}`.toLowerCase();
+            return text.includes(query);
+        });
+
+        if (filtered.length === 0) {
+            tableBody.innerHTML = `
+                <tr>
+                    <td colspan="6" style="padding: 3rem; text-align: center; color: var(--text-muted);">
+                        <div style="font-size: 2rem; margin-bottom: 0.5rem;">📋</div>
+                        <div>No activity logs found matching your filters.</div>
+                    </td>
+                </tr>
+            `;
+            return;
+        }
+
+        filtered.forEach(l => {
+            const row = document.createElement("tr");
+            row.style.borderBottom = "1px solid rgba(255, 255, 255, 0.04)";
+            const isOrganizer = l.category === "organizer";
+
+            row.innerHTML = `
+                <td style="padding: 0.9rem 1.2rem; font-family: var(--font-mono); color: #94a3b8; font-size: 0.78rem;">
+                    ${formatTimestamp(l.timestamp)}
+                </td>
+                <td style="padding: 0.9rem; font-weight: 600; color: #f1f5f9;">
+                    <span style="display: inline-flex; align-items: center; gap: 4px;">
+                        <span>👤</span>
+                        <span>@${l.actor || 'system'}</span>
+                    </span>
+                </td>
+                <td style="padding: 0.9rem;">
+                    <span style="font-size: 0.72rem; font-weight: 700; padding: 2px 7px; border-radius: 3px; background: ${isOrganizer ? 'rgba(0, 242, 254, 0.1)' : 'rgba(251, 191, 36, 0.1)'}; color: ${isOrganizer ? 'var(--primary-cyan)' : 'var(--accent-gold)'};">
+                        ${isOrganizer ? '🏆 Organizer' : '🔑 Admin'}
+                    </span>
+                </td>
+                <td style="padding: 0.9rem;">
+                    ${getActionBadge(l.action_type)}
+                </td>
+                <td style="padding: 0.9rem; color: #e2e8f0; line-height: 1.4;">
+                    ${l.description || '-'}
+                </td>
+                <td style="padding: 0.9rem; font-family: var(--font-mono); font-size: 0.78rem; color: var(--primary-cyan);">
+                    ${l.target || '-'}
+                </td>
+            `;
+            tableBody.appendChild(row);
+        });
+    }
+
+    async function fetchLogs() {
+        try {
+            const res = await fetch(`/api/admin/logs?category=${activeCategory}`);
+            const data = await res.json();
+            if (res.ok && data.status === "success") {
+                cachedLogs = data.logs || [];
+                renderLogsTable(cachedLogs);
+            }
+        } catch (err) {
+            console.error("Failed to fetch activity logs", err);
+        }
+    }
+
+    // Filter pill clicks
+    filterBtns.forEach(btn => {
+        btn.addEventListener("click", () => {
+            filterBtns.forEach(b => b.classList.remove("active"));
+            btn.classList.add("active");
+            activeCategory = btn.getAttribute("data-log-cat") || "all";
+            fetchLogs();
+        });
+    });
+
+    // Search input listener
+    if (searchInput) {
+        searchInput.addEventListener("input", () => {
+            renderLogsTable(cachedLogs);
+        });
+    }
+
+    // Refresh button listener
+    if (refreshBtn) {
+        refreshBtn.addEventListener("click", () => {
+            refreshBtn.textContent = "Refreshing...";
+            fetchLogs().then(() => {
+                refreshBtn.textContent = "🔄 Refresh Logs";
+            });
+        });
+    }
+
+    // Initial fetch
+    fetchLogs();
+}
+
+// =========================================================================
+// SERVER CONFIGURATION & SUPABASE SYNC
+// =========================================================================
+function initServerConfigForm() {
+    const serverSelect = document.getElementById("serverSelectDropdown");
+    const refreshBtn = document.getElementById("reloadServerConfigBtn");
+    const configForm = document.getElementById("serverConfigForm");
+    const syncStatus = document.getElementById("configSyncStatus");
+    const saveFeedback = document.getElementById("configSaveFeedback");
+
+    // Logo Upload Elements
+    const logoFileInput = document.getElementById("cfgServerLogoFileInput");
+    const uploadLogoBtn = document.getElementById("cfgUploadLogoTriggerBtn");
+    const logoPreview = document.getElementById("cfgServerLogoPreview");
+    const logoUploadStatus = document.getElementById("cfgLogoUploadStatus");
+
+    if (!configForm) return;
+
+    async function loadGuildConfig(guildId) {
+        if (!guildId) return;
+        if (syncStatus) {
+            syncStatus.textContent = "⏳ Syncing with Supabase...";
+            syncStatus.style.color = "var(--primary-cyan)";
+        }
+
+        try {
+            const res = await fetch(`/api/organizer/guild-config?guild_id=${encodeURIComponent(guildId)}`);
+            const data = await res.json();
+            if (res.ok && data.status === "success" && data.config) {
+                populateForm(data.config);
+                if (syncStatus) {
+                    syncStatus.textContent = "✅ Synced with Supabase";
+                    syncStatus.style.color = "#34d399";
+                }
+            } else {
+                if (syncStatus) {
+                    syncStatus.textContent = "⚠️ Error loading config";
+                    syncStatus.style.color = "#f87171";
+                }
+            }
+        } catch (err) {
+            console.error("Error fetching guild config:", err);
+            if (syncStatus) {
+                syncStatus.textContent = "⚠️ Offline / Local Cache";
+                syncStatus.style.color = "#fbbf24";
+            }
+        }
+    }
+
+    function populateForm(cfg) {
+        if (!cfg) return;
+
+        // Branding
+        const orgInput = document.getElementById("cfgOrgName");
+        const botInput = document.getElementById("cfgBotName");
+        if (orgInput) orgInput.value = cfg.organization_name || "";
+        if (botInput) botInput.value = cfg.tournament_system_name || "";
+
+        // Logo
+        if (logoPreview) {
+            logoPreview.src = cfg.server_logo_url || (cfg.server_logo_path ? `/static/uploads/logos/${cfg.server_logo_path}` : "/static/img/tournament_bot_logo.png");
+        }
+
+        // Roles
+        const r = cfg.role_ids || {};
+        const setVal = (id, val) => {
+            const el = document.getElementById(id);
+            if (el) el.value = val !== null && val !== undefined ? val : "";
+        };
+
+        setVal("cfgRoleAdmin", r.head_organizer);
+        setVal("cfgRoleOrganizer", r.organizer);
+        setVal("cfgRoleHelper", r.helper_team);
+        setVal("cfgRoleJudge", r.judge);
+        setVal("cfgRoleRecorder", r.recorder);
+        setVal("cfgRoleStaff", r.staff);
+        setVal("cfgRolePlayers", r.players);
+
+        // Channels
+        const c = cfg.channel_ids || {};
+        setVal("cfgChanRules", c.rules);
+        setVal("cfgChanBracket", c.bracket);
+        setVal("cfgChanResults", c.results);
+        setVal("cfgChanSchedule", c.take_schedule);
+        setVal("cfgChanBotLogs", c.bot_logs);
+        setVal("cfgChanChallongeLogs", c.challonge_logs);
+    }
+
+    // Dropdown change listener
+    if (serverSelect) {
+        serverSelect.addEventListener("change", () => {
+            loadGuildConfig(serverSelect.value);
+            if (window.loadCommandConfigForGuild) {
+                window.loadCommandConfigForGuild(serverSelect.value);
+            }
+        });
+    }
+
+    // Refresh button
+    if (refreshBtn) {
+        refreshBtn.addEventListener("click", () => {
+            const gid = serverSelect ? serverSelect.value : "";
+            loadGuildConfig(gid);
+        });
+    }
+
+    // Logo Upload Handlers
+    if (uploadLogoBtn && logoFileInput) {
+        uploadLogoBtn.addEventListener("click", () => {
+            logoFileInput.click();
+        });
+
+        logoFileInput.addEventListener("change", async () => {
+            const file = logoFileInput.files[0];
+            if (!file) return;
+
+            const gid = serverSelect ? serverSelect.value : "";
+            if (!gid) {
+                alert("Please select a target Discord server first.");
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append("file", file);
+            formData.append("guild_id", gid);
+
+            if (logoUploadStatus) {
+                logoUploadStatus.textContent = "Uploading & storing...";
+                logoUploadStatus.style.color = "var(--primary-cyan)";
+            }
+
+            try {
+                const res = await fetch("/api/organizer/upload-logo", {
+                    method: "POST",
+                    body: formData
+                });
+                const data = await res.json();
+                if (res.ok && data.status === "success") {
+                    if (logoPreview) logoPreview.src = data.logo_url;
+                    if (logoUploadStatus) {
+                        logoUploadStatus.textContent = "✅ Stored in DB!";
+                        logoUploadStatus.style.color = "#34d399";
+                    }
+                    setTimeout(() => {
+                        if (logoUploadStatus) logoUploadStatus.textContent = "";
+                    }, 3500);
+                } else {
+                    if (logoUploadStatus) {
+                        logoUploadStatus.textContent = `❌ ${data.error || 'Upload failed'}`;
+                        logoUploadStatus.style.color = "#f87171";
+                    }
+                }
+            } catch (err) {
+                console.error("Logo upload error:", err);
+                if (logoUploadStatus) {
+                    logoUploadStatus.textContent = "❌ Upload network error";
+                    logoUploadStatus.style.color = "#f87171";
+                }
+            }
+        });
+    }
+
+    // Form Submit (Save Config)
+    configForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const gid = serverSelect ? serverSelect.value : "";
+        if (!gid) {
+            alert("Please select a Discord server.");
+            return;
+        }
+
+        const getVal = (id) => {
+            const el = document.getElementById(id);
+            return el ? el.value.trim() : "";
+        };
+
+        const payload = {
+            guild_id: gid,
+            organization_name: getVal("cfgOrgName"),
+            tournament_system_name: getVal("cfgBotName"),
+            role_ids: {
+                head_organizer: getVal("cfgRoleAdmin"),
+                organizer: getVal("cfgRoleOrganizer"),
+                helper_team: getVal("cfgRoleHelper"),
+                judge: getVal("cfgRoleJudge"),
+                recorder: getVal("cfgRoleRecorder"),
+                staff: getVal("cfgRoleStaff"),
+                players: getVal("cfgRolePlayers")
+            },
+            channel_ids: {
+                rules: getVal("cfgChanRules"),
+                bracket: getVal("cfgChanBracket"),
+                results: getVal("cfgChanResults"),
+                take_schedule: getVal("cfgChanSchedule"),
+                bot_logs: getVal("cfgChanBotLogs"),
+                challonge_logs: getVal("cfgChanChallongeLogs")
+            }
+        };
+
+        if (saveFeedback) {
+            saveFeedback.innerHTML = `<span style="color: var(--primary-cyan);">⏳ Saving to Supabase and updating cache...</span>`;
+        }
+
+        try {
+            const res = await fetch("/api/organizer/guild-config", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            });
+
+            const data = await res.json();
+            if (res.ok && data.status === "success") {
+                if (saveFeedback) {
+                    saveFeedback.innerHTML = `<span style="color: #34d399; font-weight: 700;">✅ Saved successfully & synced to database!</span>`;
+                }
+                if (syncStatus) {
+                    syncStatus.textContent = "✅ Synced with Supabase";
+                    syncStatus.style.color = "#34d399";
+                }
+                setTimeout(() => {
+                    if (saveFeedback) saveFeedback.innerHTML = "";
+                }, 3500);
+            } else {
+                if (saveFeedback) {
+                    saveFeedback.innerHTML = `<span style="color: #f87171;">❌ ${data.error || 'Failed to save configuration'}</span>`;
+                }
+            }
+        } catch (err) {
+            console.error("Save config error:", err);
+            if (saveFeedback) {
+                saveFeedback.innerHTML = `<span style="color: #f87171;">❌ Network error saving configuration</span>`;
+            }
+        }
+    });
+
+    // Initial load for selected guild
+    if (serverSelect && serverSelect.value) {
+        loadGuildConfig(serverSelect.value);
+    }
+}
+
+// =========================================================================
+// DISCORD BOT COMMANDS & MESSAGE TEMPLATES CUSTOMIZER
+// =========================================================================
+function initCommandConfigEditor() {
+    const pills = document.querySelectorAll(".cmd-tab-pill");
+    const serverSelect = document.getElementById("serverSelectDropdown");
+    const activeKeyInput = document.getElementById("activeCommandKey");
+    const enabledSelect = document.getElementById("cmdConfigEnabled");
+    const permSelect = document.getElementById("cmdConfigPermission");
+    const templateTextarea = document.getElementById("cmdConfigResponseTemplate");
+    const colorSelect = document.getElementById("cmdConfigEmbedColor");
+    const bannerSelect = document.getElementById("cmdConfigShowBanner");
+    const form = document.getElementById("botCommandConfigForm");
+    const feedback = document.getElementById("cmdSaveFeedback");
+
+    // Preview Elements
+    const previewCard = document.getElementById("discordEmbedPreview");
+    const previewTitle = document.getElementById("previewEmbedTitle");
+    const previewDesc = document.getElementById("previewEmbedDescription");
+    const previewBotName = document.getElementById("previewBotName");
+
+    if (!form) return;
+
+    let activeCmd = "tournaments";
+    let commandConfigs = {};
+
+    const defaultCommands = {
+        "tournaments": {
+            label: "🏆 /tournaments",
+            description: "View all active and upcoming tournaments on the server",
+            response_template: "🏆 **Active Esports Tournaments**\nBrowse through live tournaments, check brackets, and register your team.",
+            permission: "@everyone",
+            embed_color: "#00f2fe",
+            enabled: true,
+            show_banner: true
+        },
+        "bracket": {
+            label: "⚔️ /bracket",
+            description: "Get interactive live bracket tree & match status link",
+            response_template: "⚔️ Custom Championship Live Bracket: {bracket_url}",
+            permission: "Helper Team",
+            embed_color: "#3b82f6",
+            enabled: true,
+            show_banner: true
+        },
+        "register": {
+            label: "📝 /register",
+            description: "Team registration and captain roster submission",
+            response_template: "📝 **Team Registration Open!**\nSubmit your captain ID, team tag, and roster to participate.\nMake sure all squad members check in before the bracket is generated.",
+            permission: "@everyone",
+            embed_color: "#34d399",
+            enabled: true,
+            show_banner: false
+        },
+        "schedule": {
+            label: "⏰ /schedule",
+            description: "Match schedules, fixture timings, and reminders",
+            response_template: "⏰ **Match Schedule & Timing Alerts**\nCheck upcoming fixture timings. Teams must be in voice channels 10 minutes prior.",
+            permission: "@everyone",
+            embed_color: "#a855f7",
+            enabled: true,
+            show_banner: false
+        },
+        "scores": {
+            label: "📊 /scores",
+            description: "Report match scores and upload screenshot proof",
+            response_template: "📊 **Match Score Reporting**\nCaptains and match judges: submit final scores and match screenshot proof.",
+            permission: "Helper Team",
+            embed_color: "#fbbf24",
+            enabled: true,
+            show_banner: false
+        },
+        "rules": {
+            label: "📜 /rules",
+            description: "Display official tournament rulebook and code of conduct",
+            response_template: "📜 **Official Tournament Rules & Fair Play Policy**\n1. No cheats, glitches, or unauthorized third-party software.\n2. Respect match referees and tournament admins.\n3. Late check-ins (>15 mins) result in automatic forfeit.",
+            permission: "@everyone",
+            embed_color: "#64748b",
+            enabled: true,
+            show_banner: false
+        },
+        "broadcast": {
+            label: "📢 /broadcast",
+            description: "Broadcast custom announcements and match start alerts",
+            response_template: "📢 **Tournament Alert & Broadcast**\n{message_body}",
+            permission: "Head Organizer",
+            embed_color: "#ef4444",
+            enabled: true,
+            show_banner: true
+        },
+        "coinflip": {
+            label: "🪙 /coinflip",
+            description: "Fair randomized coinflip for map pick/ban or side selection",
+            response_template: "🪙 **Coinflip Result**: **{result}**\nWinner chooses Map Ban or Attack/Defense Side first!",
+            permission: "@everyone",
+            embed_color: "#fbbf24",
+            enabled: true,
+            show_banner: false
+        },
+        "settings": {
+            label: "⚙️ /settings",
+            description: "Configure roles, channels, and staff permissions",
+            response_template: "⚙️ **Server Tournament Settings**\nAdmin roles and operational channels configured for this server.",
+            permission: "Administrator",
+            embed_color: "#00f2fe",
+            enabled: true,
+            show_banner: false
+        }
+    };
+
+    function updatePreview() {
+        if (!previewCard) return;
+        const color = colorSelect ? colorSelect.value : "#00f2fe";
+        previewCard.style.borderLeftColor = color;
+
+        const cmdData = commandConfigs[activeCmd] || defaultCommands[activeCmd] || {};
+        if (previewTitle) {
+            previewTitle.textContent = `${cmdData.label || '/' + activeCmd}`;
+        }
+        if (previewDesc) {
+            const tmpl = templateTextarea ? templateTextarea.value : (cmdData.response_template || "");
+            previewDesc.textContent = tmpl.replace('{bracket_url}', 'https://challonge.com/live_bracket').replace('{message_body}', 'All teams please check in.');
+        }
+        const botInput = document.getElementById("cfgBotName");
+        if (previewBotName && botInput && botInput.value) {
+            previewBotName.textContent = botInput.value;
+        }
+    }
+
+    function populateCommandFields(cmdKey) {
+        activeCmd = cmdKey;
+        if (activeKeyInput) activeKeyInput.value = cmdKey;
+
+        const data = commandConfigs[cmdKey] || defaultCommands[cmdKey] || {};
+        if (enabledSelect) enabledSelect.value = String(data.enabled !== false);
+        if (permSelect) permSelect.value = data.permission || "@everyone";
+        if (templateTextarea) templateTextarea.value = data.response_template || "";
+        if (colorSelect) colorSelect.value = data.embed_color || "#00f2fe";
+        if (bannerSelect) bannerSelect.value = String(data.show_banner === true);
+
+        updatePreview();
+    }
+
+    pills.forEach(pill => {
+        pill.addEventListener("click", () => {
+            pills.forEach(p => p.classList.remove("active"));
+            pill.classList.add("active");
+            const cmd = pill.getAttribute("data-command");
+            populateCommandFields(cmd);
+        });
+    });
+
+    [colorSelect, templateTextarea, bannerSelect].forEach(el => {
+        if (el) el.addEventListener("input", updatePreview);
+    });
+
+    // Form save
+    form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const gid = serverSelect ? serverSelect.value : "1303670721796640799";
+
+        commandConfigs[activeCmd] = {
+            name: activeCmd,
+            prefix: `/${activeCmd}`,
+            label: defaultCommands[activeCmd]?.label || `/${activeCmd}`,
+            description: defaultCommands[activeCmd]?.description || "",
+            enabled: enabledSelect ? enabledSelect.value === "true" : true,
+            permission: permSelect ? permSelect.value : "@everyone",
+            response_template: templateTextarea ? templateTextarea.value : "",
+            embed_color: colorSelect ? colorSelect.value : "#00f2fe",
+            show_banner: bannerSelect ? bannerSelect.value === "true" : false
+        };
+
+        if (feedback) {
+            feedback.innerHTML = `<span style="color: var(--primary-cyan);">⏳ Saving command template...</span>`;
+        }
+
+        try {
+            const res = await fetch("/api/admin/commands", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    guild_id: gid,
+                    command_key: activeCmd,
+                    config: commandConfigs[activeCmd]
+                })
+            });
+
+            const data = await res.json();
+            if (res.ok && data.status === "success") {
+                if (feedback) {
+                    feedback.innerHTML = `<span style="color: #34d399; font-weight: 700;">✅ Command template saved for Discord!</span>`;
+                }
+                setTimeout(() => { if (feedback) feedback.innerHTML = ""; }, 3000);
+            } else {
+                if (feedback) {
+                    feedback.innerHTML = `<span style="color: #f87171;">❌ ${data.error || 'Failed to save'}</span>`;
+                }
+            }
+        } catch (err) {
+            console.error("Command save error:", err);
+            if (feedback) {
+                feedback.innerHTML = `<span style="color: #f87171;">❌ Network error saving command</span>`;
+            }
+        }
+    });
+
+    window.loadCommandConfigForGuild = async function(guildId) {
+        if (!guildId) return;
+        try {
+            const res = await fetch(`/api/admin/commands?guild_id=${encodeURIComponent(guildId)}`);
+            const data = await res.json();
+            if (res.ok && data.status === "success" && data.commands) {
+                commandConfigs = data.commands;
+                populateCommandFields(activeCmd);
+            }
+        } catch (e) {
+            console.error("Failed to load command configs for guild:", e);
+        }
+    };
+
+    // Initial setup
+    const initialGid = serverSelect ? serverSelect.value : "1303670721796640799";
+    window.loadCommandConfigForGuild(initialGid);
 }

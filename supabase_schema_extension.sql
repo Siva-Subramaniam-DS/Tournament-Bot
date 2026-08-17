@@ -57,10 +57,54 @@ CREATE TABLE IF NOT EXISTS "SponsorClickLogs" (
     "timestamp" TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
 );
 
+-- 5. Audit & Activity Logs (Organizer & Admin Activities)
+CREATE TABLE IF NOT EXISTS "ActivityLogs" (
+    "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    "timestamp" TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()),
+    "action_type" TEXT NOT NULL,
+    "actor" TEXT NOT NULL,
+    "description" TEXT NOT NULL,
+    "target" TEXT,
+    "category" TEXT DEFAULT 'organizer', -- 'organizer' or 'admin'
+    "guild_id" TEXT,
+    "metadata" JSONB DEFAULT '{}'::jsonb
+);
+
+-- 6. Discord Bot Slash Commands & Customization Configuration
+CREATE TABLE IF NOT EXISTS "CommandConfigs" (
+    "guild_id" TEXT PRIMARY KEY,
+    "commands" JSONB NOT NULL DEFAULT '{}'::jsonb,
+    "updated_at" TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
+);
+
 -- Create Indexes for fast querying
 CREATE INDEX IF NOT EXISTS idx_sponsors_guild ON "TournamentSponsors"("guild_id");
 CREATE INDEX IF NOT EXISTS idx_sponsors_active ON "TournamentSponsors"("is_active");
 CREATE INDEX IF NOT EXISTS idx_affiliates_game ON "AffiliateProducts"("game_category");
 CREATE INDEX IF NOT EXISTS idx_affiliates_active ON "AffiliateProducts"("is_active");
+CREATE INDEX IF NOT EXISTS idx_activity_logs_cat ON "ActivityLogs"("category");
+CREATE INDEX IF NOT EXISTS idx_activity_logs_time ON "ActivityLogs"("timestamp" DESC);
+
+-- Grant permissions to anon and authenticated roles
+ALTER TABLE "WebUsers" DISABLE ROW LEVEL SECURITY;
+ALTER TABLE "TournamentSponsors" DISABLE ROW LEVEL SECURITY;
+ALTER TABLE "AffiliateProducts" DISABLE ROW LEVEL SECURITY;
+ALTER TABLE "SponsorClickLogs" DISABLE ROW LEVEL SECURITY;
+ALTER TABLE "ActivityLogs" DISABLE ROW LEVEL SECURITY;
+ALTER TABLE "CommandConfigs" DISABLE ROW LEVEL SECURITY;
+
+GRANT ALL ON "WebUsers" TO anon, authenticated, service_role;
+GRANT ALL ON "TournamentSponsors" TO anon, authenticated, service_role;
+GRANT ALL ON "AffiliateProducts" TO anon, authenticated, service_role;
+GRANT ALL ON "SponsorClickLogs" TO anon, authenticated, service_role;
+GRANT ALL ON "ActivityLogs" TO anon, authenticated, service_role;
+GRANT ALL ON "CommandConfigs" TO anon, authenticated, service_role;
+
+-- Seed default master admins into WebUsers
+INSERT INTO "WebUsers" ("username", "password_hash", "role", "discord_id")
+VALUES 
+    ('admin', 'a50e562ec42877cb5b9d135ea3975b55$418edbebdc72b65c0b115810166852388620a1da1665f9eb14223646fdec6c79', 'super_admin', '1303887060754497569'),
+    ('Hokageadmin', '9b10507984f7aa0936d845b3ec5d7a7e$d83f356378a6a4cb8b10300b18cd782d28caf2eb402b9880f2df86dda59e5a01', 'admin', NULL)
+ON CONFLICT ("username") DO NOTHING;
 
 COMMIT;

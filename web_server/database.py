@@ -26,6 +26,8 @@ LOCAL_EVENTS_FILE = BASE_DIR / "scheduled_events.json"
 LOCAL_SPONSORS_FILE = BASE_DIR / "sponsors.json"
 LOCAL_AFFILIATES_FILE = BASE_DIR / "affiliates.json"
 LOCAL_WEB_USERS_FILE = BASE_DIR / "web_users.json"
+LOCAL_ACTIVITY_LOGS_FILE = BASE_DIR / "activity_logs.json"
+LOCAL_COMMAND_CONFIGS_FILE = BASE_DIR / "command_configs.json"
 
 def _load_json_file(file_path: Path, default_data: Any) -> Any:
     if file_path.exists():
@@ -92,7 +94,7 @@ def get_guild_config(guild_id: str) -> Dict[str, Any]:
     }
 
 def get_full_guild_config(guild_id: str) -> Dict[str, Any]:
-    """Fetch complete guild configuration including channels, roles, and settings."""
+    """Fetch complete guild configuration including channels, roles, server logo, and settings."""
     gid = str(guild_id)
     local_data = _load_json_file(LOCAL_GUILD_CONFIGS_FILE, {})
     g_data = local_data.get(gid, {})
@@ -101,15 +103,30 @@ def get_full_guild_config(guild_id: str) -> Dict[str, Any]:
     channels = g_data.get("channel_ids", {})
     roles = g_data.get("role_ids", {})
     
+    discord_name = fetch_discord_guild_name(gid)
+    org_name = g_data.get("organization_name") or discord_name or "Tournament Server"
+    
+    logo_path = g_data.get("server_logo_path") or f"server_logo_{gid}.png"
+    logo_url = g_data.get("server_logo_url")
+    if not logo_url:
+        uploads_logo_path = BASE_DIR / "web_server" / "static" / "uploads" / "logos" / logo_path
+        if uploads_logo_path.exists():
+            logo_url = f"/static/uploads/logos/{logo_path}"
+        elif (BASE_DIR / logo_path).exists():
+            logo_url = f"/{logo_path}"
+        else:
+            logo_url = "/static/img/tournament_bot_logo.png"
+
     config = {
         "guild_id": gid,
-        "organization_name": g_data.get("organization_name", "Tournament Server"),
+        "organization_name": org_name,
         "tournament_system_name": g_data.get("tournament_system_name", "Tournament Bot"),
         "google_sheet_link": g_data.get("google_sheet_link", ""),
         "current_tournament_name": g_data.get("current_tournament_name", ""),
         "player_info_link": g_data.get("player_info_link", ""),
         "player_info_format": g_data.get("player_info_format", "5 vs 5"),
-        "server_logo_path": g_data.get("server_logo_path", "tournament_bot_logo.png"),
+        "server_logo_path": logo_path,
+        "server_logo_url": logo_url,
         "channel_ids": {
             "rules": channels.get("rules"),
             "bracket": channels.get("bracket"),
@@ -144,6 +161,16 @@ def get_full_guild_config(guild_id: str) -> Dict[str, Any]:
                 row = res.data[0]
                 if row.get("organization_name"): config["organization_name"] = row.get("organization_name")
                 if row.get("tournament_system_name"): config["tournament_system_name"] = row.get("tournament_system_name")
+                if row.get("server_logo_path"): 
+                    config["server_logo_path"] = row.get("server_logo_path")
+                    if str(row.get("server_logo_path")).startswith("http") or str(row.get("server_logo_path")).startswith("/"):
+                        config["server_logo_url"] = row.get("server_logo_path")
+                    else:
+                        config["server_logo_url"] = f"/static/uploads/logos/{row.get('server_logo_path')}"
+                if row.get("server_logo_url"): config["server_logo_url"] = row.get("server_logo_url")
+                if row.get("google_sheet_link"): config["google_sheet_link"] = row.get("google_sheet_link")
+                if row.get("player_info_link"): config["player_info_link"] = row.get("player_info_link")
+                if row.get("player_info_format"): config["player_info_format"] = row.get("player_info_format")
                 if row.get("Admin_Role_ID"): config["role_ids"]["head_organizer"] = row.get("Admin_Role_ID")
                 if row.get("Organizer_Role_ID"): config["role_ids"]["organizer"] = row.get("Organizer_Role_ID")
                 if row.get("Helper_Role_ID"): config["role_ids"]["helper_team"] = row.get("Helper_Role_ID")
@@ -156,13 +183,14 @@ def get_full_guild_config(guild_id: str) -> Dict[str, Any]:
                 if row.get("Closed_Category_ID"): config["channel_ids"]["closed_tickets_category"] = row.get("Closed_Category_ID")
                 if row.get("Bot_Logs_Channel_ID"): config["channel_ids"]["bot_logs"] = row.get("Bot_Logs_Channel_ID")
                 if row.get("Challonge_Logs_Channel_ID"): config["channel_ids"]["challonge_logs"] = row.get("Challonge_Logs_Channel_ID")
+                if row.get("channel_bracket"): config["channel_ids"]["bracket"] = row.get("channel_bracket")
         except Exception as e:
             print(f"[Database] Supabase get_full_guild_config error: {e}")
             
     return config
 
 def save_full_guild_config(guild_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Save updated channels, roles, and settings for a guild."""
+    """Save updated channels, roles, server logo, and settings for a guild."""
     gid = str(guild_id)
     local_data = _load_json_file(LOCAL_GUILD_CONFIGS_FILE, {})
     if gid not in local_data:
@@ -177,6 +205,8 @@ def save_full_guild_config(guild_id: str, payload: Dict[str, Any]) -> Dict[str, 
     if "current_tournament_name" in payload: g_data["current_tournament_name"] = payload["current_tournament_name"]
     if "player_info_link" in payload: g_data["player_info_link"] = payload["player_info_link"]
     if "player_info_format" in payload: g_data["player_info_format"] = payload["player_info_format"]
+    if "server_logo_path" in payload: g_data["server_logo_path"] = payload["server_logo_path"]
+    if "server_logo_url" in payload: g_data["server_logo_url"] = payload["server_logo_url"]
     
     # Update channels
     if "channel_ids" in payload and isinstance(payload["channel_ids"], dict):
@@ -202,24 +232,30 @@ def save_full_guild_config(guild_id: str, payload: Dict[str, Any]) -> Dict[str, 
                 "Guild_ID": gid,
                 "organization_name": g_data.get("organization_name"),
                 "tournament_system_name": g_data.get("tournament_system_name"),
-                "Admin_Role_ID": roles.get("head_organizer"),
-                "Organizer_Role_ID": roles.get("organizer"),
-                "Helper_Role_ID": roles.get("helper_team"),
-                "Judge_Role_ID": roles.get("judge"),
-                "Recorder_Role_ID": roles.get("recorder"),
-                "Staff_Role_ID": roles.get("staff"),
-                "Players_Role_ID": roles.get("players"),
-                "Results_Channel_ID": channels.get("results"),
-                "Schedule_Channel_ID": channels.get("take_schedule"),
-                "Closed_Category_ID": channels.get("closed_tickets_category"),
-                "Bot_Logs_Channel_ID": channels.get("bot_logs"),
-                "Challonge_Logs_Channel_ID": channels.get("challonge_logs"),
+                "Admin_Role_ID": str(roles.get("head_organizer")) if roles.get("head_organizer") else None,
+                "Organizer_Role_ID": str(roles.get("organizer")) if roles.get("organizer") else None,
+                "Helper_Role_ID": str(roles.get("helper_team")) if roles.get("helper_team") else None,
+                "Judge_Role_ID": str(roles.get("judge")) if roles.get("judge") else None,
+                "Recorder_Role_ID": str(roles.get("recorder")) if roles.get("recorder") else None,
+                "Staff_Role_ID": str(roles.get("staff")) if roles.get("staff") else None,
+                "Players_Role_ID": str(roles.get("players")) if roles.get("players") else None,
+                "Results_Channel_ID": str(channels.get("results")) if channels.get("results") else None,
+                "Schedule_Channel_ID": str(channels.get("take_schedule")) if channels.get("take_schedule") else None,
+                "Closed_Category_ID": str(channels.get("closed_tickets_category")) if channels.get("closed_tickets_category") else None,
+                "Bot_Logs_Channel_ID": str(channels.get("bot_logs")) if channels.get("bot_logs") else None,
+                "Challonge_Logs_Channel_ID": str(channels.get("challonge_logs")) if channels.get("challonge_logs") else None,
+                "channel_bracket": str(channels.get("bracket")) if channels.get("bracket") else None,
                 "google_sheet_link": g_data.get("google_sheet_link"),
                 "player_info_link": g_data.get("player_info_link"),
                 "player_info_format": g_data.get("player_info_format"),
                 "Updated_At": datetime.datetime.utcnow().isoformat()
             }
+            # Add server_logo_path if present
+            if g_data.get("server_logo_path"):
+                sb_record["server_logo_path"] = g_data.get("server_logo_path")
+
             supabase.table("GuildConfig").upsert(sb_record, on_conflict="Guild_ID").execute()
+            print(f"[Database] Successfully synced GuildConfig for {gid} to Supabase!")
         except Exception as e:
             print(f"[Database] Supabase save_full_guild_config error: {e}")
             
@@ -730,3 +766,281 @@ def save_web_user(username: str, password_hash: str, role: str = "super_admin", 
     local_users = _load_json_file(LOCAL_WEB_USERS_FILE, {})
     local_users[username] = user_record
     _save_json_file(LOCAL_WEB_USERS_FILE, local_users)
+
+# =========================================================================
+# AUDIT & ACTIVITY LOGS (ORGANIZER & ADMIN ACTIVITIES)
+# =========================================================================
+INITIAL_SAMPLE_LOGS = [
+    {
+        "id": "log-001",
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+        "action_type": "TOURNAMENT_CREATE",
+        "actor": "admin",
+        "description": "Created tournament 'Valorant Champions Tour 2026' with 16 participants",
+        "target": "Valorant Champions Tour 2026",
+        "category": "organizer",
+        "guild_id": "1303887060754497569",
+        "metadata": {"format": "5 vs 5", "game": "Valorant", "stage": "Two Stage"}
+    },
+    {
+        "id": "log-002",
+        "timestamp": (datetime.datetime.utcnow() - datetime.timedelta(minutes=15)).isoformat(),
+        "action_type": "BRACKET_SEEDED",
+        "actor": "admin",
+        "description": "Generated and seeded Challonge single elimination playoff tree",
+        "target": "Valorant Champions Tour 2026",
+        "category": "organizer",
+        "guild_id": "1303887060754497569",
+        "metadata": {"bracket_type": "single_elimination", "rounds_count": 4}
+    },
+    {
+        "id": "log-003",
+        "timestamp": (datetime.datetime.utcnow() - datetime.timedelta(hours=1)).isoformat(),
+        "action_type": "CONFIG_UPDATE",
+        "actor": "super_admin",
+        "description": "Updated server roles: Admin Role & Head Organizer Channel permissions",
+        "target": "GuildConfig",
+        "category": "admin",
+        "guild_id": "1303887060754497569",
+        "metadata": {"admin_role": "Head Organizer", "log_channel": "bot-logs"}
+    },
+    {
+        "id": "log-004",
+        "timestamp": (datetime.datetime.utcnow() - datetime.timedelta(hours=2)).isoformat(),
+        "action_type": "SPONSOR_ADD",
+        "actor": "admin",
+        "description": "Added top banner sponsor 'HyperX Gaming' for official broadcast",
+        "target": "HyperX Gaming",
+        "category": "admin",
+        "guild_id": "1303887060754497569",
+        "metadata": {"slot": "top_banner", "target_url": "https://hyperx.com"}
+    },
+    {
+        "id": "log-005",
+        "timestamp": (datetime.datetime.utcnow() - datetime.timedelta(hours=3)).isoformat(),
+        "action_type": "AUTH_LOGIN",
+        "actor": "Hokageadmin",
+        "description": "Successful master login into Tournament Bot Web Portal",
+        "target": "Web Portal Session",
+        "category": "admin",
+        "guild_id": "",
+        "metadata": {"role": "super_admin", "ip": "127.0.0.1"}
+    }
+]
+
+def log_activity(action_type: str, actor: str, description: str, target: Optional[str] = None, category: str = "organizer", guild_id: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Log an organizer or admin action for the live audit trail."""
+    log_id = str(uuid.uuid4())
+    log_entry = {
+        "id": log_id,
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+        "action_type": action_type.upper(),
+        "actor": actor or "system",
+        "description": description,
+        "target": target or "",
+        "category": category.lower(), # 'organizer' or 'admin'
+        "guild_id": str(guild_id) if guild_id else "",
+        "metadata": metadata or {}
+    }
+
+    if supabase:
+        try:
+            supabase.table("ActivityLogs").insert(log_entry).execute()
+        except Exception as e:
+            print(f"[Database] Supabase log_activity error: {e}")
+
+    local_logs = _load_json_file(LOCAL_ACTIVITY_LOGS_FILE, None)
+    if local_logs is None:
+        local_logs = list(INITIAL_SAMPLE_LOGS)
+    
+    local_logs.insert(0, log_entry)
+    if len(local_logs) > 400:
+        local_logs = local_logs[:400]
+    _save_json_file(LOCAL_ACTIVITY_LOGS_FILE, local_logs)
+    return log_entry
+
+def get_activity_logs(category: Optional[str] = None, guild_id: Optional[str] = None, limit: int = 150) -> List[Dict[str, Any]]:
+    """Fetch recent activity logs with optional category filter."""
+    if supabase:
+        try:
+            q = supabase.table("ActivityLogs").select("*").order("timestamp", desc=True).limit(limit)
+            if category and category != "all":
+                q = q.eq("category", category.lower())
+            if guild_id:
+                q = q.eq("guild_id", str(guild_id))
+            res = q.execute()
+            if res.data and len(res.data) > 0:
+                return res.data
+        except Exception as e:
+            print(f"[Database] Supabase get_activity_logs error: {e}")
+
+    local_logs = _load_json_file(LOCAL_ACTIVITY_LOGS_FILE, None)
+    if local_logs is None:
+        local_logs = list(INITIAL_SAMPLE_LOGS)
+        _save_json_file(LOCAL_ACTIVITY_LOGS_FILE, local_logs)
+
+    filtered = local_logs
+    if category and category != "all":
+        filtered = [l for l in filtered if l.get("category") == category.lower()]
+    if guild_id:
+        filtered = [l for l in filtered if str(l.get("guild_id")) == str(guild_id)]
+    
+    return filtered[:limit]
+
+# =========================================================================
+# DISCORD BOT COMMANDS & MESSAGE TEMPLATE CONFIGURATIONS
+# =========================================================================
+DEFAULT_COMMAND_CONFIGS = {
+    "tournaments": {
+        "name": "tournaments",
+        "label": "🏆 /tournaments",
+        "description": "View all active and upcoming tournaments on the server",
+        "enabled": True,
+        "permission": "@everyone",
+        "prefix": "/tournaments",
+        "response_template": "🏆 **Active Esports Tournaments**\nBrowse through live tournaments, check brackets, and register your team.",
+        "embed_color": "#00f2fe",
+        "show_banner": True
+    },
+    "bracket": {
+        "name": "bracket",
+        "label": "⚔️ /bracket",
+        "description": "Get interactive live bracket tree & match status link",
+        "enabled": True,
+        "permission": "@everyone",
+        "prefix": "/bracket",
+        "response_template": "⚔️ **Live Tournament Bracket**\nLive single-elimination / group stage matchups are updated automatically.\n🔗 Web Bracket: {bracket_url}",
+        "embed_color": "#3b82f6",
+        "show_banner": True
+    },
+    "register": {
+        "name": "register",
+        "label": "📝 /register",
+        "description": "Team registration and captain roster submission",
+        "enabled": True,
+        "permission": "@everyone",
+        "prefix": "/register",
+        "response_template": "📝 **Team Registration Open!**\nSubmit your captain ID, team tag, and roster to participate.\nMake sure all squad members check in before the bracket is generated.",
+        "embed_color": "#34d399",
+        "show_banner": False
+    },
+    "schedule": {
+        "name": "schedule",
+        "label": "⏰ /schedule",
+        "description": "Match schedules, fixture timings, and reminders",
+        "enabled": True,
+        "permission": "@everyone",
+        "prefix": "/schedule",
+        "response_template": "⏰ **Match Schedule & Timing Alerts**\nCheck upcoming fixture timings. Teams must be in voice channels 10 minutes prior.",
+        "embed_color": "#a855f7",
+        "show_banner": False
+    },
+    "scores": {
+        "name": "scores",
+        "label": "📊 /scores",
+        "description": "Report match scores and upload screenshot proof",
+        "enabled": True,
+        "permission": "Helper Team",
+        "prefix": "/scores",
+        "response_template": "📊 **Match Score Reporting**\nCaptains and match judges: submit final scores and match screenshot proof.",
+        "embed_color": "#f59e0b",
+        "show_banner": False
+    },
+    "rules": {
+        "name": "rules",
+        "label": "📜 /rules",
+        "description": "Display official tournament rulebook and code of conduct",
+        "enabled": True,
+        "permission": "@everyone",
+        "prefix": "/rules",
+        "response_template": "📜 **Official Tournament Rules & Fair Play Policy**\n1. No cheats, glitches, or unauthorized third-party software.\n2. Respect match referees and tournament admins.\n3. Late check-ins (>15 mins) result in automatic forfeit.",
+        "embed_color": "#64748b",
+        "show_banner": False
+    },
+    "broadcast": {
+        "name": "broadcast",
+        "label": "📢 /broadcast",
+        "description": "Broadcast custom announcements and match start alerts",
+        "enabled": True,
+        "permission": "Head Organizer",
+        "prefix": "/broadcast",
+        "response_template": "📢 **Tournament Alert & Broadcast**\n{message_body}",
+        "embed_color": "#ef4444",
+        "show_banner": True
+    },
+    "coinflip": {
+        "name": "coinflip",
+        "label": "🪙 /coinflip",
+        "description": "Fair randomized coinflip for map pick/ban or side selection",
+        "enabled": True,
+        "permission": "@everyone",
+        "prefix": "/coinflip",
+        "response_template": "🪙 **Coinflip Result**: **{result}**\nWinner chooses Map Ban or Attack/Defense Side first!",
+        "embed_color": "#fbbf24",
+        "show_banner": False
+    },
+    "settings": {
+        "name": "settings",
+        "label": "⚙️ /settings",
+        "description": "Configure roles, channels, and staff permissions",
+        "enabled": True,
+        "permission": "Administrator",
+        "prefix": "/settings",
+        "response_template": "⚙️ **Server Tournament Settings**\nAdmin roles and operational channels configured for this server.",
+        "embed_color": "#00f2fe",
+        "show_banner": False
+    }
+}
+
+def get_command_configs(guild_id: Optional[str] = None) -> Dict[str, Any]:
+    """Get customized command configurations for a guild."""
+    gid = str(guild_id) if guild_id else "default"
+    
+    if supabase:
+        try:
+            res = supabase.table("CommandConfigs").select("*").eq("guild_id", gid).execute()
+            if res.data and len(res.data) > 0:
+                return res.data[0].get("commands", DEFAULT_COMMAND_CONFIGS)
+        except Exception as e:
+            print(f"[Database] Supabase get_command_configs error: {e}")
+
+    local_cmd_data = _load_json_file(LOCAL_COMMAND_CONFIGS_FILE, {})
+    if not isinstance(local_cmd_data, dict):
+        local_cmd_data = {}
+    if gid in local_cmd_data:
+        # Merge with defaults in case new commands were added
+        merged = dict(DEFAULT_COMMAND_CONFIGS)
+        merged.update(local_cmd_data[gid])
+        return merged
+    return DEFAULT_COMMAND_CONFIGS
+
+def save_command_configs(guild_id: Optional[str], commands_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Save customized command configurations for a guild."""
+    gid = str(guild_id) if guild_id else "default"
+    
+    if supabase:
+        try:
+            record = {
+                "guild_id": gid,
+                "commands": commands_data,
+                "updated_at": datetime.datetime.utcnow().isoformat()
+            }
+            supabase.table("CommandConfigs").upsert(record, on_conflict="guild_id").execute()
+        except Exception as e:
+            print(f"[Database] Supabase save_command_configs error: {e}")
+
+    local_cmd_data = _load_json_file(LOCAL_COMMAND_CONFIGS_FILE, {})
+    if not isinstance(local_cmd_data, dict):
+        local_cmd_data = {}
+    local_cmd_data[gid] = commands_data
+    _save_json_file(LOCAL_COMMAND_CONFIGS_FILE, local_cmd_data)
+    
+    log_activity(
+        action_type="COMMAND_CONFIG_UPDATE",
+        actor="admin",
+        description=f"Updated Discord bot command settings & message templates for server {gid}",
+        target=f"Guild {gid}",
+        category="admin",
+        guild_id=gid
+    )
+    return commands_data

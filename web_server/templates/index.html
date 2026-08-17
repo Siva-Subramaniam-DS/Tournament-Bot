@@ -1,28 +1,64 @@
 {% extends "base.html" %}
 
-{% block title %}Tournaments & Live Brackets - Tournament Bot{% endblock %}
+{% block title %}Esports Championship Hub & Live Brackets - Tournament Bot{% endblock %}
 
 {% block content %}
-    <!-- Hero Banner -->
-    <section class="hero-banner">
-        <div style="display: flex; align-items: center; justify-content: space-between; gap: 2rem; flex-wrap: wrap;">
-            <div style="flex: 1; min-width: 300px;">
-                <div style="display: inline-flex; align-items: center; gap: 8px; background: rgba(0, 242, 254, 0.1); border: 1px solid rgba(0, 242, 254, 0.25); padding: 5px 14px; border-radius: 30px; margin-bottom: 1rem;">
+    <!-- Hero Banner with Esports Arena Backdrop -->
+    <section class="hero-banner" style="background: linear-gradient(135deg, rgba(8, 10, 18, 0.94) 0%, rgba(14, 20, 36, 0.90) 50%, rgba(9, 10, 16, 0.95) 100%), url('/static/img/esports_hero_banner.jpg') center/cover no-repeat; border-radius: var(--radius-lg); padding: 3.5rem 2.8rem; border: 1px solid var(--border-color); box-shadow: 0 16px 40px rgba(0,0,0,0.6); margin-bottom: 2.5rem; position: relative; overflow: hidden;">
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 3rem; flex-wrap: wrap; position: relative; z-index: 2;">
+            <div style="flex: 1; min-width: 320px;">
+                <div style="display: inline-flex; align-items: center; gap: 8px; background: rgba(0, 242, 254, 0.12); border: 1px solid rgba(0, 242, 254, 0.3); padding: 6px 16px; border-radius: 30px; margin-bottom: 1.2rem;">
                     <span style="width: 8px; height: 8px; border-radius: 50%; background: var(--primary-cyan); display: inline-block; animation: pulseGlow 1.5s infinite;"></span>
-                    <span style="font-size: 0.8rem; font-weight: 700; color: var(--primary-cyan); letter-spacing: 0.5px;">OFFICIAL ESPORTS ENGINE</span>
+                    <span style="font-size: 0.82rem; font-weight: 700; color: var(--primary-cyan); letter-spacing: 0.5px;">OFFICIAL MULTI-SERVER ESPORTS ENGINE</span>
                 </div>
-                <h1 class="hero-title">COMPETE. DOMINATE. ASCEND.</h1>
-                <p class="hero-desc">The central command hub for official multi-server esports tournaments, real-time live brackets, automated match posters, and competitive prize pools.</p>
-                <div style="display: flex; gap: 15px; flex-wrap: wrap;">
-                    <a href="#tournaments-list" class="btn btn-primary">🏆 Browse Tournaments</a>
-                    <a href="#affiliate-store" class="btn btn-secondary">⚡ Pro Gaming Gear & Deals</a>
+                <h1 class="hero-title" style="font-family: var(--font-heading); font-size: 2.8rem; font-weight: 900; line-height: 1.15; margin-bottom: 1.2rem; color: #ffffff; letter-spacing: -0.5px;">
+                    COMPETE. DOMINATE. ASCEND.
+                </h1>
+                <p class="hero-desc" style="font-size: 1.05rem; color: var(--text-secondary); line-height: 1.6; margin-bottom: 2rem; max-width: 580px;">
+                    The ultimate esports officiating infrastructure. Real-time live Challonge brackets, automated match poster generation, referee scheduling, and seamless Discord integration.
+                </p>
+                <div style="display: flex; gap: 14px; flex-wrap: wrap;">
+                    <a href="#tournaments-list" class="btn btn-primary">
+                        🏆 Browse Tournaments
+                    </a>
+                    <a href="/commands" class="btn btn-secondary">
+                        📖 Commands &amp; Guide
+                    </a>
+                    <a href="#affiliate-store" class="btn btn-secondary" style="border-color: rgba(99, 102, 241, 0.3); color: #c7d2fe;">
+                        ⚡ Pro Gear &amp; Store
+                    </a>
                 </div>
             </div>
-            <div style="text-align: center;">
-                <img src="/static/img/tournament_bot_logo.png" alt="Tournament Bot Hero Logo" class="hero-brand-logo">
+            <div style="text-align: center; display: flex; flex-direction: column; align-items: center; gap: 12px;">
+                <div style="position: relative;">
+                    <img src="/static/img/tournament_bot_logo.png" alt="Tournament Bot Hero Logo" class="hero-brand-logo" style="width: 140px; height: 140px; border-radius: 24px; border: 2px solid rgba(0, 242, 254, 0.4); box-shadow: 0 0 35px rgba(0, 242, 254, 0.3);">
+                </div>
+                <span style="font-size: 0.85rem; font-weight: 700; color: #f8fafc; font-family: var(--font-mono); letter-spacing: 0.5px;">
+                    v1.4.0 &bull; ONLINE
+                </span>
             </div>
         </div>
     </section>
+
+    <!-- Esports Performance Stats Strip -->
+    <div class="stats-grid" style="margin-bottom: 3rem;">
+        <div class="stat-box">
+            <div class="stat-value">{{ tournaments|length if tournaments else 0 }}</div>
+            <div class="stat-label">Active Tournaments</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-value" style="color: var(--primary-cyan);">{{ guilds|length if guilds else 1 }}</div>
+            <div class="stat-label">Connected Discord Servers</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-value" style="color: #34d399;">100%</div>
+            <div class="stat-label">Challonge API Sync</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-value" style="color: var(--accent-purple);">Dynamic</div>
+            <div class="stat-label">Poster Engine (Pillow)</div>
+        </div>
+    </div>
 
     <!-- Monetization: Featured Top Sponsor Banner Slot -->
     {% if sponsors and sponsors|length > 0 %}
@@ -36,39 +72,44 @@
     {% endif %}
 
     <!-- Active Tournaments List -->
-    <section id="tournaments-list" style="margin-top: 3rem;">
+    <section id="tournaments-list" style="margin-top: 2rem;">
         <div class="section-header">
             <div>
-                <h2 class="section-title">🏆 Active & Upcoming Tournaments</h2>
-                <p class="section-subtitle">Real-time brackets and scheduled matches officiated by the Tournament Bot</p>
+                <h2 class="section-title">🏆 Active &amp; Upcoming Tournaments</h2>
+                <p class="section-subtitle">Real-time brackets and scheduled matches officiated by Tournament Bot</p>
+            </div>
+            <div>
+                <a href="/commands" class="btn btn-secondary btn-sm">Command Guide &rarr;</a>
             </div>
         </div>
 
         <div class="tournament-grid">
             {% if tournaments and tournaments|length > 0 %}
                 {% for t in tournaments %}
+                {% set t_id = t.Tournament_ID or t.tournament_id or t.id %}
+                {% set t_name = t.Tournament_Name or t.tournament_name or t.name %}
                 <div class="tournament-card">
                     <div>
                         <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1rem;">
-                            <span class="tournament-badge {% if t.State == 'live' or t.state == 'live' %}badge-live{% else %}badge-upcoming{% endif %}">
+                            <span class="tournament-badge {% if t.State == 'live' or t.state == 'live' or t.State == 'ACTIVE' %}badge-live{% else %}badge-upcoming{% endif %}">
                                 {{ t.State or t.state or "ACTIVE" }}
                             </span>
-                            <span style="font-size: 0.78rem; color: var(--text-muted);">ID: {{ t.Tournament_ID or t.tournament_id }}</span>
+                            <span style="font-size: 0.76rem; color: var(--text-muted); font-family: var(--font-mono);">ID: {{ t_id }}</span>
                         </div>
-                        <h3 style="font-family: var(--font-heading); font-size: 1.3rem; font-weight: 700; margin-bottom: 0.5rem;">
-                            {{ t.Tournament_Name or t.tournament_name or "Tournament #" ~ loop.index }}
+                        <h3 style="font-family: var(--font-heading); font-size: 1.35rem; font-weight: 700; margin-bottom: 0.5rem; color: #f8fafc;">
+                            {{ t_name or "Tournament #" ~ loop.index }}
                         </h3>
-                        <p style="font-size: 0.88rem; color: var(--text-secondary); margin-bottom: 1.2rem;">
-                            Multi-Server Matchup &bull; Challonge Bracket Officiated
+                        <p style="font-size: 0.86rem; color: var(--text-secondary); margin-bottom: 1.2rem; line-height: 1.4;">
+                            Multi-Server Championship &bull; Challonge Bracket Officiated
                         </p>
                     </div>
 
                     <div style="display: flex; gap: 10px; margin-top: 1rem;">
-                        <a href="/tournament/{{ t.Tournament_ID or t.tournament_id }}" class="btn btn-primary btn-sm" style="flex: 1;">
+                        <a href="/tournament/{{ t_id }}" class="btn btn-primary btn-sm" style="flex: 1; text-align: center;">
                             View Live Bracket &rarr;
                         </a>
-                        {% if t.challonge_bracket_link %}
-                        <a href="{{ t.challonge_bracket_link }}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm" title="Open Challonge Bracket">
+                        {% if t.challonge_bracket_link or t.bracket %}
+                        <a href="{{ t.challonge_bracket_link or t.bracket }}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm" title="Open Challonge Bracket">
                             🔗
                         </a>
                         {% endif %}
@@ -76,21 +117,25 @@
                 </div>
                 {% endfor %}
             {% else %}
-                <div style="grid-column: 1 / -1; background: var(--bg-card); padding: 3rem; text-align: center; border-radius: var(--radius-md); border: 1px dashed var(--border-color);">
-                    <div style="font-size: 2.5rem; margin-bottom: 0.8rem;">🎮</div>
-                    <h3 style="font-family: var(--font-heading); margin-bottom: 0.5rem;">No active tournaments currently displayed</h3>
-                    <p style="color: var(--text-secondary); font-size: 0.9rem;">Organizers can create events using <code>/event_create</code> in Discord or through the Organizer Dashboard.</p>
+                <div style="grid-column: 1 / -1; background: var(--bg-card); padding: 3.5rem 2rem; text-align: center; border-radius: var(--radius-md); border: 1px dashed var(--border-color);">
+                    <div style="font-size: 2.8rem; margin-bottom: 0.8rem;">🎮</div>
+                    <h3 style="font-family: var(--font-heading); font-size: 1.4rem; margin-bottom: 0.6rem; color: #f8fafc;">No active tournaments currently displayed</h3>
+                    <p style="color: var(--text-secondary); font-size: 0.92rem; max-width: 500px; margin: 0 auto 1.5rem;">Organizers can create events using <code>/event-create</code> or <code>/tournament add</code> in Discord, or launch brackets via the Organizer Dashboard.</p>
+                    <div style="display: flex; gap: 12px; justify-content: center; flex-wrap: wrap;">
+                        <a href="/commands" class="btn btn-primary btn-sm">View Command List</a>
+                        <a href="/dashboard" class="btn btn-secondary btn-sm">Organizer Center</a>
+                    </div>
                 </div>
             {% endif %}
         </div>
     </section>
 
     <!-- Monetization: Affiliate Gear & Gaming Store Integration -->
-    <section id="affiliate-store" class="affiliate-section">
+    <section id="affiliate-store" class="affiliate-section" style="margin-top: 4rem;">
         <div class="section-header">
             <div>
-                <h2 class="section-title">🛒 Pro Player Gear & Game Credits</h2>
-                <p class="section-subtitle">Recommended esports peripherals and instant in-game currency top-up partner widgets</p>
+                <h2 class="section-title">🛒 Pro Player Gear &amp; Game Credits</h2>
+                <p class="section-subtitle">Official gaming peripherals and instant in-game currency partner widgets</p>
             </div>
             <div>
                 <span class="user-role-tag" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3);">
@@ -122,7 +167,7 @@
                 </div>
                 {% endfor %}
             {% else %}
-                <p style="color: var(--text-muted);">No products listed yet.</p>
+                <p style="color: var(--text-muted);">No partner items listed currently.</p>
             {% endif %}
         </div>
     </section>

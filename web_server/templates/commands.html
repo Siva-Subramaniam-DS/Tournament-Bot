@@ -1,0 +1,910 @@
+{% extends "base.html" %}
+
+{% block title %}Bot Commands & Operations Guide - Tournament Bot{% endblock %}
+
+{% block content %}
+<div class="commands-page-wrapper">
+    <!-- Header Banner -->
+    <section class="hero-banner commands-hero" style="background: linear-gradient(135deg, rgba(15, 20, 36, 0.95), rgba(9, 10, 16, 0.92)), url('/static/img/esports_hero_banner.jpg') center/cover no-repeat; border-radius: var(--radius-lg); padding: 3rem 2.5rem; margin-bottom: 2.5rem; border: 1px solid var(--border-color); box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+        <div style="max-width: 850px;">
+            <div style="display: inline-flex; align-items: center; gap: 8px; background: rgba(0, 242, 254, 0.12); border: 1px solid rgba(0, 242, 254, 0.3); padding: 6px 16px; border-radius: 30px; margin-bottom: 1.2rem;">
+                <span style="font-size: 0.82rem; font-weight: 700; color: var(--primary-cyan); letter-spacing: 0.5px;">⚡ COMMAND HUB &amp; OPERATIONAL REFERENCE</span>
+            </div>
+            <h1 style="font-family: var(--font-heading); font-size: 2.4rem; font-weight: 800; line-height: 1.2; margin-bottom: 1rem; color: #ffffff;">
+                Discord Command Reference &amp; Guides
+            </h1>
+            <p style="font-size: 1.05rem; color: var(--text-secondary); line-height: 1.6; margin-bottom: 1.8rem;">
+                Complete operational guide for server administrators, tournament organizers, referees, and competitive players. Detailed parameter schemas, required role permissions, and interactive copy shortcuts.
+            </p>
+            
+            <!-- Quick Search Bar -->
+            <div class="command-search-bar" style="position: relative; max-width: 600px;">
+                <input type="text" id="cmdSearchInput" class="form-input" placeholder="🔍 Search command name, role, parameter, or keyword (e.g. /settings, /upload-score, bracket)..." style="padding: 1rem 1.2rem; font-size: 0.95rem; background: rgba(8, 10, 18, 0.9); border-color: rgba(0, 242, 254, 0.35); box-shadow: 0 4px 20px rgba(0,0,0,0.4);">
+                <button type="button" id="cmdClearSearch" style="display: none; position: absolute; right: 12px; top: 50%; transform: translateY(-50%); background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 1.1rem;">✕</button>
+            </div>
+        </div>
+    </section>
+
+    <!-- Role Filter Navigation Tabs -->
+    <div class="commands-filter-nav" style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 2rem; border-bottom: 1px solid var(--border-color); padding-bottom: 1rem;">
+        <button class="cmd-filter-pill active" data-category="all">
+            🌐 All Commands (<span id="countAll">28</span>)
+        </button>
+        <button class="cmd-filter-pill" data-category="admin">
+            👑 Administrator (<span id="countAdmin">9</span>)
+        </button>
+        <button class="cmd-filter-pill" data-category="organizer">
+            🛡️ Organizer (<span id="countOrg">8</span>)
+        </button>
+        <button class="cmd-filter-pill" data-category="judge">
+            ⚖️ Judge &amp; Staff (<span id="countJudge">6</span>)
+        </button>
+        <button class="cmd-filter-pill" data-category="player">
+            🎮 Players &amp; Teams (<span id="countPlayer">5</span>)
+        </button>
+        <button class="cmd-filter-pill" data-category="workflow" style="margin-left: auto; border-color: rgba(99, 102, 241, 0.4); color: #a5b4fc;">
+            🔄 Event Lifecycle Guide
+        </button>
+    </div>
+
+    <!-- =========================================================================
+         SECTION: EVENT LIFECYCLE WORKFLOW GUIDE (Expandable)
+         ========================================================================= -->
+    <div id="workflow-guide-box" class="workflow-card" style="display: none; background: var(--bg-card); border: 1px solid rgba(99, 102, 241, 0.3); border-radius: var(--radius-md); padding: 2rem; margin-bottom: 2.5rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+            <div>
+                <h3 style="font-family: var(--font-heading); font-size: 1.4rem; color: #a5b4fc;">🔄 Official Tournament Match Lifecycle</h3>
+                <p style="font-size: 0.88rem; color: var(--text-secondary);">How matches flow from creation to Challonge bracket sync</p>
+            </div>
+            <button class="btn btn-secondary btn-sm" onclick="document.querySelector('[data-category=all]').click()">✕ Close Guide</button>
+        </div>
+
+        <div class="workflow-steps-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.2rem;">
+            <div class="workflow-step">
+                <div class="step-number">1</div>
+                <h4 style="font-size: 1rem; color: #f8fafc; margin-bottom: 6px;">Match Created</h4>
+                <p style="font-size: 0.82rem; color: var(--text-secondary); line-height: 1.5;">
+                    Organizer runs <code>/event-create</code>. Bot renders custom poster with team names, logs match to database, and posts to <code>#schedule</code>.
+                </p>
+            </div>
+            <div class="workflow-step">
+                <div class="step-number">2</div>
+                <h4 style="font-size: 1rem; color: #f8fafc; margin-bottom: 6px;">Staff Claim</h4>
+                <p style="font-size: 0.82rem; color: var(--text-secondary); line-height: 1.5;">
+                    Judges and Recorders claim duty by clicking <strong>Take Schedule</strong> or <strong>Record</strong> buttons on the schedule embed.
+                </p>
+            </div>
+            <div class="workflow-step">
+                <div class="step-number">3</div>
+                <h4 style="font-size: 1rem; color: #f8fafc; margin-bottom: 6px;">T-30 Presence Check</h4>
+                <p style="font-size: 0.82rem; color: var(--text-secondary); line-height: 1.5;">
+                    At T-30 minutes, confirmation ping is dispatched to the ticket. If unconfirmed by T-20m, backup judges are alerted automatically.
+                </p>
+            </div>
+            <div class="workflow-step">
+                <div class="step-number">4</div>
+                <h4 style="font-size: 1rem; color: #f8fafc; margin-bottom: 6px;">Scores &amp; Sync</h4>
+                <p style="font-size: 0.82rem; color: var(--text-secondary); line-height: 1.5;">
+                    Judge runs <code>/event-result</code> with screenshots, then <code>/upload-score</code> pushes match outcomes straight to Challonge.
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Commands List Container -->
+    <div id="commandsGrid" class="commands-grid">
+
+        <!-- =====================================================================
+             CATEGORY: ADMINISTRATOR COMMANDS
+             ===================================================================== -->
+        
+        <!-- /settings add -->
+        <div class="command-card" data-category="admin">
+            <div class="command-card-header">
+                <div class="cmd-title-group">
+                    <span class="cmd-name">/settings add</span>
+                    <span class="role-badge badge-admin">👑 Administrator</span>
+                </div>
+                <button class="copy-cmd-btn" data-clipboard="/settings add" title="Copy command syntax">
+                    <span>📋</span> Copy
+                </button>
+            </div>
+            <p class="cmd-desc">
+                Initializes and binds complete server-wide role mappings, operational channels, and custom organization branding into the database.
+            </p>
+            <div class="cmd-params-section">
+                <div class="cmd-params-title">Parameters &amp; Options:</div>
+                <div class="cmd-param-row">
+                    <span class="param-name">admin_role</span>
+                    <span class="param-type">Role (Required)</span>
+                    <span class="param-desc">Server Head Administrator role</span>
+                </div>
+                <div class="cmd-param-row">
+                    <span class="param-name">organizer_role</span>
+                    <span class="param-type">Role (Required)</span>
+                    <span class="param-desc">Tournament Organizer staff role</span>
+                </div>
+                <div class="cmd-param-row">
+                    <span class="param-name">judge_role</span>
+                    <span class="param-type">Role (Optional)</span>
+                    <span class="param-desc">Official match referee / judge role</span>
+                </div>
+                <div class="cmd-param-row">
+                    <span class="param-name">rules_channel</span>
+                    <span class="param-type">Channel (Optional)</span>
+                    <span class="param-desc">Channel where official tournament rules are posted</span>
+                </div>
+                <div class="cmd-param-row">
+                    <span class="param-name">organization_name</span>
+                    <span class="param-type">String (Optional)</span>
+                    <span class="param-desc">Custom esports org or clan branding title</span>
+                </div>
+            </div>
+            <div class="cmd-example-box">
+                <code>/settings add admin_role:@TournamentAdmin organizer_role:@Organizer judge_role:@Judge organization_name:"Apex Champions League"</code>
+            </div>
+        </div>
+
+        <!-- /settings edit -->
+        <div class="command-card" data-category="admin">
+            <div class="command-card-header">
+                <div class="cmd-title-group">
+                    <span class="cmd-name">/settings edit</span>
+                    <span class="role-badge badge-admin">👑 Administrator</span>
+                </div>
+                <button class="copy-cmd-btn" data-clipboard="/settings edit" title="Copy command syntax">
+                    <span>📋</span> Copy
+                </button>
+            </div>
+            <p class="cmd-desc">
+                Modifies existing server-wide configurations, Google Sheet roster sync links, result channels, or system branding without overwriting other parameters.
+            </p>
+            <div class="cmd-params-section">
+                <div class="cmd-params-title">Parameters:</div>
+                <div class="cmd-param-row">
+                    <span class="param-name">google_sheet_link</span>
+                    <span class="param-type">URL (Optional)</span>
+                    <span class="param-desc">Direct CSV or Google Sheet URL for player/team rosters</span>
+                </div>
+                <div class="cmd-param-row">
+                    <span class="param-name">results_channel</span>
+                    <span class="param-type">Channel (Optional)</span>
+                    <span class="param-desc">Channel where finalized match results embeds are posted</span>
+                </div>
+                <div class="cmd-param-row">
+                    <span class="param-name">player_info_format</span>
+                    <span class="param-type">Select (Optional)</span>
+                    <span class="param-desc">Format layout: <code>1 vs 1</code>, <code>2 vs 2</code>, <code>4 vs 4</code>, <code>5 vs 5</code></span>
+                </div>
+            </div>
+            <div class="cmd-example-box">
+                <code>/settings edit google_sheet_link:https://docs.google.com/spreadsheets/d/... player_info_format:"5 vs 5"</code>
+            </div>
+        </div>
+
+        <!-- /settings show -->
+        <div class="command-card" data-category="admin">
+            <div class="command-card-header">
+                <div class="cmd-title-group">
+                    <span class="cmd-name">/settings show</span>
+                    <span class="role-badge badge-admin">👑 Administrator</span>
+                </div>
+                <button class="copy-cmd-btn" data-clipboard="/settings show" title="Copy command syntax">
+                    <span>📋</span> Copy
+                </button>
+            </div>
+            <p class="cmd-desc">
+                Displays a rich overview embed of all active role IDs, operational channels, database sync status, and active Google Sheet integrations.
+            </p>
+            <div class="cmd-example-box">
+                <code>/settings show</code>
+            </div>
+        </div>
+
+        <!-- /test_channels -->
+        <div class="command-card" data-category="admin">
+            <div class="command-card-header">
+                <div class="cmd-title-group">
+                    <span class="cmd-name">/test_channels</span>
+                    <span class="role-badge badge-admin">👑 Administrator</span>
+                </div>
+                <button class="copy-cmd-btn" data-clipboard="/test_channels" title="Copy command syntax">
+                    <span>📋</span> Copy
+                </button>
+            </div>
+            <p class="cmd-desc">
+                Performs a comprehensive diagnostic test verifying bot permissions (Send Messages, Embed Links, Attach Files, Manage Channels) across all configured channels.
+            </p>
+            <div class="cmd-example-box">
+                <code>/test_channels</code>
+            </div>
+        </div>
+
+        <!-- /staff-update -->
+        <div class="command-card" data-category="admin">
+            <div class="command-card-header">
+                <div class="cmd-title-group">
+                    <span class="cmd-name">/staff-update</span>
+                    <span class="role-badge badge-admin">👑 Administrator</span>
+                </div>
+                <button class="copy-cmd-btn" data-clipboard="/staff-update" title="Copy command syntax">
+                    <span>📋</span> Copy
+                </button>
+            </div>
+            <p class="cmd-desc">
+                Manually adjusts or overrides points and match officiating statistics for a Judge or Recorder on the staff leaderboard.
+            </p>
+            <div class="cmd-params-section">
+                <div class="cmd-params-title">Parameters:</div>
+                <div class="cmd-param-row">
+                    <span class="param-name">staff_member</span>
+                    <span class="param-type">User (Required)</span>
+                    <span class="param-desc">Target Judge or Recorder member mention</span>
+                </div>
+                <div class="cmd-param-row">
+                    <span class="param-name">points_delta</span>
+                    <span class="param-type">Integer (Required)</span>
+                    <span class="param-desc">Number of points to add or subtract (e.g. <code>+5</code>, <code>-2</code>)</span>
+                </div>
+            </div>
+            <div class="cmd-example-box">
+                <code>/staff-update staff_member:@JudgeAlex points_delta:5</code>
+            </div>
+        </div>
+
+        <!-- /publish-rules -->
+        <div class="command-card" data-category="admin">
+            <div class="command-card-header">
+                <div class="cmd-title-group">
+                    <span class="cmd-name">/publish-rules</span>
+                    <span class="role-badge badge-admin">👑 Administrator</span>
+                </div>
+                <button class="copy-cmd-btn" data-clipboard="/publish-rules" title="Copy command syntax">
+                    <span>📋</span> Copy
+                </button>
+            </div>
+            <p class="cmd-desc">
+                Formats, renders, and publishes official tournament rulebooks, match conduct policies, and penalty guidelines directly to the configured rules channel.
+            </p>
+            <div class="cmd-example-box">
+                <code>/publish-rules</code>
+            </div>
+        </div>
+
+        <!-- /clear category -->
+        <div class="command-card" data-category="admin">
+            <div class="command-card-header">
+                <div class="cmd-title-group">
+                    <span class="cmd-name">/clear category</span>
+                    <span class="role-badge badge-admin">👑 Administrator</span>
+                </div>
+                <button class="copy-cmd-btn" data-clipboard="/clear category" title="Copy command syntax">
+                    <span>📋</span> Copy
+                </button>
+            </div>
+            <p class="cmd-desc">
+                Safely purges completed or closed ticket channels inside a specified category to keep the Discord server organized.
+            </p>
+            <div class="cmd-params-section">
+                <div class="cmd-params-title">Parameters:</div>
+                <div class="cmd-param-row">
+                    <span class="param-name">category_name</span>
+                    <span class="param-type">Category (Required)</span>
+                    <span class="param-desc">Target category to purge closed match ticket channels</span>
+                </div>
+            </div>
+            <div class="cmd-example-box">
+                <code>/clear category category_name:"Closed Match Tickets"</code>
+            </div>
+        </div>
+
+        <!-- /clear cache -->
+        <div class="command-card" data-category="admin">
+            <div class="command-card-header">
+                <div class="cmd-title-group">
+                    <span class="cmd-name">/clear cache</span>
+                    <span class="role-badge badge-admin">👑 Administrator</span>
+                </div>
+                <button class="copy-cmd-btn" data-clipboard="/clear cache" title="Copy command syntax">
+                    <span>📋</span> Copy
+                </button>
+            </div>
+            <p class="cmd-desc">
+                Clears cached Challonge API brackets, active Google Sheet roster indexes, and reloads real-time data from primary sources.
+            </p>
+            <div class="cmd-example-box">
+                <code>/clear cache</code>
+            </div>
+        </div>
+
+        <!-- /settings clean -->
+        <div class="command-card" data-category="admin">
+            <div class="command-card-header">
+                <div class="cmd-title-group">
+                    <span class="cmd-name">/settings clean</span>
+                    <span class="role-badge badge-danger">⚠️ Danger / Admin</span>
+                </div>
+                <button class="copy-cmd-btn" data-clipboard="/settings clean" title="Copy command syntax">
+                    <span>📋</span> Copy
+                </button>
+            </div>
+            <p class="cmd-desc">
+                Resets all server role mappings, channels, and cached data back to default factory settings. Requires confirmation.
+            </p>
+            <div class="cmd-example-box">
+                <code>/settings clean</code>
+            </div>
+        </div>
+
+
+        <!-- =====================================================================
+             CATEGORY: ORGANIZER COMMANDS
+             ===================================================================== -->
+
+        <!-- /tournament add -->
+        <div class="command-card" data-category="organizer">
+            <div class="command-card-header">
+                <div class="cmd-title-group">
+                    <span class="cmd-name">/tournament add</span>
+                    <span class="role-badge badge-org">🛡️ Organizer</span>
+                </div>
+                <button class="copy-cmd-btn" data-clipboard="/tournament add" title="Copy command syntax">
+                    <span>📋</span> Copy
+                </button>
+            </div>
+            <p class="cmd-desc">
+                Registers a new tournament championship into the database with Challonge bracket links, match channels, and ticket category routing.
+            </p>
+            <div class="cmd-params-section">
+                <div class="cmd-params-title">Parameters:</div>
+                <div class="cmd-param-row">
+                    <span class="param-name">tournament_name</span>
+                    <span class="param-type">String (Required)</span>
+                    <span class="param-desc">Official championship title</span>
+                </div>
+                <div class="cmd-param-row">
+                    <span class="param-name">bracket_link</span>
+                    <span class="param-type">URL (Required)</span>
+                    <span class="param-desc">Challonge bracket or custom web bracket URL</span>
+                </div>
+                <div class="cmd-param-row">
+                    <span class="param-name">open_category</span>
+                    <span class="param-type">Category (Optional)</span>
+                    <span class="param-desc">Discord category where new match tickets are opened</span>
+                </div>
+                <div class="cmd-param-row">
+                    <span class="param-name">auto_room</span>
+                    <span class="param-type">Boolean (Optional)</span>
+                    <span class="param-desc">Automatically create match ticket rooms from Challonge</span>
+                </div>
+            </div>
+            <div class="cmd-example-box">
+                <code>/tournament add tournament_name:"Valorant Masters Season 4" bracket_link:https://challonge.com/val_s4 auto_room:True</code>
+            </div>
+        </div>
+
+        <!-- /tournament edit -->
+        <div class="command-card" data-category="organizer">
+            <div class="command-card-header">
+                <div class="cmd-title-group">
+                    <span class="cmd-name">/tournament edit</span>
+                    <span class="role-badge badge-org">🛡️ Organizer</span>
+                </div>
+                <button class="copy-cmd-btn" data-clipboard="/tournament edit" title="Copy command syntax">
+                    <span>📋</span> Copy
+                </button>
+            </div>
+            <p class="cmd-desc">
+                Modifies existing tournament configuration including active status (<code>pending</code>, <code>active</code>, <code>completed</code>), sheet links, or auto-room sweeps.
+            </p>
+            <div class="cmd-example-box">
+                <code>/tournament edit tournament_name:"Valorant Masters" state:active</code>
+            </div>
+        </div>
+
+        <!-- /tournament list & info -->
+        <div class="command-card" data-category="organizer">
+            <div class="command-card-header">
+                <div class="cmd-title-group">
+                    <span class="cmd-name">/tournament list / info</span>
+                    <span class="role-badge badge-org">🛡️ Organizer</span>
+                </div>
+                <button class="copy-cmd-btn" data-clipboard="/tournament list" title="Copy command syntax">
+                    <span>📋</span> Copy
+                </button>
+            </div>
+            <p class="cmd-desc">
+                Lists all tournaments registered on this server, or retrieves comprehensive details (IDs, channel bindings, state, participants) for a specific tournament.
+            </p>
+            <div class="cmd-example-box">
+                <code>/tournament list</code> &bull; <code>/tournament info tournament_name:"Valorant Masters"</code>
+            </div>
+        </div>
+
+        <!-- /auto_room run/stop/toggle -->
+        <div class="command-card" data-category="organizer">
+            <div class="command-card-header">
+                <div class="cmd-title-group">
+                    <span class="cmd-name">/auto_room run | stop | toggle</span>
+                    <span class="role-badge badge-org">🛡️ Organizer</span>
+                </div>
+                <button class="copy-cmd-btn" data-clipboard="/auto_room run" title="Copy command syntax">
+                    <span>📋</span> Copy
+                </button>
+            </div>
+            <p class="cmd-desc">
+                Controls the automated match ticket creation engine. <code>/auto_room run</code> immediately sweeps the Challonge bracket for open matches and spawns private channels for captains and judges.
+            </p>
+            <div class="cmd-example-box">
+                <code>/auto_room run</code> &bull; <code>/auto_room toggle status:True</code>
+            </div>
+        </div>
+
+        <!-- /broadcast -->
+        <div class="command-card" data-category="organizer">
+            <div class="command-card-header">
+                <div class="cmd-title-group">
+                    <span class="cmd-name">/broadcast</span>
+                    <span class="role-badge badge-org">🛡️ Organizer</span>
+                </div>
+                <button class="copy-cmd-btn" data-clipboard="/broadcast" title="Copy command syntax">
+                    <span>📋</span> Copy
+                </button>
+            </div>
+            <p class="cmd-desc">
+                Dispatches an official stylized tournament announcement embed across all active match ticket rooms or an announcement channel.
+            </p>
+            <div class="cmd-params-section">
+                <div class="cmd-params-title">Parameters:</div>
+                <div class="cmd-param-row">
+                    <span class="param-name">message_body</span>
+                    <span class="param-type">String (Required)</span>
+                    <span class="param-desc">The broadcast announcement content</span>
+                </div>
+            </div>
+            <div class="cmd-example-box">
+                <code>/broadcast message_body:"Quarter-Finals will commence promptly at 18:00 UTC. All captains please check in."</code>
+            </div>
+        </div>
+
+        <!-- /registration -->
+        <div class="command-card" data-category="organizer">
+            <div class="command-card-header">
+                <div class="cmd-title-group">
+                    <span class="cmd-name">/registration</span>
+                    <span class="role-badge badge-org">🛡️ Organizer</span>
+                </div>
+                <button class="copy-cmd-btn" data-clipboard="/registration" title="Copy command syntax">
+                    <span>📋</span> Copy
+                </button>
+            </div>
+            <p class="cmd-desc">
+                Publishes a tournament registration card containing rules, prize breakdown, entry fees, and an interactive Discord button linking directly to Google Forms or portal.
+            </p>
+            <div class="cmd-example-box">
+                <code>/registration form_link:https://forms.gle/... title:"Valorant Masters Season 4"</code>
+            </div>
+        </div>
+
+        <!-- /exchange -->
+        <div class="command-card" data-category="organizer">
+            <div class="command-card-header">
+                <div class="cmd-title-group">
+                    <span class="cmd-name">/exchange</span>
+                    <span class="role-badge badge-org">🛡️ Organizer</span>
+                </div>
+                <button class="copy-cmd-btn" data-clipboard="/exchange" title="Copy command syntax">
+                    <span>📋</span> Copy
+                </button>
+            </div>
+            <p class="cmd-desc">
+                Replaces or swaps an assigned Judge or Recorder on an active match event without deleting the match record.
+            </p>
+            <div class="cmd-example-box">
+                <code>/exchange current_staff:@JudgeSam new_staff:@JudgeMike role:"judge"</code>
+            </div>
+        </div>
+
+
+        <!-- =====================================================================
+             CATEGORY: JUDGE & REFEREE COMMANDS
+             ===================================================================== -->
+
+        <!-- /event-create -->
+        <div class="command-card" data-category="judge">
+            <div class="command-card-header">
+                <div class="cmd-title-group">
+                    <span class="cmd-name">/event-create</span>
+                    <span class="role-badge badge-judge">⚖️ Judge &amp; Staff</span>
+                </div>
+                <button class="copy-cmd-btn" data-clipboard="/event-create" title="Copy command syntax">
+                    <span>📋</span> Copy
+                </button>
+            </div>
+            <p class="cmd-desc">
+                Creates a scheduled match event. Generates a custom high-resolution match poster graphic with auto-scaling font margins, logs the match to Supabase, and posts the schedule embed.
+            </p>
+            <div class="cmd-params-section">
+                <div class="cmd-params-title">Parameters:</div>
+                <div class="cmd-param-row">
+                    <span class="param-name">team_1</span>
+                    <span class="param-type">String / Member (Required)</span>
+                    <span class="param-desc">First team name or Captain mention</span>
+                </div>
+                <div class="cmd-param-row">
+                    <span class="param-name">team_2</span>
+                    <span class="param-type">String / Member (Required)</span>
+                    <span class="param-desc">Second team name or Captain mention</span>
+                </div>
+                <div class="cmd-param-row">
+                    <span class="param-name">match_time</span>
+                    <span class="param-type">String (Required)</span>
+                    <span class="param-desc">Scheduled time (e.g. <code>20:30 UTC</code> or timestamp)</span>
+                </div>
+                <div class="cmd-param-row">
+                    <span class="param-name">round_name</span>
+                    <span class="param-type">String (Optional)</span>
+                    <span class="param-desc">e.g. <code>Round 1</code>, <code>Semi-Finals</code>, <code>Grand Final</code></span>
+                </div>
+            </div>
+            <div class="cmd-example-box">
+                <code>/event-create team_1:"Team Alpha" team_2:"Team Phantom" match_time:"19:00 UTC" round_name:"Quarter-Final"</code>
+            </div>
+        </div>
+
+        <!-- /event-result -->
+        <div class="command-card" data-category="judge">
+            <div class="command-card-header">
+                <div class="cmd-title-group">
+                    <span class="cmd-name">/event-result</span>
+                    <span class="role-badge badge-judge">⚖️ Judge &amp; Staff</span>
+                </div>
+                <button class="copy-cmd-btn" data-clipboard="/event-result" title="Copy command syntax">
+                    <span>📋</span> Copy
+                </button>
+            </div>
+            <p class="cmd-desc">
+                Enters official verified match results, uploads screenshot proof, records judge points on the staff leaderboard, and publishes a finalized victory embed.
+            </p>
+            <div class="cmd-params-section">
+                <div class="cmd-params-title">Parameters:</div>
+                <div class="cmd-param-row">
+                    <span class="param-name">winner</span>
+                    <span class="param-type">String / Mention (Required)</span>
+                    <span class="param-desc">Winning team name or captain</span>
+                </div>
+                <div class="cmd-param-row">
+                    <span class="param-name">score</span>
+                    <span class="param-type">String (Required)</span>
+                    <span class="param-desc">Final match score (e.g. <code>2 - 1</code>, <code>13 - 9</code>)</span>
+                </div>
+                <div class="cmd-param-row">
+                    <span class="param-name">proof_image</span>
+                    <span class="param-type">Attachment (Optional)</span>
+                    <span class="param-desc">Screenshot of end-game scoreboard</span>
+                </div>
+            </div>
+            <div class="cmd-example-box">
+                <code>/event-result winner:"Team Alpha" score:"2 - 0"</code>
+            </div>
+        </div>
+
+        <!-- /upload-score -->
+        <div class="command-card" data-category="judge">
+            <div class="command-card-header">
+                <div class="cmd-title-group">
+                    <span class="cmd-name">/upload-score</span>
+                    <span class="role-badge badge-judge">⚖️ Judge &amp; Staff</span>
+                </div>
+                <button class="copy-cmd-btn" data-clipboard="/upload-score" title="Copy command syntax">
+                    <span>📋</span> Copy
+                </button>
+            </div>
+            <p class="cmd-desc">
+                Syncs match outcomes directly to the Challonge bracket via live autocompletion dropdown. Advances the winning team to the next round immediately.
+            </p>
+            <div class="cmd-params-section">
+                <div class="cmd-params-title">Parameters:</div>
+                <div class="cmd-param-row">
+                    <span class="param-name">winner</span>
+                    <span class="param-type">Dropdown (Required)</span>
+                    <span class="param-desc">Autocompleted list of active matches in bracket</span>
+                </div>
+                <div class="cmd-param-row">
+                    <span class="param-name">winner_score</span>
+                    <span class="param-type">Integer (Required)</span>
+                    <span class="param-desc">Sets won by the winning team (e.g. <code>2</code>)</span>
+                </div>
+                <div class="cmd-param-row">
+                    <span class="param-name">loser_score</span>
+                    <span class="param-type">Integer (Required)</span>
+                    <span class="param-desc">Sets won by the losing team (e.g. <code>0</code>)</span>
+                </div>
+            </div>
+            <div class="cmd-example-box">
+                <code>/upload-score winner:"Team Alpha (vs Team Omega)" winner_score:2 loser_score:1</code>
+            </div>
+        </div>
+
+        <!-- /available_events & /reassign -->
+        <div class="command-card" data-category="judge">
+            <div class="command-card-header">
+                <div class="cmd-title-group">
+                    <span class="cmd-name">/available_events | /reassign</span>
+                    <span class="role-badge badge-judge">⚖️ Judge &amp; Staff</span>
+                </div>
+                <button class="copy-cmd-btn" data-clipboard="/available_events" title="Copy command syntax">
+                    <span>📋</span> Copy
+                </button>
+            </div>
+            <p class="cmd-desc">
+                <code>/available_events</code> lists upcoming fixtures that currently need a Judge or Recorder. <code>/reassign</code> allows an assigned judge to step down and trigger a backup referee ping.
+            </p>
+            <div class="cmd-example-box">
+                <code>/available_events</code> &bull; <code>/reassign reason:"Emergency"</code>
+            </div>
+        </div>
+
+        <!-- /add-record-link -->
+        <div class="command-card" data-category="judge">
+            <div class="command-card-header">
+                <div class="cmd-title-group">
+                    <span class="cmd-name">/add-record-link</span>
+                    <span class="role-badge badge-judge">⚖️ Judge &amp; Staff</span>
+                </div>
+                <button class="copy-cmd-btn" data-clipboard="/add-record-link" title="Copy command syntax">
+                    <span>📋</span> Copy
+                </button>
+            </div>
+            <p class="cmd-desc">
+                Attaches a YouTube, Twitch, or Kick stream recording VOD link to an officiated match record for archival and highlight reels.
+            </p>
+            <div class="cmd-example-box">
+                <code>/add-record-link link:https://youtube.com/watch?v=...</code>
+            </div>
+        </div>
+
+
+        <!-- =====================================================================
+             CATEGORY: PLAYER & TEAM COMMANDS
+             ===================================================================== -->
+
+        <!-- /player_information -->
+        <div class="command-card" data-category="player">
+            <div class="command-card-header">
+                <div class="cmd-title-group">
+                    <span class="cmd-name">/player_information</span>
+                    <span class="role-badge badge-player">👥 @everyone</span>
+                </div>
+                <button class="copy-cmd-btn" data-clipboard="/player_information" title="Copy command syntax">
+                    <span>📋</span> Copy
+                </button>
+            </div>
+            <p class="cmd-desc">
+                Searches the server's configured Google Sheet for a captain or team name, displaying the full squad roster, player in-game names (IGNs), game IDs, and Discord mentions.
+            </p>
+            <div class="cmd-params-section">
+                <div class="cmd-params-title">Parameters:</div>
+                <div class="cmd-param-row">
+                    <span class="param-name">player_or_team</span>
+                    <span class="param-type">String (Required)</span>
+                    <span class="param-desc">Team name, Captain IGN, or Discord mention</span>
+                </div>
+            </div>
+            <div class="cmd-example-box">
+                <code>/player_information player_or_team:"Team Nemesis"</code>
+            </div>
+        </div>
+
+        <!-- /id-card -->
+        <div class="command-card" data-category="player">
+            <div class="command-card-header">
+                <div class="cmd-title-group">
+                    <span class="cmd-name">/id-card</span>
+                    <span class="role-badge badge-player">👥 @everyone</span>
+                </div>
+                <button class="copy-cmd-btn" data-clipboard="/id-card" title="Copy command syntax">
+                    <span>📋</span> Copy
+                </button>
+            </div>
+            <p class="cmd-desc">
+                Generates a stylized, high-resolution esports clan/player ID graphic card featuring your tournament statistics, IGN, team badge, and server credentials.
+            </p>
+            <div class="cmd-example-box">
+                <code>/id-card player:@Self</code>
+            </div>
+        </div>
+
+        <!-- /maps & /coinflip -->
+        <div class="command-card" data-category="player">
+            <div class="command-card-header">
+                <div class="cmd-title-group">
+                    <span class="cmd-name">/maps | /coinflip | /choose</span>
+                    <span class="role-badge badge-player">👥 @everyone</span>
+                </div>
+                <button class="copy-cmd-btn" data-clipboard="/maps" title="Copy command syntax">
+                    <span>📋</span> Copy
+                </button>
+            </div>
+            <p class="cmd-desc">
+                Fair, verifiable RNG tools for competitive vetoes: <code>/maps</code> rolls 3, 5, or 7 maps from the pool; <code>/coinflip</code> decides attack/defense or pick/ban priority.
+            </p>
+            <div class="cmd-example-box">
+                <code>/maps count:5</code> &bull; <code>/coinflip</code> &bull; <code>/choose options:"Ascent, Haven, Bind"</code>
+            </div>
+        </div>
+
+        <!-- /bracket & /tournaments -->
+        <div class="command-card" data-category="player">
+            <div class="command-card-header">
+                <div class="cmd-title-group">
+                    <span class="cmd-name">/bracket | /tournaments | /rules</span>
+                    <span class="role-badge badge-player">👥 @everyone</span>
+                </div>
+                <button class="copy-cmd-btn" data-clipboard="/bracket" title="Copy command syntax">
+                    <span>📋</span> Copy
+                </button>
+            </div>
+            <p class="cmd-desc">
+                Quick public access commands to view live Challonge bracket trees, upcoming tournament schedules, prize pool details, and server rulebooks.
+            </p>
+            <div class="cmd-example-box">
+                <code>/bracket</code> &bull; <code>/tournaments</code> &bull; <code>/rules</code>
+            </div>
+        </div>
+
+        <!-- /staff-leaderboard -->
+        <div class="command-card" data-category="player">
+            <div class="command-card-header">
+                <div class="cmd-title-group">
+                    <span class="cmd-name">/staff-leaderboard | /info | /help</span>
+                    <span class="role-badge badge-player">👥 @everyone</span>
+                </div>
+                <button class="copy-cmd-btn" data-clipboard="/staff-leaderboard" title="Copy command syntax">
+                    <span>📋</span> Copy
+                </button>
+            </div>
+            <p class="cmd-desc">
+                Displays the Hall of Fame leaderboard ranking active match Judges &amp; Recorders by matches officiated, plus bot uptime and latency stats.
+            </p>
+            <div class="cmd-example-box">
+                <code>/staff-leaderboard</code> &bull; <code>/info</code>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Empty State for Search Filter -->
+    <div id="cmdNoResults" style="display: none; background: var(--bg-card); padding: 3rem; text-align: center; border-radius: var(--radius-md); border: 1px dashed var(--border-color); margin-top: 2rem;">
+        <div style="font-size: 2.5rem; margin-bottom: 0.8rem;">🔍</div>
+        <h3 style="font-family: var(--font-heading); margin-bottom: 0.5rem;">No commands match your query</h3>
+        <p style="color: var(--text-secondary); font-size: 0.9rem;">Try searching for another term like <code>settings</code>, <code>bracket</code>, <code>upload-score</code>, or reset the filter.</p>
+        <button class="btn btn-secondary btn-sm" onclick="document.getElementById('cmdSearchInput').value=''; document.querySelector('[data-category=all]').click();" style="margin-top: 1rem;">
+            Reset Search
+        </button>
+    </div>
+</div>
+
+<!-- Toast Notification -->
+<div id="copyToast" class="toast" style="display: none;">
+    <span>✅</span> Copied command syntax to clipboard!
+</div>
+{% endblock %}
+
+{% block scripts_extra %}
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+    const searchInput = document.getElementById("cmdSearchInput");
+    const clearBtn = document.getElementById("cmdClearSearch");
+    const filterPills = document.querySelectorAll(".cmd-filter-pill");
+    const commandCards = document.querySelectorAll(".command-card");
+    const noResults = document.getElementById("cmdNoResults");
+    const workflowBox = document.getElementById("workflow-guide-box");
+    const copyToast = document.getElementById("copyToast");
+
+    let currentCategory = "all";
+
+    // Update Counts
+    const updateCounts = () => {
+        const counts = { all: commandCards.length, admin: 0, organizer: 0, judge: 0, player: 0 };
+        commandCards.forEach(card => {
+            const cat = card.getAttribute("data-category");
+            if (counts[cat] !== undefined) counts[cat]++;
+        });
+        if (document.getElementById("countAll")) document.getElementById("countAll").textContent = counts.all;
+        if (document.getElementById("countAdmin")) document.getElementById("countAdmin").textContent = counts.admin;
+        if (document.getElementById("countOrg")) document.getElementById("countOrg").textContent = counts.organizer;
+        if (document.getElementById("countJudge")) document.getElementById("countJudge").textContent = counts.judge;
+        if (document.getElementById("countPlayer")) document.getElementById("countPlayer").textContent = counts.player;
+    };
+    updateCounts();
+
+    // Filter Logic
+    function applyFilters() {
+        const query = searchInput.value.toLowerCase().trim();
+        let visibleCount = 0;
+
+        if (query) {
+            clearBtn.style.display = "block";
+        } else {
+            clearBtn.style.display = "none";
+        }
+
+        if (currentCategory === "workflow") {
+            workflowBox.style.display = "block";
+            commandCards.forEach(c => c.style.display = "none");
+            noResults.style.display = "none";
+            return;
+        } else {
+            workflowBox.style.display = "none";
+        }
+
+        commandCards.forEach(card => {
+            const cat = card.getAttribute("data-category");
+            const text = card.textContent.toLowerCase();
+            const matchesCategory = (currentCategory === "all" || cat === currentCategory);
+            const matchesQuery = !query || text.includes(query);
+
+            if (matchesCategory && matchesQuery) {
+                card.style.display = "flex";
+                visibleCount++;
+            } else {
+                card.style.display = "none";
+            }
+        });
+
+        noResults.style.display = (visibleCount === 0) ? "block" : "none";
+    }
+
+    // Category Tabs Click
+    filterPills.forEach(pill => {
+        pill.addEventListener("click", () => {
+            filterPills.forEach(p => p.classList.remove("active"));
+            pill.classList.add("active");
+            currentCategory = pill.getAttribute("data-category");
+            applyFilters();
+        });
+    });
+
+    // Search Input
+    searchInput.addEventListener("input", applyFilters);
+    clearBtn.addEventListener("click", () => {
+        searchInput.value = "";
+        applyFilters();
+        searchInput.focus();
+    });
+
+    // Copy to Clipboard
+    document.querySelectorAll(".copy-cmd-btn").forEach(btn => {
+        btn.addEventListener("click", () => {
+            const textToCopy = btn.getAttribute("data-clipboard");
+            if (!textToCopy) return;
+
+            navigator.clipboard.writeText(textToCopy).then(() => {
+                showToast(`Copied "${textToCopy}" to clipboard!`);
+            }).catch(() => {
+                // Fallback
+                const temp = document.createElement("textarea");
+                temp.value = textToCopy;
+                document.body.appendChild(temp);
+                temp.select();
+                document.execCommand("copy");
+                document.body.removeChild(temp);
+                showToast(`Copied "${textToCopy}" to clipboard!`);
+            });
+        });
+    });
+
+    function showToast(msg) {
+        if (!copyToast) return;
+        copyToast.innerHTML = `<span>✅</span> ${msg}`;
+        copyToast.style.display = "flex";
+        copyToast.style.opacity = "1";
+        setTimeout(() => {
+            copyToast.style.opacity = "0";
+            setTimeout(() => { copyToast.style.display = "none"; }, 300);
+        }, 2200);
+    }
+});
+</script>
+{% endblock %}
