@@ -5,7 +5,7 @@ import os
 import random
 from dotenv import load_dotenv
 from itertools import combinations
-from typing import Optional
+from typing import Optional, Union, Any
 import re
 import datetime
 import asyncio
@@ -1497,7 +1497,7 @@ def _sync_save_guild_config_to_supabase(guild_id: int, cfg: dict):
     if not supabase_client:
         return False
     
-    # Modern full schema
+    # Modern full schema matching Supabase GuildConfig columns
     row = {
         "Guild_ID": str(guild_id),
         "Admin_Role_ID": str(cfg.get('role_ids', {}).get('head_organizer') or ""),
@@ -1510,27 +1510,8 @@ def _sync_save_guild_config_to_supabase(guild_id: int, cfg: dict):
         
         "Organization_Name": str(cfg.get('organization_name', '')),
         "Tournament_System_Name": str(cfg.get('tournament_system_name', '')),
-        "organization_name": str(cfg.get('organization_name', '')),
-        "tournament_system_name": str(cfg.get('tournament_system_name', '')),
-        "server_logo_path": str(cfg.get('server_logo_path', '')),
-        "server_logo_url": str(cfg.get('server_logo_url', '')),
-        "google_sheet_link": str(cfg.get('google_sheet_link', '')),
-        "player_info_link": str(cfg.get('player_info_link', '')),
-        "player_info_format": str(cfg.get('player_info_format', '')),
-        "Updated_At": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    }
-
-    # Clean legacy fallback
-    legacy_row = {
-        "Guild_ID": str(guild_id),
-        "Admin_Role_ID": str(cfg.get('role_ids', {}).get('head_organizer') or ""),
-        "Organizer_Role_ID": str(cfg.get('role_ids', {}).get('organizer') or ""),
-        "Helper_Role_ID": str(cfg.get('role_ids', {}).get('helper_team') or ""),
-        "Judge_Role_ID": str(cfg.get('role_ids', {}).get('judge') or ""),
-        "Recorder_Role_ID": str(cfg.get('role_ids', {}).get('recorder') or ""),
-        "Staff_Role_ID": str(cfg.get('role_ids', {}).get('staff') or ""),
-        "Players_Role_ID": str(cfg.get('role_ids', {}).get('players') or ""),
-        "server_logo_path": str(cfg.get('server_logo_path', '')),
+        "server_logo_path": str(cfg.get('server_logo_path', '') or ''),
+        "server_logo_url": str(cfg.get('server_logo_url', '') or ''),
         "Updated_At": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     }
 
@@ -1539,13 +1520,27 @@ def _sync_save_guild_config_to_supabase(guild_id: int, cfg: dict):
         print(f"[Supabase] ✅ GuildConfig updated/created for guild {guild_id}")
         return True
     except Exception as e:
-        print(f"[Supabase] ⚠️ Failed saving with full GuildConfig schema, trying legacy fallback: {e}")
+        print(f"[Supabase] ⚠️ Failed saving with full GuildConfig schema, trying safe fallback: {e}")
+        safe_row = {
+            "Guild_ID": str(guild_id),
+            "Admin_Role_ID": str(cfg.get('role_ids', {}).get('head_organizer') or ""),
+            "Organizer_Role_ID": str(cfg.get('role_ids', {}).get('organizer') or ""),
+            "Helper_Role_ID": str(cfg.get('role_ids', {}).get('helper_team') or ""),
+            "Judge_Role_ID": str(cfg.get('role_ids', {}).get('judge') or ""),
+            "Recorder_Role_ID": str(cfg.get('role_ids', {}).get('recorder') or ""),
+            "Staff_Role_ID": str(cfg.get('role_ids', {}).get('staff') or ""),
+            "Players_Role_ID": str(cfg.get('role_ids', {}).get('players') or ""),
+            "Organization_Name": str(cfg.get('organization_name', '')),
+            "Tournament_System_Name": str(cfg.get('tournament_system_name', '')),
+            "server_logo_path": str(cfg.get('server_logo_path', '') or ''),
+            "Updated_At": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        }
         try:
-            supabase_client.table("GuildConfig").upsert(legacy_row).execute()
-            print("[Supabase] ✅ GuildConfig saved using legacy fallback columns.")
+            supabase_client.table("GuildConfig").upsert(safe_row).execute()
+            print("[Supabase] ✅ GuildConfig saved using safe fallback columns.")
             return True
         except Exception as fallback_err:
-            print(f"[Supabase] ❌ Error saving config using legacy fallback: {fallback_err}")
+            print(f"[Supabase] ❌ Error saving config using safe fallback: {fallback_err}")
             return False
 
 async def save_guild_config_to_supabase(guild_id: int, cfg: dict):
@@ -2118,6 +2113,60 @@ def has_organizer_permission(interaction):
     head_organizer_role = discord.utils.get(interaction.user.roles, id=role_id)
     return head_organizer_role is not None
 
+def is_authorized_to_configure(interaction: discord.Interaction) -> bool:
+    """Check if the user is authorized to configure tournament / bot settings."""
+    if interaction.user.id == BOT_OWNER_ID:
+        return True
+    if not interaction.guild:
+        return False
+    if interaction.user.guild_permissions.administrator:
+        return True
+    
+    cfg = get_guild_config(interaction.guild.id)
+    role_ids = cfg.get("role_ids", {})
+    head_org_id = role_ids.get("head_organizer")
+    if head_org_id:
+        member_role_ids = [role.id for role in interaction.user.roles]
+        try:
+            if int(head_org_id) in member_role_ids or str(head_org_id) in [str(r) for r in member_role_ids]:
+                return True
+        except (ValueError, TypeError):
+            if str(head_org_id) in [str(r) for r in member_role_ids]:
+                return True
+            
+    return False
+
+def is_staff(member: Union[discord.Member, discord.User], guild: Optional[discord.Guild] = None) -> bool:
+    """Check if a member has any staff role or administrative privileges."""
+    if not member:
+        return False
+    if member.id == BOT_OWNER_ID:
+        return True
+    if isinstance(member, discord.Member):
+        if member.guild_permissions.administrator or member.guild_permissions.manage_guild:
+            return True
+        if not guild:
+            guild = member.guild
+    if not guild:
+        return False
+        
+    cfg = get_guild_config(guild.id)
+    role_ids = cfg.get("role_ids", DEFAULT_ROLE_IDS)
+    
+    staff_keys = ["head_organizer", "organizer", "helper_team", "judge", "recorder", "staff"]
+    member_role_ids = [r.id for r in member.roles] if isinstance(member, discord.Member) else []
+    
+    for key in staff_keys:
+        val = role_ids.get(key)
+        if val is not None:
+            try:
+                if int(val) in member_role_ids:
+                    return True
+            except (ValueError, TypeError):
+                if str(val) in [str(r) for r in member_role_ids]:
+                    return True
+    return False
+
 # Embed field utility functions for safe Discord.py embed manipulation
 def find_field_index(embed: discord.Embed, field_name: str) -> int:
     """Find the index of a field by name. Returns -1 if not found."""
@@ -2338,7 +2387,7 @@ class StaffConfirmationView(discord.ui.View):
             is_confirmed = ev.get('recorder_confirmed', False)
             
             if is_confirmed:
-                btn_label = "🎥 Present"
+                btn_label = "🎥 Confirmed"
                 btn_style = discord.ButtonStyle.blurple
                 btn_disabled = True
             elif is_too_late:
@@ -6149,15 +6198,20 @@ async def event_result(
         "Disqualified":   dq_status or "None"
     }))
 
-    # Send confirmation to user
-    await interaction.followup.send("✅ Event results posted to Results channel, current channel, and Staff Attendance logged!", ephemeral=False)
-    
     # Post in Results channel with screenshots as attachments
     results_posted = False
     results_msg = None
     current_msg = None
+    attendance_posted = False
+
+    t_cfg_found = find_tournament_config(interaction.guild_id, tournament) if interaction.guild else None
+
     try:
         results_channel = get_tournament_results_channel(interaction.guild, tournament)
+        if not results_channel and t_cfg_found:
+            res_cid = t_cfg_found.get('result') or t_cfg_found.get('result_channel') or t_cfg_found.get('Result_Channel_ID')
+            results_channel = await fetch_discord_channel_safe(interaction.guild, res_cid)
+            
         if results_channel:
             if raw_screenshots:
                 results_files = [discord.File(fp=io.BytesIO(b), filename=fn) for fn, b in raw_screenshots]
@@ -6166,14 +6220,14 @@ async def event_result(
                 results_msg = await results_channel.send(embed=embed)
             results_posted = True
         else:
-            await interaction.followup.send("⚠️ Could not find Results channel.", ephemeral=False)
+            print(f"⚠️ [Result Post] Could not find Results channel for tournament '{tournament}'")
     except Exception as e:
-        await interaction.followup.send(f"⚠️ Could not post in Results channel: {e}", ephemeral=False)
+        print(f"⚠️ [Result Post] Could not post in Results channel: {e}")
     
     # Post in current channel (where command was executed)
     try:
         current_channel = interaction.channel
-        res_ch_id_val = results_channel.id if results_channel else CHANNEL_IDS["results"]
+        res_ch_id_val = results_channel.id if results_channel else CHANNEL_IDS.get("results")
         if current_channel and current_channel.id != res_ch_id_val and current_channel.id != CHANNEL_IDS.get("take_schedule"):
             if raw_screenshots:
                 current_files = [discord.File(fp=io.BytesIO(b), filename=fn) for fn, b in raw_screenshots]
@@ -6186,12 +6240,16 @@ async def event_result(
                 results_msg = await current_channel.send(embed=embed, files=fallback_files)
             else:
                 results_msg = await current_channel.send(embed=embed)
+            results_posted = True
     except Exception as e:
-        await interaction.followup.send(f"⚠️ Could not post in current channel: {e}", ephemeral=False)
+        print(f"⚠️ [Result Post] Could not post in current channel: {e}")
 
     # Post staff attendance in Staff Attendance channel
     try:
         staff_attendance_channel = get_tournament_attendance_channel(interaction.guild, tournament)
+        if not staff_attendance_channel and t_cfg_found:
+            att_cid = t_cfg_found.get('attendance') or t_cfg_found.get('attendance_channel') or t_cfg_found.get('Attendance_Channel_ID')
+            staff_attendance_channel = await fetch_discord_channel_safe(interaction.guild, att_cid)
 
         if staff_attendance_channel:
             att_embed = discord.Embed(
@@ -6229,10 +6287,33 @@ async def event_result(
             att_embed.add_field(name="📝 Remarks", value=remarks, inline=False)
             att_embed.set_footer(text=f"{ORGANIZATION_NAME} • Attendance")
             await staff_attendance_channel.send(embed=att_embed)
+            attendance_posted = True
         else:
-            print("⚠️ Could not find Staff Attendance channel.")
+            print(f"⚠️ [Result Post] Could not find Staff Attendance channel for tournament '{tournament}'")
     except Exception as e:
-        print(f"⚠️ Could not post in Staff Attendance channel: {e}")
+        print(f"⚠️ [Result Post] Could not post in Staff Attendance channel: {e}")
+
+    # Build clear status response
+    status_parts = []
+    if results_posted and results_channel:
+        status_parts.append(f"• 🏆 **Results:** Posted to {results_channel.mention}")
+    elif results_posted:
+        status_parts.append(f"• 🏆 **Results:** Posted to {interaction.channel.mention}")
+    else:
+        status_parts.append("• ⚠️ **Results:** Could not find Results channel")
+
+    if current_msg:
+        status_parts.append(f"• ⚔️ **Match Channel:** Posted to {interaction.channel.mention}")
+
+    if attendance_posted and staff_attendance_channel:
+        status_parts.append(f"• 📋 **Attendance:** Logged in {staff_attendance_channel.mention}")
+    else:
+        status_parts.append("• ⚠️ **Attendance:** Could not find Attendance channel")
+
+    await interaction.followup.send(
+        "✅ **Event results processed:**\n" + "\n".join(status_parts),
+        ephemeral=False
+    )
 
     # ── CRUD Log: event_result ──
     try:
@@ -9936,6 +10017,224 @@ async def player_information(interaction: discord.Interaction, user: discord.Mem
         print(f"[player_information] Error: {e}")
 
 
+@tree.command(name="player_edit", description="Edit a player's or team's name/details in the posted participant list and database")
+@app_commands.describe(
+    user="The player or captain whose participant entry to edit",
+    field="The field to update",
+    new_value="The new corrected value",
+    channel="The participant channel where info was posted (optional, defaults to configured channel)"
+)
+@app_commands.choices(
+    field=[
+        app_commands.Choice(name="🎮 Game Name / IGN", value="game_name"),
+        app_commands.Choice(name="🆔 Game ID / UID", value="game_id"),
+        app_commands.Choice(name="👑 Team Name", value="team_name"),
+        app_commands.Choice(name="🎖️ Title / Rank", value="title"),
+        app_commands.Choice(name="👤 Discord Mention / ID", value="discord_id")
+    ]
+)
+@with_guild_context
+async def player_edit(
+    interaction: discord.Interaction,
+    user: discord.Member,
+    field: app_commands.Choice[str],
+    new_value: str,
+    channel: Optional[discord.TextChannel] = None
+):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=False)
+        return
+
+    if not is_authorized_to_configure(interaction) and not is_staff(interaction.user):
+        await interaction.response.send_message("❌ You do not have permission to edit player details.", ephemeral=False)
+        return
+
+    await interaction.response.defer(ephemeral=False)
+
+    # 1. Resolve participant channel
+    target_channel = channel
+    if not target_channel:
+        cfg = get_guild_config(interaction.guild.id)
+        p_chan_id = cfg.get('player_info_participant_channel_id')
+        if p_chan_id:
+            target_channel = await fetch_discord_channel_safe(interaction.guild, p_chan_id)
+    if not target_channel:
+        t_cfg = get_active_tournament_config(interaction.guild.id)
+        if t_cfg:
+            p_chan_id = t_cfg.get('participant') or t_cfg.get('Participant_Channel_ID')
+            if p_chan_id:
+                target_channel = await fetch_discord_channel_safe(interaction.guild, p_chan_id)
+    if not target_channel:
+        target_channel = interaction.channel
+
+    # 2. Search target channel for player's embed
+    found_msg = None
+    target_embed = None
+    u_id_str = str(user.id)
+    u_name_lower = user.name.lower()
+    u_display_lower = user.display_name.lower()
+
+    try:
+        if target_channel and hasattr(target_channel, "history"):
+            async for msg in target_channel.history(limit=150):
+                if msg.author.id == bot.user.id and msg.embeds:
+                    for emb in msg.embeds:
+                        emb_str = (emb.description or "") + " " + (emb.title or "")
+                        for f in emb.fields:
+                            emb_str += " " + f.name + " " + f.value
+                        if u_id_str in emb_str or f"<@{user.id}>" in emb_str or u_name_lower in emb_str.lower() or u_display_lower in emb_str.lower():
+                            found_msg = msg
+                            target_embed = emb
+                            break
+                    if found_msg:
+                        break
+    except Exception as e:
+        print(f"Error searching participant messages: {e}")
+
+    old_val_display = "—"
+    updated_embed = False
+
+    if found_msg and target_embed:
+        new_embed = target_embed.copy()
+        
+        # Modify based on field choice
+        field_type = field.value
+        clean_val = new_value.strip()
+
+        if field_type == "team_name":
+            # Check description or fields
+            if new_embed.description and "**Team Name:**" in new_embed.description:
+                old_matches = re.findall(r'\*\*Team Name:\*\*\s*`?([^`\n]+)`?', new_embed.description)
+                old_val_display = old_matches[0] if old_matches else "—"
+                new_embed.description = re.sub(
+                    r'(\*\*Team Name:\*\*\s*)`?[^`\n]+`?',
+                    f"\\1`{clean_val}`",
+                    new_embed.description
+                )
+                updated_embed = True
+            for idx, f in enumerate(new_embed.fields):
+                if "team" in f.name.lower() or "team name" in f.value.lower():
+                    old_val_display = f.value
+                    new_embed.set_field_at(idx, name=f.name, value=re.sub(r'(\*\*Team Name:\*\*\s*)`?[^`\n]+`?', f"\\1`{clean_val}`", f.value), inline=f.inline)
+                    updated_embed = True
+
+        elif field_type == "game_name":
+            # Search fields for Game Name / IGN
+            for idx, f in enumerate(new_embed.fields):
+                if "game name" in f.value.lower() or "ign" in f.value.lower() or "game name" in f.name.lower():
+                    old_m = re.findall(r'(\*\*Game Name:\*\*\s*)`?([^`\n]+)`?', f.value, flags=re.IGNORECASE)
+                    if old_m:
+                        old_val_display = old_m[0][1]
+                    new_val_str = re.sub(
+                        r'(\*\*Game Name:\*\*\s*)`?[^`\n]+`?',
+                        f"\\1`{clean_val}`",
+                        f.value,
+                        flags=re.IGNORECASE
+                    )
+                    new_embed.set_field_at(idx, name=f.name, value=new_val_str, inline=f.inline)
+                    updated_embed = True
+                    break
+
+        elif field_type == "game_id":
+            for idx, f in enumerate(new_embed.fields):
+                if "game id" in f.value.lower() or "uid" in f.value.lower():
+                    old_m = re.findall(r'(\*\*Game ID:\*\*\s*)`?([^`\n]+)`?', f.value, flags=re.IGNORECASE)
+                    if old_m:
+                        old_val_display = old_m[0][1]
+                    new_val_str = re.sub(
+                        r'(\*\*Game ID:\*\*\s*)`?[^`\n]+`?',
+                        f"\\1`{clean_val}`",
+                        f.value,
+                        flags=re.IGNORECASE
+                    )
+                    new_embed.set_field_at(idx, name=f.name, value=new_val_str, inline=f.inline)
+                    updated_embed = True
+                    break
+
+        elif field_type == "title":
+            for idx, f in enumerate(new_embed.fields):
+                if "title" in f.value.lower() or "rank" in f.value.lower():
+                    old_m = re.findall(r'(\*\*Title:\*\*\s*)`?([^`\n]+)`?', f.value, flags=re.IGNORECASE)
+                    if old_m:
+                        old_val_display = old_m[0][1]
+                    new_val_str = re.sub(
+                        r'(\*\*Title:\*\*\s*)`?[^`\n]+`?',
+                        f"\\1`{clean_val}`",
+                        f.value,
+                        flags=re.IGNORECASE
+                    )
+                    new_embed.set_field_at(idx, name=f.name, value=new_val_str, inline=f.inline)
+                    updated_embed = True
+                    break
+
+        elif field_type == "discord_id":
+            mention_clean = clean_val if clean_val.startswith("<@") else f"<@{re.sub(r'[^0-9]', '', clean_val)}>"
+            for idx, f in enumerate(new_embed.fields):
+                if "discord id" in f.value.lower() or "discord id" in f.name.lower():
+                    old_val_display = f.value
+                    new_val_str = re.sub(
+                        r'(\*\*Discord ID:\*\*\s*)[^\n]+',
+                        f"\\1{mention_clean}",
+                        f.value,
+                        flags=re.IGNORECASE
+                    )
+                    new_embed.set_field_at(idx, name=f.name, value=new_val_str, inline=f.inline)
+                    updated_embed = True
+                    break
+
+        if updated_embed:
+            try:
+                await found_msg.edit(embed=new_embed)
+            except Exception as e:
+                print(f"Failed to edit participant message: {e}")
+
+    # 3. If Supabase is connected, update Players / Teams table
+    if supabase_client:
+        try:
+            if field.value == "game_name":
+                await asyncio.to_thread(
+                    lambda: supabase_client.table("Players").update({"IGN": new_value.strip()}).eq("Discord_ID", str(user.id)).execute()
+                )
+            elif field.value == "game_id":
+                await asyncio.to_thread(
+                    lambda: supabase_client.table("Players").update({"Game_ID": new_value.strip()}).eq("Discord_ID", str(user.id)).execute()
+                )
+            elif field.value == "title":
+                await asyncio.to_thread(
+                    lambda: supabase_client.table("Players").update({"Title": new_value.strip()}).eq("Discord_ID", str(user.id)).execute()
+                )
+            elif field.value == "team_name":
+                await asyncio.to_thread(
+                    lambda: supabase_client.table("Teams").update({"Team_Name": new_value.strip()}).eq("Captain_ID", str(user.id)).execute()
+                )
+        except Exception as e:
+            print(f"[Supabase] Player edit sync note: {e}")
+
+    # 4. Confirmation embed
+    reply_embed = discord.Embed(
+        title="✏️ Player Information Updated",
+        color=discord.Color.green(),
+        timestamp=discord.utils.utcnow()
+    )
+    reply_embed.add_field(name="👤 Player / Captain", value=user.mention, inline=True)
+    reply_embed.add_field(name="📝 Field Changed", value=field.name, inline=True)
+    reply_embed.add_field(name="🔄 Value", value=f"`{old_val_display}` ➔ `{new_value.strip()}`", inline=False)
+    if found_msg and target_channel:
+        reply_embed.add_field(
+            name="📍 Participant List",
+            value=f"[Jump to Updated Entry in {target_channel.mention}]({found_msg.jump_url})",
+            inline=False
+        )
+    elif target_channel:
+        reply_embed.add_field(
+            name="ℹ️ Note",
+            value=f"Database updated. (No existing participant message found in {target_channel.mention})",
+            inline=False
+        )
+    reply_embed.set_footer(text=f"Updated by {interaction.user.display_name}")
+    await interaction.followup.send(embed=reply_embed, ephemeral=False)
+
+
 
 
 
@@ -9950,23 +10249,6 @@ def mask_api_key(key: str) -> str:
         return "****"
     return "*" * (len(key) - 4) + key[-4:]
 
-def is_authorized_to_configure(interaction: discord.Interaction) -> bool:
-    if interaction.user.id == BOT_OWNER_ID:
-        return True
-    if not interaction.guild:
-        return False
-    if interaction.user.guild_permissions.administrator:
-        return True
-    
-    cfg = get_guild_config(interaction.guild.id)
-    role_ids = cfg.get("role_ids", {})
-    head_org_id = role_ids.get("head_organizer")
-    if head_org_id:
-        member_role_ids = [role.id for role in interaction.user.roles]
-        if head_org_id in member_role_ids:
-            return True
-            
-    return False
 
 class OwnerConfirmationView(discord.ui.View):
     def __init__(self, callback_coro, action_description: str, requester: discord.Member):
@@ -10503,10 +10785,94 @@ def save_guild_tournaments(guild_id: int, tournaments: dict):
     except RuntimeError:
         pass
 
+def find_tournament_config(guild_id: int, tournament_query: Optional[str] = None) -> Optional[dict]:
+    """Finds tournament configuration with fuzzy, case-insensitive, and punctuation-normalized matching."""
+    if not guild_id:
+        return None
+    tournaments = load_guild_tournaments(guild_id)
+    if not tournaments:
+        return None
+
+    if tournament_query:
+        query_raw = str(tournament_query).strip()
+        query_lower = query_raw.lower()
+        query_slug = re.sub(r'[^a-z0-9]', '', query_lower)
+
+        # 1. Exact ID match (case-sensitive and lowercase)
+        if query_raw in tournaments:
+            return tournaments[query_raw]
+        if query_lower in tournaments:
+            return tournaments[query_lower]
+
+        # 2. Match Tournament Name or ID (case-insensitive)
+        for tid, cfg in tournaments.items():
+            t_name = str(cfg.get('name') or cfg.get('Tournament_Name') or '').strip().lower()
+            if str(tid).lower() == query_lower or t_name == query_lower:
+                return cfg
+
+        # 3. Match normalized alphanumeric slug (e.g. "frigate s 1" matches "Frigate S1" or "fr1")
+        if query_slug:
+            for tid, cfg in tournaments.items():
+                tid_slug = re.sub(r'[^a-z0-9]', '', str(tid).lower())
+                t_name_slug = re.sub(r'[^a-z0-9]', '', str(cfg.get('name') or cfg.get('Tournament_Name') or '').lower())
+                if query_slug == tid_slug or query_slug == t_name_slug:
+                    return cfg
+
+        # 4. Partial / Substring match
+        for tid, cfg in tournaments.items():
+            t_name = str(cfg.get('name') or cfg.get('Tournament_Name') or '').strip().lower()
+            if (query_lower and query_lower in str(tid).lower()) or (query_lower and query_lower in t_name) or (t_name and t_name in query_lower):
+                return cfg
+
+    # 5. Check active tournament
+    active_cfg = get_active_tournament_config(guild_id)
+    if active_cfg:
+        return active_cfg
+
+    # 6. If only 1 tournament is configured in the server, fallback to it
+    if len(tournaments) == 1:
+        return next(iter(tournaments.values()))
+
+    return None
+
+def resolve_discord_channel(guild: discord.Guild, channel_id_val: Optional[Any]) -> Optional[discord.TextChannel]:
+    """Helper to resolve a Discord channel from guild or bot cache safely."""
+    if not guild or not channel_id_val:
+        return None
+    try:
+        cid = int(channel_id_val)
+        ch = guild.get_channel(cid) or bot.get_channel(cid)
+        if ch and hasattr(ch, "send"):
+            return ch
+    except Exception:
+        pass
+    return None
+
+async def fetch_discord_channel_safe(guild: discord.Guild, channel_id_val: Optional[Any]) -> Optional[discord.TextChannel]:
+    """Helper to resolve a Discord channel including async fetch fallback."""
+    if not guild or not channel_id_val:
+        return None
+    ch = resolve_discord_channel(guild, channel_id_val)
+    if ch:
+        return ch
+    try:
+        cid = int(channel_id_val)
+        ch = await guild.fetch_channel(cid)
+        if ch and hasattr(ch, "send"):
+            return ch
+    except Exception:
+        try:
+            ch = await bot.fetch_channel(cid)
+            if ch and hasattr(ch, "send"):
+                return ch
+        except Exception:
+            pass
+    return None
+
 def get_active_tournament_config(guild_id: int) -> Optional[dict]:
     tournaments = load_guild_tournaments(guild_id)
     for t_id, t_cfg in tournaments.items():
-        if t_cfg.get('state') == 'active':
+        if str(t_cfg.get('state', '')).lower() in ('active', 'underway'):
             return t_cfg
     return None
 
@@ -10515,45 +10881,19 @@ def get_tournament_schedule_channel(guild: discord.Guild, tournament_name_or_id:
     if not guild:
         return None
         
-    tournaments = load_guild_tournaments(guild.id)
-    t_cfg = None
-    
-    if tournament_name_or_id:
-        t_clean = str(tournament_name_or_id).strip().lower()
-        if t_clean in tournaments:
-            t_cfg = tournaments[t_clean]
-        else:
-            for tid, cfg in tournaments.items():
-                if cfg.get('name', '').lower() == t_clean:
-                    t_cfg = cfg
-                    break
-
-    if not t_cfg:
-        t_cfg = get_active_tournament_config(guild.id)
+    t_cfg = find_tournament_config(guild.id, tournament_name_or_id)
 
     # 1. Check tournament config for schedule channel ID
     if t_cfg:
-        ch_id = t_cfg.get('schedule') or t_cfg.get('schedule_channel') or t_cfg.get('schedule_channel_id')
-        if ch_id:
-            try:
-                ch = guild.get_channel(int(ch_id))
-                if ch:
-                    return ch
-            except Exception:
-                pass
+        ch_id = t_cfg.get('schedule') or t_cfg.get('schedule_channel') or t_cfg.get('schedule_channel_id') or t_cfg.get('Schedule_Channel_ID')
+        ch = resolve_discord_channel(guild, ch_id)
+        if ch:
+            return ch
 
     # 2. Check global guild config (role/channel mapping)
     cfg = get_guild_config(guild.id)
     g_sched_id = cfg.get('channel_ids', {}).get('take_schedule') or CHANNEL_IDS.get("take_schedule")
-    if g_sched_id:
-        try:
-            ch = guild.get_channel(int(g_sched_id))
-            if ch:
-                return ch
-        except Exception:
-            pass
-
-    return None
+    return resolve_discord_channel(guild, g_sched_id)
 
 
 def get_tournament_results_channel(guild: discord.Guild, tournament_name_or_id: str = None) -> Optional[discord.TextChannel]:
@@ -10561,45 +10901,19 @@ def get_tournament_results_channel(guild: discord.Guild, tournament_name_or_id: 
     if not guild:
         return None
         
-    tournaments = load_guild_tournaments(guild.id)
-    t_cfg = None
-    
-    if tournament_name_or_id:
-        t_clean = str(tournament_name_or_id).strip().lower()
-        if t_clean in tournaments:
-            t_cfg = tournaments[t_clean]
-        else:
-            for tid, cfg in tournaments.items():
-                if cfg.get('name', '').lower() == t_clean:
-                    t_cfg = cfg
-                    break
-
-    if not t_cfg:
-        t_cfg = get_active_tournament_config(guild.id)
+    t_cfg = find_tournament_config(guild.id, tournament_name_or_id)
 
     # 1. Check tournament config for result channel ID
     if t_cfg:
         ch_id = t_cfg.get('result') or t_cfg.get('result_channel') or t_cfg.get('results_channel') or t_cfg.get('Result_Channel_ID')
-        if ch_id:
-            try:
-                ch = guild.get_channel(int(ch_id))
-                if ch:
-                    return ch
-            except Exception:
-                pass
+        ch = resolve_discord_channel(guild, ch_id)
+        if ch:
+            return ch
 
     # 2. Check global guild config (role/channel mapping)
     cfg = get_guild_config(guild.id)
     g_res_id = cfg.get('channel_ids', {}).get('results') or CHANNEL_IDS.get("results")
-    if g_res_id:
-        try:
-            ch = guild.get_channel(int(g_res_id))
-            if ch:
-                return ch
-        except Exception:
-            pass
-
-    return None
+    return resolve_discord_channel(guild, g_res_id)
 
 
 def get_tournament_attendance_channel(guild: discord.Guild, tournament_name_or_id: str = None) -> Optional[discord.TextChannel]:
@@ -10607,45 +10921,19 @@ def get_tournament_attendance_channel(guild: discord.Guild, tournament_name_or_i
     if not guild:
         return None
         
-    tournaments = load_guild_tournaments(guild.id)
-    t_cfg = None
-    
-    if tournament_name_or_id:
-        t_clean = str(tournament_name_or_id).strip().lower()
-        if t_clean in tournaments:
-            t_cfg = tournaments[t_clean]
-        else:
-            for tid, cfg in tournaments.items():
-                if cfg.get('name', '').lower() == t_clean:
-                    t_cfg = cfg
-                    break
-
-    if not t_cfg:
-        t_cfg = get_active_tournament_config(guild.id)
+    t_cfg = find_tournament_config(guild.id, tournament_name_or_id)
 
     # 1. Check tournament config for attendance channel ID
     if t_cfg:
         ch_id = t_cfg.get('attendance') or t_cfg.get('attendance_channel') or t_cfg.get('Attendance_Channel_ID')
-        if ch_id:
-            try:
-                ch = guild.get_channel(int(ch_id))
-                if ch:
-                    return ch
-            except Exception:
-                pass
+        ch = resolve_discord_channel(guild, ch_id)
+        if ch:
+            return ch
 
     # 2. Check global guild config (role/channel mapping)
     cfg = get_guild_config(guild.id)
     g_att_id = cfg.get('channel_ids', {}).get('staff_attendance') or CHANNEL_IDS.get("staff_attendance")
-    if g_att_id:
-        try:
-            ch = guild.get_channel(int(g_att_id))
-            if ch:
-                return ch
-        except Exception:
-            pass
-
-    return None
+    return resolve_discord_channel(guild, g_att_id)
 
 
 
