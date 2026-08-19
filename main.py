@@ -180,6 +180,10 @@ def load_guild_config(guild_id: int) -> dict:
                 # Branding and settings (only overlay if not empty in DB)
                 for key in ['organization_name', 'tournament_system_name', 'google_sheet_link', 'player_info_link', 'player_info_format', 'server_logo_path', 'server_logo_url']:
                     db_val = db_data.get(key)
+                    if db_val in (None, "", "None"):
+                        title_key = "_".join(w.capitalize() for w in key.split("_"))
+                        pascal_key = "".join(w.capitalize() for w in key.split("_"))
+                        db_val = db_data.get(title_key) or db_data.get(pascal_key)
                     if db_val not in (None, "", "None"):
                         config[key] = db_val
                         
@@ -623,7 +627,7 @@ async def load_scheduled_events_from_supabase():
         if res and res.data:
             loaded_count = 0
             for row in res.data:
-                event_id = row.get("Event_ID")
+                event_id = row.get("Match_ID") or row.get("Event_ID")
                 if not event_id:
                     continue
                     
@@ -631,7 +635,17 @@ async def load_scheduled_events_from_supabase():
                 date_str = row.get("Date") or ""
                 utc_time_str = row.get("UTC_Time") or ""
                 event_datetime = None
-                if date_str and utc_time_str:
+                
+                if row.get("Scheduled_Time"):
+                    try:
+                        clean_time = row["Scheduled_Time"].replace('Z', '+00:00')
+                        event_datetime = datetime.datetime.fromisoformat(clean_time)
+                        utc_time_str = event_datetime.strftime("%H:%M UTC")
+                        date_str = event_datetime.strftime("%d/%m")
+                    except Exception:
+                        pass
+                        
+                if not event_datetime and date_str and utc_time_str:
                     try:
                         day, month = map(int, date_str.split('/'))
                         time_part = utc_time_str.split(' ')[0]
@@ -654,8 +668,8 @@ async def load_scheduled_events_from_supabase():
                         return None
                         
                 g_id = parse_int_safe(row.get("Guild_ID"))
-                t1_id = parse_int_safe(row.get("Team1_Captain_ID"))
-                t2_id = parse_int_safe(row.get("Team2_Captain_ID"))
+                t1_id = parse_int_safe(row.get("Team1_Captain_ID") or row.get("Team1_ID"))
+                t2_id = parse_int_safe(row.get("Team2_Captain_ID") or row.get("Team2_ID"))
                 j_id = parse_int_safe(row.get("Judge_ID"))
                 
                 # If this event already exists in scheduled_events
@@ -669,15 +683,15 @@ async def load_scheduled_events_from_supabase():
                         'round': row.get('Round'),
                         'group': row.get('Group'),
                         'minutes_left': 0,
-                        'tournament': row.get('Tournament'),
+                        'tournament': row.get('Tournament_ID') or row.get('Tournament'),
                         'mode': None,
                         'judge': j_id,
                         'recorder': None,
                         'channel_id': parse_int_safe(row.get("Channel_ID")),
                         'team1_captain': t1_id,
                         'team2_captain': t2_id,
-                        'team1_name': row.get('Team1_Captain_Name'),
-                        'team2_name': row.get('Team2_Captain_Name'),
+                        'team1_name': row.get('Team1_Captain_Name') or row.get('Team1_Name'),
+                        'team2_name': row.get('Team2_Captain_Name') or row.get('Team2_Name'),
                         'match_name': row.get('Match_Name') or f"{row.get('Team1_Captain_Name', '')} vs {row.get('Team2_Captain_Name', '')}",
                     }
                     loaded_count += 1
