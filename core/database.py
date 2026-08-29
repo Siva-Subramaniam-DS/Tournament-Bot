@@ -552,35 +552,79 @@ def get_tournament_attendance_channel(guild: discord.Guild, tournament_name_or_i
     g_att_id = cfg.get('channel_ids', {}).get('staff_attendance')
     return resolve_discord_channel(guild, g_att_id)
 
-async def log_bot_activity(guild: discord.Guild, embed: discord.Embed):
+async def log_bot_activity(guild: discord.Guild, embed: discord.Embed, tournament: str = None):
     if not guild:
         return
-    t_cfg = get_active_tournament_config(guild.id)
     channel = None
-    if t_cfg and t_cfg.get('bot_logs'):
-        try:
-            channel = guild.get_channel(int(t_cfg['bot_logs']))
-            if not channel:
-                channel = await guild.fetch_channel(int(t_cfg['bot_logs']))
-        except Exception:
-            pass
-            
+    
+    # 1. Check specified tournament bot_logs
+    if tournament:
+        from core.database import load_guild_tournaments
+        tournaments = load_guild_tournaments(guild.id)
+        clean_t = str(tournament).strip().lower()
+        t_cfg = tournaments.get(clean_t)
+        if not t_cfg:
+            for tid, tdata in tournaments.items():
+                if tdata.get('name', '').strip().lower() == clean_t:
+                    t_cfg = tdata
+                    break
+        if t_cfg:
+            for k in ['bot_logs', 'bot_logs_channel_id', 'Bot_Logs_Channel_ID', 'bot_log']:
+                if t_cfg.get(k):
+                    try:
+                        channel = guild.get_channel(int(t_cfg[k]))
+                        if not channel:
+                            channel = await guild.fetch_channel(int(t_cfg[k]))
+                        if channel: break
+                    except Exception: pass
+
+    # 2. Check active tournament bot_logs
+    if not channel:
+        t_cfg = get_active_tournament_config(guild.id)
+        if t_cfg:
+            for k in ['bot_logs', 'bot_logs_channel_id', 'Bot_Logs_Channel_ID', 'bot_log']:
+                if t_cfg.get(k):
+                    try:
+                        channel = guild.get_channel(int(t_cfg[k]))
+                        if not channel:
+                            channel = await guild.fetch_channel(int(t_cfg[k]))
+                        if channel: break
+                    except Exception: pass
+
+    # 3. Check any tournament configured in the guild with bot_logs
+    if not channel:
+        from core.database import load_guild_tournaments
+        tournaments = load_guild_tournaments(guild.id)
+        for _, tdata in tournaments.items():
+            for k in ['bot_logs', 'bot_logs_channel_id', 'Bot_Logs_Channel_ID', 'bot_log']:
+                if tdata.get(k):
+                    try:
+                        channel = guild.get_channel(int(tdata[k]))
+                        if not channel:
+                            channel = await guild.fetch_channel(int(tdata[k]))
+                        if channel: break
+                    except Exception: pass
+            if channel: break
+
+    # 4. Check global guild config bot_logs
     if not channel:
         cfg = get_guild_config(guild.id)
-        default_logs_id = cfg.get('channel_ids', {}).get('bot_logs')
-        if default_logs_id:
-            try:
-                channel = guild.get_channel(int(default_logs_id))
-                if not channel:
-                    channel = await guild.fetch_channel(int(default_logs_id))
-            except Exception:
-                pass
-                
+        for k in ['bot_logs', 'bot_logs_channel_id', 'Bot_Logs_Channel_ID', 'bot_log']:
+            bid = cfg.get('channel_ids', {}).get(k) or cfg.get(k)
+            if bid:
+                try:
+                    channel = guild.get_channel(int(bid))
+                    if not channel:
+                        channel = await guild.fetch_channel(int(bid))
+                    if channel: break
+                except Exception: pass
+
     if channel:
         try:
             await channel.send(embed=embed)
         except Exception as e:
             print(f"Failed to log bot activity: {e}")
+
 
 
 # ===========================================================================================
@@ -715,6 +759,35 @@ def reset_staff_stats():
         return True
     return False
 
+async def save_staff_stats_to_supabase(guild_id: int, user_id: str, user_name: str, judge_count: int, recorder_count: int):
+    if not supabase_client:
+        return
+    try:
+        total = int(judge_count) + int(recorder_count)
+        row = {
+            "Guild_ID": str(guild_id),
+            "User_ID": str(user_id),
+            "Name": str(user_name),
+            "Judge_Count": int(judge_count),
+            "Recorder_Count": int(recorder_count),
+            "Total_Count": int(total),
+            "Timestamp": datetime.datetime.utcnow().isoformat()
+        }
+        res = await asyncio.to_thread(
+            lambda: supabase_client.table("StaffStats").select("id").eq("Guild_ID", str(guild_id)).eq("User_ID", str(user_id)).execute()
+        )
+        if res and res.data and len(res.data) > 0:
+            rec_id = res.data[0]["id"]
+            await asyncio.to_thread(
+                lambda: supabase_client.table("StaffStats").update(row).eq("id", rec_id).execute()
+            )
+        else:
+            await asyncio.to_thread(
+                lambda: supabase_client.table("StaffStats").insert(row).execute()
+            )
+    except Exception as e:
+        print(f"[Supabase] Error saving StaffStats: {e}")
+
 def update_staff_stats(user: discord.Member, role_type: str):
     g_id = None
     if hasattr(user, 'guild') and user.guild:
@@ -747,6 +820,12 @@ def update_staff_stats(user: discord.Member, role_type: str):
     
     save_guild_staff_stats(g_id, stats)
 
+    asyncio.create_task(save_staff_stats_to_supabase(
+        g_id, user_id, user.display_name,
+        stats[user_id].get("judge_count", 0),
+        stats[user_id].get("recorder_count", 0)
+    ))
+
     asyncio.create_task(sheetdb_post("StaffStats", {
         "Guild_ID": str(g_id) if g_id else "",
         "Timestamp": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
@@ -757,6 +836,7 @@ def update_staff_stats(user: discord.Member, role_type: str):
         "Recorder_Count": stats[user_id].get("recorder_count", 0),
         "Total_Count": stats[user_id].get("total_count", 0)
     }))
+
 
 
 # ===========================================================================================
@@ -784,15 +864,11 @@ async def load_scheduled_events_from_supabase():
         
     print("⏳ Loading scheduled events from Supabase...")
     try:
-        try:
-            res = await asyncio.to_thread(
-                lambda: supabase_client.table("Matches").select("*").execute()
-            )
-        except Exception:
-            res = await asyncio.to_thread(
-                lambda: supabase_client.table("Events").select("*").execute()
-            )
+        res = await asyncio.to_thread(
+            lambda: supabase_client.table("Matches").select("*").execute()
+        )
         if res and res.data:
+
             loaded_count = 0
             for row in res.data:
                 event_id = row.get("Match_ID") or row.get("Event_ID")
@@ -1001,77 +1077,61 @@ async def save_event_to_supabase(event_id: str, event_data: dict):
         if not resolved_t_id:
             resolved_t_id = str(raw_tourney).strip()
 
-        target_table = "Matches"
-        try:
-            res = await asyncio.to_thread(
-                lambda: supabase_client.table("Matches").select("Match_ID").eq("Match_ID", event_id).execute()
-            )
-        except Exception:
-            target_table = "Events"
-            res = await asyncio.to_thread(
-                lambda: supabase_client.table("Events").select("id").eq("Event_ID", event_id).execute()
-            )
-
-        if target_table == "Matches":
-            round_val = event_data.get('round', '')
-            round_int = int(round_val) if str(round_val).isdigit() else 1
-            match_row = {
-                "Match_ID": event_id,
-                "Match_Name": match_name,
-                "Tournament_ID": resolved_t_id,
-                "Round": round_int,
-                "Group": str(event_data.get('group', '') or ''),
-                "Status": str(event_data.get('status', 'scheduled')).lower(),
-                "Channel_ID": str(event_data.get('channel_id', '')),
-                "recording_link": str(event_data.get('recording_link', '')),
-                "recorder_link": str(event_data.get('recorder_link', '')),
-                "judge_link": str(event_data.get('judge_link', '')),
-                "results_message_id": str(event_data.get('results_message_id', '')),
-                "results_channel_id": str(event_data.get('results_channel_id', '')),
-                "match_results_message_id": str(event_data.get('match_results_message_id', '')),
-                "match_results_channel_id": str(event_data.get('match_results_channel_id', ''))
-            }
-            await asyncio.to_thread(
-                lambda: supabase_client.table("Matches").upsert(match_row, on_conflict="Match_ID").execute()
-            )
+        round_raw = event_data.get('round', '')
+        round_int = 1
+        if isinstance(round_raw, int):
+            round_int = round_raw
+        elif str(round_raw).isdigit():
+            round_int = int(round_raw)
         else:
-            legacy_row = {
-                "Guild_ID": str(guild_id) if guild_id else "",
-                "Event_ID": event_id,
-                "Match_Name": match_name,
-                "Tournament": event_data.get('tournament', ''),
-                "Round": event_data.get('round', ''),
-                "Group": event_data.get('group', '') or '',
-                "Date": event_data.get('date_str', ''),
-                "UTC_Time": event_data.get('time_str', ''),
-                "Team1_Captain_ID": str(t1_id) if t1_id else '',
-                "Team1_Captain_Name": t1_name,
-                "Team2_Captain_ID": str(t2_id) if t2_id else '',
-                "Team2_Captain_Name": t2_name,
-                "Judge_ID": str(j_id) if j_id else '',
-                "Judge_Name": judge_val.name if hasattr(judge_val, 'name') else '',
-                "Channel_ID": str(event_data.get('channel_id', '')),
-                "Status": event_data.get('status', 'Scheduled'),
-                "recording_link": event_data.get('recording_link', ''),
-                "recorder_link": event_data.get('recorder_link', ''),
-                "judge_link": event_data.get('judge_link', ''),
-                "results_message_id": str(event_data.get('results_message_id', '')),
-                "results_channel_id": str(event_data.get('results_channel_id', '')),
-                "match_results_message_id": str(event_data.get('match_results_message_id', '')),
-                "match_results_channel_id": str(event_data.get('match_results_channel_id', ''))
-            }
-            if res and res.data and len(res.data) > 0:
-                row_id = res.data[0]["id"]
-                await asyncio.to_thread(
-                    lambda: supabase_client.table("Events").update(legacy_row).eq("id", row_id).execute()
-                )
+            r_str = str(round_raw).lower()
+            if 'semi' in r_str: round_int = 98
+            elif 'final' in r_str: round_int = 99
+            elif '3rd' in r_str or 'third' in r_str: round_int = 97
+            elif 'qual' in r_str: round_int = 0
             else:
-                legacy_row["Timestamp"] = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-                await asyncio.to_thread(
-                    lambda: supabase_client.table("Events").insert(legacy_row).execute()
-                )
+                m = re.search(r'\d+', r_str)
+                round_int = int(m.group(0)) if m else 1
+
+        rec_link = str(event_data.get('recording_link', '') or '')
+        gen_vod = event_data.get('link1') or (rec_link.split('\n')[0] if rec_link else '')
+
+        match_row = {
+            "Match_ID": str(event_id),
+            "Match_Name": str(match_name),
+            "Tournament_ID": str(resolved_t_id),
+            "Round": round_int,
+            "Group": str(event_data.get('group', '') or ''),
+            "Status": str(event_data.get('status', 'scheduled')).lower(),
+            "Channel_ID": str(event_data.get('channel_id', '') or ''),
+            "recording_link": rec_link,
+            "General_VOD": str(gen_vod or ''),
+            "Recorder_VOD": str(event_data.get('recorder_link', '') or ''),
+            "Judge_VOD": str(event_data.get('judge_link', '') or ''),
+            "recorder_link": str(event_data.get('recorder_link', '') or ''),
+            "judge_link": str(event_data.get('judge_link', '') or ''),
+            "results_message_id": str(event_data.get('results_message_id', '') or ''),
+            "results_channel_id": str(event_data.get('results_channel_id', '') or ''),
+            "match_results_message_id": str(event_data.get('match_results_message_id', '') or ''),
+            "match_results_channel_id": str(event_data.get('match_results_channel_id', '') or ''),
+            "Remarks": str(event_data.get('remarks', '') or ''),
+            "Updated_At": datetime.datetime.utcnow().isoformat()
+        }
+        if t1_id: match_row["Team1_ID"] = str(t1_id)
+        if t2_id: match_row["Team2_ID"] = str(t2_id)
+        if event_data.get('winner_score') is not None:
+            try: match_row["Team1_Score"] = int(event_data['winner_score'])
+            except: pass
+        if event_data.get('loser_score') is not None:
+            try: match_row["Team2_Score"] = int(event_data['loser_score'])
+            except: pass
+
+        await asyncio.to_thread(
+            lambda: supabase_client.table("Matches").upsert(match_row, on_conflict="Match_ID").execute()
+        )
     except Exception as e:
         print(f"[Supabase] Error saving event {event_id} to database: {e}")
+
 
 async def resolve_scheduled_event_members(bot_client: discord.Client):
     print("⏳ Resolving member IDs in scheduled events...")
@@ -1661,16 +1721,34 @@ async def update_results_embed_with_links(guild: discord.Guild, ev_data: dict):
             return
         
         embed = msg.embeds[0]
-        general_link = ev_data.get('recording_link')
+        
+        links_list = []
+        if isinstance(ev_data.get('links'), list):
+            links_list = [str(l).strip() for l in ev_data.get('links') if l and str(l).strip()]
+        if not links_list:
+            for i in range(1, 6):
+                lk = ev_data.get(f'link{i}') or ev_data.get(f'link_{i}')
+                if lk and str(lk).strip():
+                    links_list.append(str(lk).strip())
+        if not links_list and ev_data.get('recording_link'):
+            links_list = [l.strip() for l in str(ev_data.get('recording_link')).split('\n') if l.strip()]
+
         rec_link = ev_data.get('recorder_link')
         jdg_link = ev_data.get('judge_link')
         
         link_lines = []
-        if general_link: link_lines.append(f"🎥 **Recording:** [Watch Here]({general_link})")
-        if rec_link:     link_lines.append(f"🎥 **Recorder VOD:** [Watch Here]({rec_link})")
-        if jdg_link:     link_lines.append(f"⚖️ **Judge VOD:** [Watch Here]({jdg_link})")
+        if len(links_list) == 1:
+            link_lines.append(f"🎥 **Recording / VOD:** [Watch Here]({links_list[0]})")
+        elif len(links_list) > 1:
+            for idx, lk in enumerate(links_list, 1):
+                link_lines.append(f"🎥 **Recording {idx}:** [Watch Part {idx}]({lk})")
+
+        if rec_link and rec_link not in links_list:
+            link_lines.append(f"📹 **Recorder VOD:** [Watch Here]({rec_link})")
+        if jdg_link and jdg_link not in links_list:
+            link_lines.append(f"⚖️ **Judge VOD:** [Watch Here]({jdg_link})")
         
-        fields = [f for f in embed.fields if f.name not in ("🎥 Recording Link", "🎥 Recordings / VODs")]
+        fields = [f for f in embed.fields if f.name not in ("🎥 Recording Link", "🎥 Recordings / VODs", "🎥 Recording / VOD")]
         embed.clear_fields()
         for f in fields:
             embed.add_field(name=f.name, value=f.value, inline=f.inline)
@@ -1681,6 +1759,7 @@ async def update_results_embed_with_links(guild: discord.Guild, ev_data: dict):
         await msg.edit(embed=embed)
     except Exception as e:
         print(f"Error updating result embed with links: {e}")
+
 
 
 

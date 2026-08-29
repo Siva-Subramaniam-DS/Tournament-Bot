@@ -620,12 +620,16 @@ class LinkMissingView(discord.ui.View):
 
 link_group = app_commands.Group(name="link", description="Manage match links and VODs")
 
-@link_group.command(name="add", description="Add a recording/VOD link for a match event")
+@link_group.command(name="add", description="Add recording/VOD links for a match event")
 @app_commands.describe(
     tournament="Select the tournament",
     match="Select the match event by Name or ID",
-    link_type="Select what type of link you are adding",
-    link="The URL of the recording/VOD link to add"
+    link1="The primary recording / VOD link",
+    link2="Optional second recording / VOD link",
+    link3="Optional third recording / VOD link",
+    link4="Optional fourth recording / VOD link",
+    link5="Optional fifth recording / VOD link",
+    link_type="Select link type (Default: General Recording)"
 )
 @app_commands.choices(link_type=[
     app_commands.Choice(name="General Recording", value="general"),
@@ -638,14 +642,27 @@ async def link_add(
     interaction: discord.Interaction,
     tournament: str,
     match: str,
-    link_type: app_commands.Choice[str],
-    link: str
+    link1: str,
+    link2: Optional[str] = None,
+    link3: Optional[str] = None,
+    link4: Optional[str] = None,
+    link5: Optional[str] = None,
+    link_type: Optional[app_commands.Choice[str]] = None
 ):
     await interaction.response.defer(ephemeral=False)
 
-    link_stripped = link.strip()
-    if not (link_stripped.startswith("http://") or link_stripped.startswith("https://")):
-        await interaction.followup.send("❌ Please provide a valid URL starting with `http://` or `https://`.", ephemeral=False)
+    raw_links = [link1, link2, link3, link4, link5]
+    valid_links = []
+    for idx, lk in enumerate(raw_links, 1):
+        if lk and lk.strip():
+            s = lk.strip()
+            if not (s.startswith("http://") or s.startswith("https://")):
+                await interaction.followup.send(f"❌ Invalid URL for `link{idx}`: `{s}`. All links must start with `http://` or `https://`.", ephemeral=False)
+                return
+            valid_links.append(s)
+
+    if not valid_links:
+        await interaction.followup.send("❌ Please provide at least one valid link URL.", ephemeral=False)
         return
 
     ev_id, ev_data = find_event_by_name_or_id(interaction.guild.id, match)
@@ -653,13 +670,18 @@ async def link_add(
         await interaction.followup.send("❌ No matching scheduled event was found.", ephemeral=False)
         return
 
-    key = "recording_link"
-    if link_type.value == "recorder":
-        key = "recorder_link"
-    elif link_type.value == "judge":
-        key = "judge_link"
-        
-    ev_data[key] = link_stripped
+    l_type_val = link_type.value if link_type else "general"
+    l_type_name = link_type.name if link_type else "General Recording"
+
+    ev_data['links'] = valid_links
+    for i in range(1, 6):
+        ev_data[f'link{i}'] = valid_links[i-1] if i <= len(valid_links) else ""
+
+    ev_data['recording_link'] = "\n".join(valid_links)
+    if l_type_val == "recorder":
+        ev_data['recorder_link'] = valid_links[0]
+    elif l_type_val == "judge":
+        ev_data['judge_link'] = valid_links[0]
 
     rec_obj = ev_data.get('recorder')
     rec_credited_name = None
@@ -687,18 +709,18 @@ async def link_add(
     asyncio.create_task(save_event_to_supabase(ev_id, ev_data))
     await update_results_embed_with_links(interaction.guild, ev_data)
 
-    event_saved_note = f"✅ Link saved to event record **`{ev_id}`** ({ev_data.get('match_name', 'Match')})."
+    event_saved_note = f"✅ **{len(valid_links)} link(s)** saved to event record **`{ev_id}`** ({ev_data.get('match_name', 'Match')})."
     if rec_credited_name:
         event_saved_note += f"\n🎉 **Recorder credit registered in staff stats for {rec_credited_name}!**"
 
-    link_label = link_type.name
+    formatted_links = "\n".join([f"• **Link {i}:** {url}" for i, url in enumerate(valid_links, 1)])
     embed = discord.Embed(
-        title=f"🎥 {link_label} Added",
+        title=f"🎥 {l_type_name} Added",
         description=(
             f"**Tournament:** {tournament}\n"
             f"**Event / Match:** {ev_data.get('match_name') or match}\n"
-            f"**Match ID:** `{ev_id}`\n"
-            f"**Link:** {link_stripped}"
+            f"**Match ID:** `{ev_id}`\n\n"
+            f"**Added Links ({len(valid_links)}):**\n{formatted_links}"
         ),
         color=discord.Color.green(),
         timestamp=discord.utils.utcnow()
@@ -707,6 +729,8 @@ async def link_add(
     embed.set_footer(text=f"{ORGANIZATION_NAME} • Link System")
 
     await interaction.followup.send(embed=embed, ephemeral=False)
+    await log_bot_activity(interaction.guild, embed, tournament=tournament)
+
 
 
 @link_group.command(name="edit", description="Edit an existing recording/VOD link for a match event")
@@ -772,6 +796,7 @@ async def link_edit(
     embed.set_footer(text=f"{ORGANIZATION_NAME} • Link System")
 
     await interaction.followup.send(embed=embed, ephemeral=False)
+    await log_bot_activity(interaction.guild, embed, tournament=tournament)
 
 
 @link_group.command(name="delete", description="Delete a recording/VOD link from a match event")
@@ -804,6 +829,8 @@ async def link_delete(
     removed_types = []
     if link_type.value in ("general", "all"):
         ev_data["recording_link"] = ""
+        ev_data["links"] = []
+        for i in range(1, 6): ev_data[f"link{i}"] = ""
         removed_types.append("General Recording")
     if link_type.value in ("recorder", "all"):
         ev_data["recorder_link"] = ""
@@ -815,7 +842,6 @@ async def link_delete(
     save_scheduled_events()
     asyncio.create_task(save_event_to_supabase(ev_id, ev_data))
     await update_results_embed_with_links(interaction.guild, ev_data)
-
 
     embed = discord.Embed(
         title="🎥 Recording Link Deleted",
@@ -831,6 +857,8 @@ async def link_delete(
     )
     embed.set_footer(text=f"{ORGANIZATION_NAME} • Link System")
     await interaction.followup.send(embed=embed, ephemeral=False)
+    await log_bot_activity(interaction.guild, embed, tournament=tournament)
+
 
 
 @link_group.command(name="missing", description="List matches missing VOD links with paginated view")
