@@ -358,34 +358,80 @@ def get_sheetdb_api_url(context=None) -> str:
     return url if url else "https://sheetdb.io/api/v1/vlbn6vbc8vdbb"
 
 def get_link_bracket(context=None) -> str:
-    from core.database import get_guild_config
-    cfg = get_guild_config(context)
-    g_id = 1500186736633053184
-    if context and hasattr(context, "guild") and context.guild:
-        g_id = context.guild.id
-    elif isinstance(context, discord.Guild):
-        g_id = context.id
-    return f"https://discord.com/channels/{g_id}/{cfg['channel_ids'].get('bracket', DEFAULT_CHANNEL_IDS['bracket'])}"
+    from core.database import get_guild_config, get_active_tournament_config
+    g_id = None
+    if context:
+        if isinstance(context, int):
+            g_id = context
+        elif hasattr(context, "guild") and context.guild:
+            g_id = context.guild.id
+        elif isinstance(context, discord.Guild):
+            g_id = context.id
+    if not g_id:
+        g_id = current_guild_id.get()
+
+    if g_id:
+        t_cfg = get_active_tournament_config(g_id)
+        if t_cfg and t_cfg.get('challonge_bracket_link'):
+            b_link = str(t_cfg['challonge_bracket_link']).strip()
+            return b_link if b_link.startswith("http") else f"https://challonge.com/{b_link}"
+        if t_cfg and t_cfg.get('bracket'):
+            return f"https://discord.com/channels/{g_id}/{t_cfg['bracket']}"
+            
+        cfg = get_guild_config(g_id)
+        b_chan = cfg.get('channel_ids', {}).get('bracket')
+        if b_chan:
+            return f"https://discord.com/channels/{g_id}/{b_chan}"
+    return "https://challonge.com"
 
 def get_link_deadline(context=None) -> str:
-    from core.database import get_guild_config
-    cfg = get_guild_config(context)
-    g_id = 1500186736633053184
-    if context and hasattr(context, "guild") and context.guild:
-        g_id = context.guild.id
-    elif isinstance(context, discord.Guild):
-        g_id = context.id
-    return f"https://discord.com/channels/{g_id}/{cfg['channel_ids'].get('deadlines', DEFAULT_CHANNEL_IDS['deadlines'])}"
+    from core.database import get_guild_config, get_active_tournament_config
+    g_id = None
+    if context:
+        if isinstance(context, int):
+            g_id = context
+        elif hasattr(context, "guild") and context.guild:
+            g_id = context.guild.id
+        elif isinstance(context, discord.Guild):
+            g_id = context.id
+    if not g_id:
+        g_id = current_guild_id.get()
+
+    if g_id:
+        t_cfg = get_active_tournament_config(g_id)
+        if t_cfg and t_cfg.get('deadline'):
+            return f"https://discord.com/channels/{g_id}/{t_cfg['deadline']}"
+            
+        cfg = get_guild_config(g_id)
+        d_chan = cfg.get('channel_ids', {}).get('deadlines') or cfg.get('channel_ids', {}).get('deadline')
+        if d_chan:
+            return f"https://discord.com/channels/{g_id}/{d_chan}"
+    return "https://discord.com"
 
 def get_link_rules(context=None) -> str:
-    from core.database import get_guild_config
-    cfg = get_guild_config(context)
-    g_id = 1500186736633053184
-    if context and hasattr(context, "guild") and context.guild:
-        g_id = context.guild.id
-    elif isinstance(context, discord.Guild):
-        g_id = context.id
-    return f"https://discord.com/channels/{g_id}/{cfg['channel_ids'].get('rules', DEFAULT_CHANNEL_IDS['rules'])}"
+    from core.database import get_guild_config, get_active_tournament_config
+    g_id = None
+    if context:
+        if isinstance(context, int):
+            g_id = context
+        elif hasattr(context, "guild") and context.guild:
+            g_id = context.guild.id
+        elif isinstance(context, discord.Guild):
+            g_id = context.id
+    if not g_id:
+        g_id = current_guild_id.get()
+
+    if g_id:
+        t_cfg = get_active_tournament_config(g_id)
+        if t_cfg and t_cfg.get('rules'):
+            return f"https://discord.com/channels/{g_id}/{t_cfg['rules']}"
+            
+        cfg = get_guild_config(g_id)
+        r_chan = cfg.get('channel_ids', {}).get('rules')
+        if r_chan:
+            return f"https://discord.com/channels/{g_id}/{r_chan}"
+    return "https://discord.com"
+
 
 ORGANIZATION_NAME = DynamicString(lambda: get_org_name())
 TOURNAMENT_SYSTEM_NAME = DynamicString(lambda: get_system_name())

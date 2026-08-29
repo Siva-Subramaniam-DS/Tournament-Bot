@@ -29,8 +29,10 @@ from core.database import (
     get_guild_config, get_active_tournament_config,
     save_event_to_supabase, log_bot_activity, sheetdb_post,
     update_challonge_match, get_challonge_matches, get_challonge_participants,
-    get_guild_staff_stats, save_guild_staff_stats, update_staff_stats
+    get_guild_staff_stats, save_guild_staff_stats, update_staff_stats,
+    update_results_embed_with_links
 )
+
 
 from core.image_generator import get_random_template, get_thumbnail_url_from_channel
 
@@ -683,6 +685,7 @@ async def link_add(
 
     save_scheduled_events()
     asyncio.create_task(save_event_to_supabase(ev_id, ev_data))
+    await update_results_embed_with_links(interaction.guild, ev_data)
 
     event_saved_note = f"✅ Link saved to event record **`{ev_id}`** ({ev_data.get('match_name', 'Match')})."
     if rec_credited_name:
@@ -749,6 +752,7 @@ async def link_edit(
     ev_data[key] = link_stripped
     save_scheduled_events()
     asyncio.create_task(save_event_to_supabase(ev_id, ev_data))
+    await update_results_embed_with_links(interaction.guild, ev_data)
 
     event_saved_note = f"✅ Link updated for event record **`{ev_id}`** ({ev_data.get('match_name', 'Match')})."
 
@@ -810,6 +814,8 @@ async def link_delete(
 
     save_scheduled_events()
     asyncio.create_task(save_event_to_supabase(ev_id, ev_data))
+    await update_results_embed_with_links(interaction.guild, ev_data)
+
 
     embed = discord.Embed(
         title="🎥 Recording Link Deleted",

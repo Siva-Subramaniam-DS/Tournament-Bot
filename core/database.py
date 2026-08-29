@@ -1603,4 +1603,85 @@ async def load_all_staff_stats_from_supabase():
     except Exception as e:
         print(f"Error loading all staff stats from Supabase: {e}")
 
+async def tournament_autocomplete(
+    interaction: discord.Interaction,
+    current: str
+) -> list[discord.app_commands.Choice[str]]:
+    if not interaction.guild_id:
+        return []
+    try:
+        tournaments = load_guild_tournaments(interaction.guild_id)
+        choices = []
+        for t_id, t_cfg in tournaments.items():
+            name = t_cfg.get("name") or t_id
+            state = t_cfg.get("state", "pending")
+            display = f"{name} ({t_id}) [{state}]"
+            if not current or current.lower() in display.lower() or current.lower() in name.lower() or current.lower() in t_id.lower():
+                choices.append(discord.app_commands.Choice(name=display[:100], value=name[:100]))
+        return choices[:25]
+    except Exception as e:
+        print(f"Error in tournament_autocomplete: {e}")
+        return []
+
+async def match_autocomplete(
+    interaction: discord.Interaction,
+    current: str
+) -> list[discord.app_commands.Choice[str]]:
+    if not interaction.guild_id:
+        return []
+    try:
+        choices = []
+        curr_clean = (current or "").strip().lower()
+        for ev_id, ev_data in scheduled_events.items():
+            if ev_data.get('guild_id') and str(ev_data.get('guild_id')) != str(interaction.guild_id):
+                continue
+            m_name = ev_data.get('match_name') or f"{ev_data.get('team1_name', 'Team 1')} vs {ev_data.get('team2_name', 'Team 2')}"
+            t_name = ev_data.get('tournament', '')
+            display = f"{m_name} [{ev_id}]"
+            if t_name:
+                display += f" ({t_name})"
+            if not curr_clean or curr_clean in display.lower() or curr_clean in ev_id.lower():
+                choices.append(discord.app_commands.Choice(name=display[:100], value=ev_id[:100]))
+        return choices[:25]
+    except Exception as e:
+        print(f"Error in match_autocomplete: {e}")
+        return []
+
+async def update_results_embed_with_links(guild: discord.Guild, ev_data: dict):
+    res_msg_id = ev_data.get('results_message_id')
+    res_chan_id = ev_data.get('results_channel_id')
+    if not res_msg_id or not res_chan_id or not guild:
+        return
+    try:
+        channel = guild.get_channel(int(res_chan_id))
+        if not channel:
+            channel = await guild.fetch_channel(int(res_chan_id))
+        msg = await channel.fetch_message(int(res_msg_id))
+        if not msg or not msg.embeds:
+            return
+        
+        embed = msg.embeds[0]
+        general_link = ev_data.get('recording_link')
+        rec_link = ev_data.get('recorder_link')
+        jdg_link = ev_data.get('judge_link')
+        
+        link_lines = []
+        if general_link: link_lines.append(f"🎥 **Recording:** [Watch Here]({general_link})")
+        if rec_link:     link_lines.append(f"🎥 **Recorder VOD:** [Watch Here]({rec_link})")
+        if jdg_link:     link_lines.append(f"⚖️ **Judge VOD:** [Watch Here]({jdg_link})")
+        
+        fields = [f for f in embed.fields if f.name not in ("🎥 Recording Link", "🎥 Recordings / VODs")]
+        embed.clear_fields()
+        for f in fields:
+            embed.add_field(name=f.name, value=f.value, inline=f.inline)
+            
+        if link_lines:
+            embed.add_field(name="🎥 Recordings / VODs", value="\n".join(link_lines), inline=False)
+            
+        await msg.edit(embed=embed)
+    except Exception as e:
+        print(f"Error updating result embed with links: {e}")
+
+
+
 

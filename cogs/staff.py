@@ -24,8 +24,9 @@ from core.state import (
 from core.database import (
     supabase_client, load_guild_tournaments, get_guild_config,
     get_active_tournament_config, log_bot_activity, sheetdb_post,
-    get_guild_staff_stats, save_guild_staff_stats
+    get_guild_staff_stats, save_guild_staff_stats, tournament_autocomplete
 )
+
 
 
 # ===========================================================================================
@@ -811,7 +812,7 @@ async def render_staff_work_count(
 
     tournaments = load_guild_tournaments(guild.id)
     target_t_id = None
-    target_t_name = "All Tournaments"
+    target_t_name = "All Active Tournaments"
     dw_setting = default_wins or "Including"
     
     if tournament:
@@ -826,54 +827,81 @@ async def render_staff_work_count(
                     target_t_name = tcfg.get('name') or tid
                     break
             if not target_t_id:
+                for tid, tcfg in tournaments.items():
+                    if t_clean in tid.lower() or t_clean in tcfg.get('name', '').lower() or tcfg.get('name', '').lower() in t_clean:
+                        target_t_id = tid
+                        target_t_name = tcfg.get('name') or tid
+                        break
+            if not target_t_id:
                 target_t_name = tournament
-    else:
-        for tid, tcfg in tournaments.items():
-            if tcfg.get('state') == 'active':
-                target_t_id = tid
-                target_t_name = tcfg.get('name') or tid
-                break
+                target_t_id = tournament
 
     judges = {}
     recorders = {}
+    judge_and_recorders = {}
 
     for ev_id, ev_data in scheduled_events.items():
         if ev_data.get('guild_id') and str(ev_data.get('guild_id')) != str(guild.id):
             continue
             
-        if target_t_id:
+        if target_t_id and target_t_name != "All Active Tournaments":
             ev_t_id = str(ev_data.get('tournament_id') or '').lower()
             ev_t_name = str(ev_data.get('tournament') or '').lower()
-            if ev_t_id != target_t_id and ev_t_name != target_t_id and ev_t_name != target_t_name.lower():
+            t_id_clean = str(target_t_id).lower()
+            t_name_clean = str(target_t_name).lower()
+            
+            matched = (
+                ev_t_id == t_id_clean or
+                ev_t_name == t_id_clean or
+                ev_t_name == t_name_clean or
+                t_name_clean in ev_t_name or
+                ev_t_name in t_name_clean or
+                t_id_clean in ev_t_name
+            )
+            if not matched:
                 continue
                 
         if dw_setting == "Excluded" and ev_data.get('disqualified'):
             continue
+
             
         rnd = str(ev_data.get('round') or 'R1')
         
         j_val = ev_data.get('judge') or ev_data.get('result_judge')
-        if j_val:
-            u_id = str(getattr(j_val, 'id', j_val))
-            u_name = getattr(j_val, 'name', ev_data.get('judge_name', f"User_{u_id}"))
-            if u_id not in judges:
-                judges[u_id] = {'matches': set(), 'rounds': set(), 'name': u_name}
-            judges[u_id]['matches'].add(ev_id)
-            judges[u_id]['rounds'].add(rnd)
-            if hasattr(j_val, 'name'):
-                judges[u_id]['name'] = j_val.name
-
         r_val = ev_data.get('recorder')
-        r_has_link = bool(ev_data.get('recorder_link') or ev_data.get('recording_link') or ev_data.get('recorder_credited'))
-        if r_val and r_has_link:
-            u_id = str(getattr(r_val, 'id', r_val))
-            u_name = getattr(r_val, 'name', ev_data.get('recorder_name', f"User_{u_id}"))
-            if u_id not in recorders:
-                recorders[u_id] = {'matches': set(), 'rounds': set(), 'name': u_name}
-            recorders[u_id]['matches'].add(ev_id)
-            recorders[u_id]['rounds'].add(rnd)
-            if hasattr(r_val, 'name'):
-                recorders[u_id]['name'] = r_val.name
+        
+        j_uid = str(getattr(j_val, 'id', j_val)) if j_val else None
+        r_uid = str(getattr(r_val, 'id', r_val)) if r_val else None
+        
+        # Dual Role: Same person took BOTH Judge and Recorder on this exact match
+        if j_uid and r_uid and j_uid == r_uid:
+            u_name = getattr(j_val, 'name', getattr(r_val, 'name', ev_data.get('judge_name', ev_data.get('recorder_name', f"User_{j_uid}"))))
+            if j_uid not in judge_and_recorders:
+                judge_and_recorders[j_uid] = {'matches': set(), 'rounds': set(), 'name': u_name}
+            judge_and_recorders[j_uid]['matches'].add(ev_id)
+            judge_and_recorders[j_uid]['rounds'].add(rnd)
+            if hasattr(j_val, 'name'):
+                judge_and_recorders[j_uid]['name'] = j_val.name
+        else:
+            # Solo Judge (No recorder or different recorder)
+            if j_uid:
+                u_name = getattr(j_val, 'name', ev_data.get('judge_name', f"User_{j_uid}"))
+                if j_uid not in judges:
+                    judges[j_uid] = {'matches': set(), 'rounds': set(), 'name': u_name}
+                judges[j_uid]['matches'].add(ev_id)
+                judges[j_uid]['rounds'].add(rnd)
+                if hasattr(j_val, 'name'):
+                    judges[j_uid]['name'] = j_val.name
+            
+            # Solo Recorder (No judge or different judge)
+            if r_uid:
+                u_name = getattr(r_val, 'name', ev_data.get('recorder_name', f"User_{r_uid}"))
+                if r_uid not in recorders:
+                    recorders[r_uid] = {'matches': set(), 'rounds': set(), 'name': u_name}
+                recorders[r_uid]['matches'].add(ev_id)
+                recorders[r_uid]['rounds'].add(rnd)
+                if hasattr(r_val, 'name'):
+                    recorders[r_uid]['name'] = r_val.name
 
     guild_stats = get_guild_staff_stats(guild.id)
     for u_id, s_data in guild_stats.items():
@@ -895,6 +923,7 @@ async def render_staff_work_count(
         target_uid = str(member.id)
         judges = {k: v for k, v in judges.items() if k == target_uid}
         recorders = {k: v for k, v in recorders.items() if k == target_uid}
+        judge_and_recorders = {k: v for k, v in judge_and_recorders.items() if k == target_uid}
 
     def format_staff_entry(idx, u_id, data):
         m_obj = guild.get_member(int(u_id)) if u_id.isdigit() else None
@@ -936,25 +965,15 @@ async def render_staff_work_count(
     else:
         recorders_embed.description = "*No recorder activity recorded.*"
 
-    all_uids = set(judges.keys()).union(set(recorders.keys()))
-    combined_data = {}
-    for uid in all_uids:
-        j_d = judges.get(uid, {'matches': set(), 'rounds': set(), 'name': ''})
-        r_d = recorders.get(uid, {'matches': set(), 'rounds': set(), 'name': ''})
-        combined_data[uid] = {
-            'matches': j_d['matches'] | r_d['matches'],
-            'rounds': j_d['rounds'] | r_d['rounds'],
-            'name': j_d.get('name') or r_d.get('name') or uid
-        }
-        
-    sorted_combined = sorted(combined_data.items(), key=lambda x: (len(x[1]['matches']), len(x[1]['rounds'])), reverse=True)
+    sorted_combined = sorted(judge_and_recorders.items(), key=lambda x: (len(x[1]['matches']), len(x[1]['rounds'])), reverse=True)
     combined_embed = discord.Embed(title="🎥🧑‍⚖️ Judge & Recorder", color=discord.Color.blue())
     if sorted_combined:
         combined_embed.description = "\n".join([format_staff_entry(i, uid, d) for i, (uid, d) in enumerate(sorted_combined, 1)][:25])
     else:
-        combined_embed.description = "*No staff activity recorded.*"
+        combined_embed.description = "*No judge & recorder activity recorded.*"
 
     await interaction.followup.send(embeds=[header_embed, judges_embed, recorders_embed, combined_embed], ephemeral=False)
+
 
 
 @staff_group.command(name="work", description="View staff match count and activity statistics")
@@ -963,6 +982,7 @@ async def render_staff_work_count(
     default_wins="Include or exclude default wins / DQs",
     member="Optional staff member to filter"
 )
+@app_commands.autocomplete(tournament=tournament_autocomplete)
 @app_commands.choices(
     default_wins=[
         app_commands.Choice(name="Including", value="Including"),
@@ -971,6 +991,7 @@ async def render_staff_work_count(
 )
 @with_guild_context
 async def staff_work_cmd(
+
     interaction: discord.Interaction,
     tournament: Optional[str] = None,
     default_wins: Optional[app_commands.Choice[str]] = None,

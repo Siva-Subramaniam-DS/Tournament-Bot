@@ -112,84 +112,106 @@ def find_tournament_config(guild_id: int, tournament_name_or_id: str) -> Optiona
         if str(t_cfg.get('name', '')).strip().lower() == clean_target:
             return t_cfg
     for t_id, t_cfg in tournaments.items():
-        if clean_target in t_id.lower() or clean_target in str(t_cfg.get('name', '')).lower():
+        if clean_target in t_id.lower() or clean_target in str(t_cfg.get('name', '')).lower() or str(t_cfg.get('name', '')).lower() in clean_target:
             return t_cfg
     return None
 
 def get_tournament_schedule_channel(guild: discord.Guild, tournament: str = None) -> Optional[discord.TextChannel]:
     if not guild:
         return None
+    keys = ['schedule', 'take_schedule', 'schedule_channel', 'Schedule_Channel_ID', 'schedule_channel_id', 'take_schedule_channel_id']
     if tournament:
         t_cfg = find_tournament_config(guild.id, tournament)
-        if t_cfg and t_cfg.get('schedule'):
+        if t_cfg:
+            for k in keys:
+                if t_cfg.get(k):
+                    try:
+                        ch = guild.get_channel(int(t_cfg[k]))
+                        if ch: return ch
+                    except: pass
+    t_cfg = get_active_tournament_config(guild.id)
+    if t_cfg:
+        for k in keys:
+            if t_cfg.get(k):
+                try:
+                    ch = guild.get_channel(int(t_cfg[k]))
+                    if ch: return ch
+                except: pass
+    cfg = get_guild_config(guild.id)
+    global_channels = cfg.get('channel_ids', {})
+    for k in keys:
+        sch_id = global_channels.get(k) or cfg.get(k)
+        if sch_id:
             try:
-                ch = guild.get_channel(int(t_cfg['schedule']))
+                ch = guild.get_channel(int(sch_id))
                 if ch: return ch
             except: pass
-    t_cfg = get_active_tournament_config(guild.id)
-    if t_cfg and t_cfg.get('schedule'):
-        try:
-            ch = guild.get_channel(int(t_cfg['schedule']))
-            if ch: return ch
-        except: pass
-    cfg = get_guild_config(guild.id)
-    sch_id = cfg.get('channel_ids', {}).get('schedule') or cfg.get('schedule_channel_id')
-    if sch_id:
-        try:
-            ch = guild.get_channel(int(sch_id))
-            if ch: return ch
-        except: pass
     return None
 
 def get_tournament_results_channel(guild: discord.Guild, tournament: str = None) -> Optional[discord.TextChannel]:
     if not guild:
         return None
+    keys = ['result', 'results', 'results_channel', 'Result_Channel_ID', 'result_channel_id', 'results_channel_id']
     if tournament:
         t_cfg = find_tournament_config(guild.id, tournament)
-        if t_cfg and t_cfg.get('result'):
+        if t_cfg:
+            for k in keys:
+                if t_cfg.get(k):
+                    try:
+                        ch = guild.get_channel(int(t_cfg[k]))
+                        if ch: return ch
+                    except: pass
+    t_cfg = get_active_tournament_config(guild.id)
+    if t_cfg:
+        for k in keys:
+            if t_cfg.get(k):
+                try:
+                    ch = guild.get_channel(int(t_cfg[k]))
+                    if ch: return ch
+                except: pass
+    cfg = get_guild_config(guild.id)
+    global_channels = cfg.get('channel_ids', {})
+    for k in keys:
+        res_id = global_channels.get(k) or cfg.get(k)
+        if res_id:
             try:
-                ch = guild.get_channel(int(t_cfg['result']))
+                ch = guild.get_channel(int(res_id))
                 if ch: return ch
             except: pass
-    t_cfg = get_active_tournament_config(guild.id)
-    if t_cfg and t_cfg.get('result'):
-        try:
-            ch = guild.get_channel(int(t_cfg['result']))
-            if ch: return ch
-        except: pass
-    cfg = get_guild_config(guild.id)
-    res_id = cfg.get('channel_ids', {}).get('result') or cfg.get('result_channel_id')
-    if res_id:
-        try:
-            ch = guild.get_channel(int(res_id))
-            if ch: return ch
-        except: pass
     return None
 
 def get_tournament_attendance_channel(guild: discord.Guild, tournament: str = None) -> Optional[discord.TextChannel]:
     if not guild:
         return None
+    keys = ['attendance', 'staff_attendance', 'attendance_channel', 'Attendance_Channel_ID', 'attendance_channel_id', 'staff_attendance_channel_id']
     if tournament:
         t_cfg = find_tournament_config(guild.id, tournament)
-        if t_cfg and t_cfg.get('attendance'):
+        if t_cfg:
+            for k in keys:
+                if t_cfg.get(k):
+                    try:
+                        ch = guild.get_channel(int(t_cfg[k]))
+                        if ch: return ch
+                    except: pass
+    t_cfg = get_active_tournament_config(guild.id)
+    if t_cfg:
+        for k in keys:
+            if t_cfg.get(k):
+                try:
+                    ch = guild.get_channel(int(t_cfg[k]))
+                    if ch: return ch
+                except: pass
+    cfg = get_guild_config(guild.id)
+    global_channels = cfg.get('channel_ids', {})
+    for k in keys:
+        att_id = global_channels.get(k) or cfg.get(k)
+        if att_id:
             try:
-                ch = guild.get_channel(int(t_cfg['attendance']))
+                ch = guild.get_channel(int(att_id))
                 if ch: return ch
             except: pass
-    t_cfg = get_active_tournament_config(guild.id)
-    if t_cfg and t_cfg.get('attendance'):
-        try:
-            ch = guild.get_channel(int(t_cfg['attendance']))
-            if ch: return ch
-        except: pass
-    cfg = get_guild_config(guild.id)
-    att_id = cfg.get('channel_ids', {}).get('attendance') or cfg.get('attendance_channel_id')
-    if att_id:
-        try:
-            ch = guild.get_channel(int(att_id))
-            if ch: return ch
-        except: pass
     return None
+
 
 async def resolve_embed_thumbnail(guild_id: int, embed: discord.Embed, fallback_to_captain_avatar: Optional[discord.Member] = None) -> tuple[Optional[discord.File], bool]:
     cfg = get_guild_config(guild_id)
@@ -778,6 +800,7 @@ class Events(commands.Cog):
         ss_3="Screenshot 3 (upload)",
         ss_4="Screenshot 4 (upload)"
     )
+    @app_commands.autocomplete(tournament=tournament_autocomplete)
     @app_commands.choices(
         group=[
             app_commands.Choice(name="Group A", value="Group A"),
@@ -831,6 +854,9 @@ class Events(commands.Cog):
             await interaction.followup.send("❌ Scores cannot be negative", ephemeral=False)
             return
 
+        t_cfg_found = find_tournament_config(interaction.guild.id, tournament)
+        t_display_name = t_cfg_found.get('name') if t_cfg_found else tournament
+
         group_label = group.value if group and isinstance(group, app_commands.Choice) else None
         w_name = winner_team_name if winner_team_name else (winner.name if winner else "Unknown")
         l_name = loser_team_name if loser_team_name else (loser.name if loser else "Unknown")
@@ -848,7 +874,7 @@ class Events(commands.Cog):
         
         embed_description = f"**Result UTC Time:** {now_utc.strftime('%Y-%m-%d %H:%M')}\n"
         embed_description += f"**Result Local Time:** <t:{timestamp}:f> (<t:{timestamp}:R>)\n\n"
-        embed_description += f"**Tournament:** {tournament}\n"
+        embed_description += f"**Tournament:** {t_display_name}\n"
         embed_description += f"**Round:** {format_round_heading(round)}"
         if group_label: embed_description += f"\n**Group:** {group_label}"
         
@@ -872,6 +898,8 @@ class Events(commands.Cog):
         embed.add_field(name="📝 Remarks", value=remarks, inline=False)
         
         update_staff_stats(interaction.user, "judge")
+        if recorder:
+            update_staff_stats(recorder, "recorder")
 
         screenshots = [ss_1, ss_2, ss_3, ss_4]
         raw_screenshots = []
@@ -891,21 +919,98 @@ class Events(commands.Cog):
 
         embed.set_footer(text=f"Powered by • {ORGANIZATION_NAME}")
 
+        # Locate or register event in scheduled_events
+        matched_ev_id = None
+        for ev_id, ev_d in scheduled_events.items():
+            if ev_d.get('channel_id') == interaction.channel.id:
+                matched_ev_id = ev_id
+                break
+        if not matched_ev_id:
+            matched_ev_id = f"res_{interaction.id}"
+            scheduled_events[matched_ev_id] = {
+                'guild_id': interaction.guild.id,
+                'channel_id': interaction.channel.id
+            }
+        ev_data = scheduled_events[matched_ev_id]
+        ev_data.update({
+            'tournament': t_display_name,
+            'tournament_id': str(t_cfg_found.get('id', '')) if t_cfg_found else '',
+            'round': round,
+            'team1_name': w_name,
+            'team2_name': l_name,
+            'winner_score': winner_score,
+            'loser_score': loser_score,
+            'judge': interaction.user,
+            'recorder': recorder,
+            'match_name': f"{w_name} vs {l_name}"
+        })
+
+        # Post in results channel and save message ID for VOD link updates
+        res_msg = None
         results_channel = get_tournament_results_channel(interaction.guild, tournament)
         if results_channel:
             if raw_screenshots:
                 files = [discord.File(fp=io.BytesIO(b), filename=fn) for fn, b in raw_screenshots]
-                await results_channel.send(embed=embed, files=files)
+                res_msg = await results_channel.send(embed=embed, files=files)
             else:
-                await results_channel.send(embed=embed)
+                res_msg = await results_channel.send(embed=embed)
+            if res_msg:
+                ev_data['results_message_id'] = res_msg.id
+                ev_data['results_channel_id'] = results_channel.id
 
+        # Post in ticket channel
         if raw_screenshots:
             files = [discord.File(fp=io.BytesIO(b), filename=fn) for fn, b in raw_screenshots]
             await interaction.channel.send(embed=embed, files=files)
         else:
             await interaction.channel.send(embed=embed)
 
+        save_scheduled_events()
+        asyncio.create_task(save_event_to_supabase(matched_ev_id, ev_data))
+
+        # Check if links already exist on event and update results embed
+        if ev_data.get('recording_link') or ev_data.get('recorder_link') or ev_data.get('judge_link'):
+            await update_results_embed_with_links(interaction.guild, ev_data)
+
+        # Post Staff Attendance Log
+        staff_attendance_channel = get_tournament_attendance_channel(interaction.guild, tournament)
+        if staff_attendance_channel:
+            try:
+                att_embed = discord.Embed(
+                    title="📋 Staff Attendance Log",
+                    description=(
+                        f"🏅 **{w_name}** vs **{l_name}**\n"
+                        f"**Tournament:** {t_display_name}\n"
+                        f"**Round:** {round}"
+                        + (f"\n**Group:** {group_label}" if group_label else "")
+                    ),
+                    color=discord.Color(BRAND_COLOR),
+                    timestamp=discord.utils.utcnow()
+                )
+                w_att_text = winner.mention if winner else f"**{w_name}**"
+                l_att_text = loser.mention if loser else f"**{l_name}**"
+                if dq_status in ("Winner", "Both"):
+                    w_att_text += " (Disqualified)"
+                if dq_status in ("Loser", "Both"):
+                    l_att_text += " (Disqualified)"
+
+                att_embed.add_field(
+                    name="🏆 Result",
+                    value=f"**Winner/Team 1:** {w_att_text} `({winner_score})`\n**Loser/Team 2:** {l_att_text} `({loser_score})`",
+                    inline=False
+                )
+                staff_val = f"⚖️ **Judge:** {interaction.user.mention}"
+                if recorder:
+                    staff_val += f"\n🎥 **Recorder:** {recorder.mention}"
+                att_embed.add_field(name="👥 Staff on Duty", value=staff_val, inline=False)
+                att_embed.add_field(name="📝 Remarks", value=remarks, inline=False)
+                att_embed.set_footer(text=f"{ORGANIZATION_NAME} • Attendance")
+                await staff_attendance_channel.send(embed=att_embed)
+            except Exception as e:
+                print(f"Error posting in Staff Attendance channel: {e}")
+
         await interaction.followup.send("✅ Event results processed and posted successfully!", ephemeral=False)
+
 
     @app_commands.command(name="event-edit", description="Edit the event in this ticket channel")
     @app_commands.describe(
@@ -920,8 +1025,10 @@ class Events(commands.Cog):
         team_1_name="Optional name of team 1",
         team_2_name="Optional name of team 2"
     )
+    @app_commands.autocomplete(tournament=tournament_autocomplete)
     @with_guild_context
     async def event_edit_cmd(
+
         self,
         interaction: discord.Interaction,
         team_1_captain: discord.Member = None,
