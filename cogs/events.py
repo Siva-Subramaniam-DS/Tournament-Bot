@@ -1,0 +1,1137 @@
+import os
+import io
+import re
+import glob
+import json
+import random
+import asyncio
+import datetime
+import tempfile
+from pathlib import Path
+from typing import Optional, List, Union
+
+import discord
+from discord import app_commands
+from discord.ext import commands
+from discord.ui import View
+import pytz
+from PIL import Image
+
+from core.config import (
+    BASE_DIR, BRAND_COLOR, BOT_OWNER_ID, ORGANIZATION_NAME,
+    GAME_ALIASES, DEFAULT_CHANNEL_IDS, DEFAULT_ROLE_IDS
+)
+from core.state import (
+    current_guild_id, with_guild_context, is_authorized_to_configure,
+    is_staff, has_organizer_permission, has_event_create_permission,
+    has_event_result_permission, get_user_permission_level, get_org_name,
+    get_tournament_name, get_system_name, get_bracket_link,
+    ROLE_IDS, CHANNEL_IDS, scheduled_events, save_scheduled_events,
+    scheduled_deadlines, reminder_tasks, cleanup_tasks
+)
+from core.database import (
+    supabase_client, load_guild_tournaments, save_guild_tournaments,
+    get_guild_config, get_active_tournament_config,
+    save_event_to_supabase, log_bot_activity, sheetdb_post,
+    update_staff_stats, get_guild_staff_stats, save_guild_staff_stats
+)
+
+from core.image_generator import (
+    get_random_template, create_event_poster,
+    get_thumbnail_url_from_channel
+)
+from cogs.staff import (
+    TakeScheduleButton, StaffConfirmationView, StaffReplacementView,
+    remove_judge_assignment
+)
+from cogs.tournaments import (
+    tournament_autocomplete, game_autocomplete, match_autocomplete,
+    find_event_by_name_or_id
+)
+
+# ===========================================================================================
+# HELPERS
+# ===========================================================================================
+
+def format_round_heading(round_val) -> str:
+    if not round_val:
+        return "Round Not Set"
+    round_str = str(round_val).strip()
+    match = re.match(r'^[Rr](-?\d+)$', round_str)
+    if match:
+        round_str = match.group(1)
+    try:
+        r_int = int(round_str)
+        if r_int < 0:
+            return f"Losers Round {abs(r_int)}"
+        else:
+            return f"Winners Round {r_int}"
+    except (ValueError, TypeError):
+        return round_str
+
+def calculate_time_difference(event_datetime: datetime.datetime, user_timezone: str = None) -> dict:
+    current_time = datetime.datetime.utcnow()
+    time_diff = event_datetime - current_time
+    minutes_remaining = int(time_diff.total_seconds() / 60)
+    utc_time_str = event_datetime.strftime("%H:%M utc, %d/%m")
+    
+    local_timezone = pytz.timezone(user_timezone) if user_timezone else pytz.timezone('Asia/Kolkata')
+    local_time = event_datetime.replace(tzinfo=pytz.UTC).astimezone(local_timezone)
+    local_time_formatted = local_time.strftime("%A, %d %B, %Y %H:%M")
+    
+    ist_tz = pytz.timezone('Asia/Kolkata')
+    ist_time = event_datetime.replace(tzinfo=pytz.UTC).astimezone(ist_tz)
+    ist_formatted = ist_time.strftime("%A, %d %B, %Y %H:%M")
+    
+    est_tz = pytz.timezone('America/New_York')
+    est_time = event_datetime.replace(tzinfo=pytz.UTC).astimezone(est_tz)
+    est_formatted = est_time.strftime("%A, %d %B, %Y %H:%M")
+    
+    gmt_tz = pytz.timezone('Europe/London')
+    gmt_time = event_datetime.replace(tzinfo=pytz.UTC).astimezone(gmt_tz)
+    gmt_formatted = gmt_time.strftime("%A, %d %B, %Y %H:%M")
+    
+    return {
+        'minutes_remaining': minutes_remaining,
+        'utc_time': utc_time_str,
+        'utc_time_simple': event_datetime.strftime("%H:%M UTC"),
+        'local_time': local_time_formatted,
+        'ist_time': ist_formatted,
+        'est_time': est_formatted,
+        'gmt_time': gmt_formatted
+    }
+
+def find_tournament_config(guild_id: int, tournament_name_or_id: str) -> Optional[dict]:
+    if not guild_id or not tournament_name_or_id:
+        return None
+    tournaments = load_guild_tournaments(guild_id)
+    clean_target = str(tournament_name_or_id).strip().lower()
+    if clean_target in tournaments:
+        return tournaments[clean_target]
+    for t_id, t_cfg in tournaments.items():
+        if str(t_cfg.get('name', '')).strip().lower() == clean_target:
+            return t_cfg
+    for t_id, t_cfg in tournaments.items():
+        if clean_target in t_id.lower() or clean_target in str(t_cfg.get('name', '')).lower():
+            return t_cfg
+    return None
+
+def get_tournament_schedule_channel(guild: discord.Guild, tournament: str = None) -> Optional[discord.TextChannel]:
+    if not guild:
+        return None
+    if tournament:
+        t_cfg = find_tournament_config(guild.id, tournament)
+        if t_cfg and t_cfg.get('schedule'):
+            try:
+                ch = guild.get_channel(int(t_cfg['schedule']))
+                if ch: return ch
+            except: pass
+    t_cfg = get_active_tournament_config(guild.id)
+    if t_cfg and t_cfg.get('schedule'):
+        try:
+            ch = guild.get_channel(int(t_cfg['schedule']))
+            if ch: return ch
+        except: pass
+    cfg = get_guild_config(guild.id)
+    sch_id = cfg.get('channel_ids', {}).get('schedule') or cfg.get('schedule_channel_id')
+    if sch_id:
+        try:
+            ch = guild.get_channel(int(sch_id))
+            if ch: return ch
+        except: pass
+    return None
+
+def get_tournament_results_channel(guild: discord.Guild, tournament: str = None) -> Optional[discord.TextChannel]:
+    if not guild:
+        return None
+    if tournament:
+        t_cfg = find_tournament_config(guild.id, tournament)
+        if t_cfg and t_cfg.get('result'):
+            try:
+                ch = guild.get_channel(int(t_cfg['result']))
+                if ch: return ch
+            except: pass
+    t_cfg = get_active_tournament_config(guild.id)
+    if t_cfg and t_cfg.get('result'):
+        try:
+            ch = guild.get_channel(int(t_cfg['result']))
+            if ch: return ch
+        except: pass
+    cfg = get_guild_config(guild.id)
+    res_id = cfg.get('channel_ids', {}).get('result') or cfg.get('result_channel_id')
+    if res_id:
+        try:
+            ch = guild.get_channel(int(res_id))
+            if ch: return ch
+        except: pass
+    return None
+
+def get_tournament_attendance_channel(guild: discord.Guild, tournament: str = None) -> Optional[discord.TextChannel]:
+    if not guild:
+        return None
+    if tournament:
+        t_cfg = find_tournament_config(guild.id, tournament)
+        if t_cfg and t_cfg.get('attendance'):
+            try:
+                ch = guild.get_channel(int(t_cfg['attendance']))
+                if ch: return ch
+            except: pass
+    t_cfg = get_active_tournament_config(guild.id)
+    if t_cfg and t_cfg.get('attendance'):
+        try:
+            ch = guild.get_channel(int(t_cfg['attendance']))
+            if ch: return ch
+        except: pass
+    cfg = get_guild_config(guild.id)
+    att_id = cfg.get('channel_ids', {}).get('attendance') or cfg.get('attendance_channel_id')
+    if att_id:
+        try:
+            ch = guild.get_channel(int(att_id))
+            if ch: return ch
+        except: pass
+    return None
+
+async def resolve_embed_thumbnail(guild_id: int, embed: discord.Embed, fallback_to_captain_avatar: Optional[discord.Member] = None) -> tuple[Optional[discord.File], bool]:
+    cfg = get_guild_config(guild_id)
+    logo_filename = cfg.get('server_logo_path')
+    if logo_filename and os.path.exists(logo_filename):
+        try:
+            with open(logo_filename, "rb") as f:
+                logo_data = f.read()
+            embed.set_thumbnail(url="attachment://server_logo.png")
+            file_obj = discord.File(fp=io.BytesIO(logo_data), filename="server_logo.png")
+            return file_obj, True
+        except Exception as e:
+            print(f"Error loading server logo path {logo_filename}: {e}")
+
+    t_cfg = get_active_tournament_config(guild_id)
+    if t_cfg:
+        thumb_chan_id = t_cfg.get('thumbnail')
+        if thumb_chan_id:
+            try:
+                thumb_url = await get_thumbnail_url_from_channel(int(thumb_chan_id))
+                if thumb_url:
+                    embed.set_thumbnail(url=thumb_url)
+                    return None, False
+            except Exception as e:
+                print(f"Error resolving thumbnail from channel {thumb_chan_id}: {e}")
+
+    default_logo_path = os.path.join(BASE_DIR, "tournament_bot_logo.png")
+    if os.path.exists(default_logo_path):
+        try:
+            with open(default_logo_path, "rb") as f:
+                logo_data = f.read()
+            embed.set_thumbnail(url="attachment://tournament_bot_logo.png")
+            file_obj = discord.File(fp=io.BytesIO(logo_data), filename="tournament_bot_logo.png")
+            return file_obj, True
+        except Exception as e:
+            print(f"Error loading default logo: {e}")
+
+    if fallback_to_captain_avatar and hasattr(fallback_to_captain_avatar, 'display_avatar'):
+        embed.set_thumbnail(url=fallback_to_captain_avatar.display_avatar.url)
+        return None, False
+
+    return None, False
+
+async def update_results_embed_with_links(guild: discord.Guild, ev_data: dict):
+    res_msg_id = ev_data.get('results_message_id')
+    res_chan_id = ev_data.get('results_channel_id')
+    if not res_msg_id or not res_chan_id or not guild:
+        return
+    try:
+        channel = guild.get_channel(int(res_chan_id))
+        if not channel:
+            channel = await guild.fetch_channel(int(res_chan_id))
+        msg = await channel.fetch_message(int(res_msg_id))
+        if not msg or not msg.embeds:
+            return
+        
+        embed = msg.embeds[0]
+        general_link = ev_data.get('recording_link')
+        rec_link = ev_data.get('recorder_link')
+        jdg_link = ev_data.get('judge_link')
+        
+        link_lines = []
+        if general_link: link_lines.append(f"🎥 **Recording:** [Watch Here]({general_link})")
+        if rec_link:     link_lines.append(f"🎥 **Recorder VOD:** [Watch Here]({rec_link})")
+        if jdg_link:     link_lines.append(f"⚖️ **Judge VOD:** [Watch Here]({jdg_link})")
+        
+        fields = [f for f in embed.fields if f.name not in ("🎥 Recording Link", "🎥 Recordings / VODs")]
+        embed.clear_fields()
+        for f in fields:
+            embed.add_field(name=f.name, value=f.value, inline=f.inline)
+            
+        if link_lines:
+            embed.add_field(name="🎥 Recordings / VODs", value="\n".join(link_lines), inline=False)
+            
+        await msg.edit(embed=embed)
+    except Exception as e:
+        print(f"Error updating result embed with links: {e}")
+
+async def send_ten_minute_reminder(event_id: str, team1_captain: discord.Member, team2_captain: discord.Member, judge: Optional[discord.Member], event_channel: discord.TextChannel, match_time: datetime.datetime):
+    try:
+        if not event_channel:
+            return
+
+        resolved_judge = judge
+        resolved_team1_captain = team1_captain
+        resolved_team2_captain = team2_captain
+        resolved_recorder = None
+        
+        if event_id in scheduled_events:
+            ev_data = scheduled_events[event_id]
+            if ev_data.get('judge'): resolved_judge = ev_data.get('judge')
+            if ev_data.get('recorder'): resolved_recorder = ev_data.get('recorder')
+            if ev_data.get('team1_captain'): resolved_team1_captain = ev_data.get('team1_captain')
+            if ev_data.get('team2_captain'): resolved_team2_captain = ev_data.get('team2_captain')
+
+        t1_id = getattr(resolved_team1_captain, 'id', resolved_team1_captain)
+        t2_id = getattr(resolved_team2_captain, 'id', resolved_team2_captain)
+        j_id = getattr(resolved_judge, 'id', resolved_judge) if resolved_judge else None
+        r_id = getattr(resolved_recorder, 'id', resolved_recorder) if resolved_recorder else None
+
+        embed = discord.Embed(
+            title="⏰ 10-MINUTE MATCH REMINDER",
+            description="**Your tournament match is starting in 10 minutes!**",
+            color=discord.Color.orange(),
+            timestamp=discord.utils.utcnow()
+        )
+        _mt_utc = match_time if match_time.tzinfo else match_time.replace(tzinfo=datetime.timezone.utc)
+        embed.add_field(name="🕒 Match Time", value=f"<t:{int(_mt_utc.timestamp())}:F>", inline=False)
+        embed.add_field(name="👥 Team Captains", value=f"<@{t1_id}> vs <@{t2_id}>", inline=False)
+        if j_id:
+            embed.add_field(name="👨‍⚖️ Judge", value=f"<@{j_id}>", inline=True)
+        if r_id:
+            embed.add_field(name="🎥 Recorder", value=f"<@{r_id}>", inline=True)
+        embed.add_field(name="📝 Action Required", value="Please prepare for the match and join the designated channel.", inline=False)
+        embed.set_footer(text="Tournament Management System")
+
+        file = None
+        if event_id in scheduled_events:
+            ev_data = scheduled_events[event_id]
+            poster_image = ev_data.get('poster_path')
+            if poster_image and os.path.exists(poster_image):
+                try:
+                    file = discord.File(poster_image, filename="event_poster.png")
+                    embed.set_image(url="attachment://event_poster.png")
+                except Exception as e:
+                    print(f"Error loading poster image for reminder: {e}")
+
+        pings = f"<@{t1_id}> <@{t2_id}>"
+        if j_id: pings = f"<@{j_id}> " + pings
+        if r_id: pings = f"<@{r_id}> " + pings
+        notification_text = f"🔔 **MATCH REMINDER**\n\n{pings}\n\nYour match starts in **10 minutes**!"
+
+        if file:
+            await event_channel.send(content=notification_text, embed=embed, file=file)
+        else:
+            await event_channel.send(content=notification_text, embed=embed)
+    except Exception as e:
+        print(f"Error sending 10-minute reminder: {e}")
+
+async def schedule_ten_minute_reminder(event_id: str, team1_captain: discord.Member, team2_captain: discord.Member, judge: Optional[discord.Member], event_channel: discord.TextChannel, match_time: datetime.datetime):
+    try:
+        now = datetime.datetime.now(pytz.UTC)
+        if match_time.tzinfo is None:
+            match_time = match_time.replace(tzinfo=pytz.UTC)
+            
+        reminder_time_20 = match_time - datetime.timedelta(minutes=20)
+        reminder_time_10 = match_time - datetime.timedelta(minutes=10)
+        
+        async def combined_reminder_task():
+            g_id = None
+            if event_id in scheduled_events:
+                g_id = scheduled_events[event_id].get('guild_id')
+                if g_id: current_guild_id.set(g_id)
+                    
+            delay_20 = (reminder_time_20 - datetime.datetime.now(pytz.UTC)).total_seconds()
+            if delay_20 > 0:
+                await asyncio.sleep(delay_20)
+            
+            if g_id: current_guild_id.set(g_id)
+                
+            if event_id in scheduled_events:
+                now_check = datetime.datetime.now(pytz.UTC)
+                if now_check < match_time:
+                    ev_data = scheduled_events[event_id]
+                    j = ev_data.get('judge')
+                    r = ev_data.get('recorder')
+                    
+                    if not j:
+                        try:
+                            j_role = ROLE_IDS.get('judge', '')
+                            await event_channel.send(f"⚠️ <@&{j_role}> **URGENT:** Match starts in 20 mins and NO JUDGE is assigned!")
+                        except Exception as e: pass
+                    
+                    if not r:
+                        try:
+                            r_role = ROLE_IDS.get('recorder', '')
+                            await event_channel.send(f"⚠️ <@&{r_role}> **URGENT:** Match starts in 20 mins and NO RECORDER is assigned!")
+                        except Exception as e: pass
+                    
+                    if j or r:
+                        try:
+                            j_m = event_channel.guild.get_member(j) if isinstance(j, int) else j
+                            r_m = event_channel.guild.get_member(r) if isinstance(r, int) else r
+                            pings = [m.mention for m in (j_m, r_m) if m]
+                            embed = discord.Embed(
+                                title="Staff Confirmation Required",
+                                description="Please confirm your presence for the upcoming match.",
+                                color=discord.Color.orange(),
+                                timestamp=discord.utils.utcnow()
+                            )
+                            embed.add_field(name="⏰ Window", value="You have **10 minutes** to confirm before auto-replacement triggers.")
+                            view = StaffConfirmationView(event_id, j_m, r_m)
+                            await event_channel.send(content=" ".join(pings), embed=embed, view=view)
+                        except Exception as e:
+                            print(f"Error sending staff confirmation: {e}")
+            
+            delay_10 = (reminder_time_10 - datetime.datetime.now(pytz.UTC)).total_seconds()
+            if delay_10 > 0:
+                await asyncio.sleep(delay_10)
+                
+            if g_id: current_guild_id.set(g_id)
+                
+            if event_id in scheduled_events:
+                now_check = datetime.datetime.now(pytz.UTC)
+                if now_check < match_time:
+                    try:
+                        ev_data = scheduled_events[event_id]
+                        t1 = ev_data.get('team1_captain')
+                        t2 = ev_data.get('team2_captain')
+                        t1_m = event_channel.guild.get_member(t1) if isinstance(t1, int) else t1
+                        t2_m = event_channel.guild.get_member(t2) if isinstance(t2, int) else t2
+                        j_val = ev_data.get('judge')
+                        j_m = event_channel.guild.get_member(j_val) if isinstance(j_val, int) else j_val
+                        await send_ten_minute_reminder(event_id, t1_m, t2_m, j_m, event_channel, match_time)
+                    except Exception as e:
+                        print(f"Failed to send 10-min player reminder: {e}")
+
+        if event_id in reminder_tasks:
+            reminder_tasks[event_id].cancel()
+
+        reminder_tasks[event_id] = asyncio.create_task(combined_reminder_task())
+    except Exception as e:
+        print(f"Error scheduling reminders for event {event_id}: {e}")
+
+async def schedule_event_cleanup(event_id: str, delay_hours: int = 36, delay_minutes: int = None, keep_event_data: bool = True):
+    try:
+        if event_id not in scheduled_events:
+            return
+        
+        delay_seconds = delay_minutes * 60 if delay_minutes is not None else delay_hours * 3600
+
+        async def cleanup_task():
+            try:
+                await asyncio.sleep(delay_seconds)
+                data = scheduled_events.get(event_id)
+                if not data: return
+                
+                if keep_event_data:
+                    data['status'] = 'completed'
+                    data['cleanup_timestamp'] = datetime.datetime.utcnow().isoformat()
+                    save_scheduled_events()
+                else:
+                    del scheduled_events[event_id]
+                    save_scheduled_events()
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                print(f"Error in cleanup task: {e}")
+
+        if event_id in cleanup_tasks:
+            try: cleanup_tasks[event_id].cancel()
+            except Exception: pass
+
+        cleanup_tasks[event_id] = asyncio.create_task(cleanup_task())
+    except Exception as e:
+        print(f"Error scheduling cleanup: {e}")
+
+
+# ===========================================================================================
+# EVENTS COG
+# ===========================================================================================
+
+class Events(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+
+    @app_commands.command(name="event", description="Base event command helper")
+    @app_commands.describe(action="Select event action")
+    @app_commands.choices(action=[
+        app_commands.Choice(name="create", value="create"),
+        app_commands.Choice(name="result", value="result")
+    ])
+    @with_guild_context
+    async def event_base(self, interaction: discord.Interaction, action: app_commands.Choice[str]):
+        await interaction.response.send_message(f"Please use `/event-{action.value}` with the appropriate parameters.", ephemeral=False)
+
+    @app_commands.command(name="event-create", description="Creates an event (Head Organizer/Head Helper/Helper Team only)")
+    @app_commands.describe(
+        team_1_captain="Captain of team 1",
+        team_2_captain="Captain of team 2", 
+        hour="Hour of the event (0-23)",
+        minute="Minute of the event (0-59)",
+        date="Date of the event",
+        month="Month of the event",
+        round="Round label",
+        tournament="Tournament name (e.g. King of the Seas, Summer Cup, etc.)",
+        game="Game for poster background (e.g. Modern Warship, BGMI, Valorant, Free Fire)",
+        group="Group assignment (A-J) or Winner/Loser",
+        team_1_name="Optional name of team 1",
+        team_2_name="Optional name of team 2",
+        mode="Optional game mode (e.g. 5v5, 1v1, Battle Royale)"
+    )
+    @app_commands.autocomplete(tournament=tournament_autocomplete, game=game_autocomplete)
+    @app_commands.choices(
+        round=[
+            app_commands.Choice(name="R1", value="R1"),
+            app_commands.Choice(name="R2", value="R2"),
+            app_commands.Choice(name="R3", value="R3"),
+            app_commands.Choice(name="R4", value="R4"),
+            app_commands.Choice(name="R5", value="R5"),
+            app_commands.Choice(name="R6", value="R6"),
+            app_commands.Choice(name="R7", value="R7"),
+            app_commands.Choice(name="R8", value="R8"),
+            app_commands.Choice(name="R9", value="R9"),
+            app_commands.Choice(name="R10", value="R10"),
+            app_commands.Choice(name="Qualifier", value="Qualifier"),
+            app_commands.Choice(name="Semi Final", value="Semi Final"),
+            app_commands.Choice(name="3rd Place", value="3rd Place"),
+            app_commands.Choice(name="Final", value="Final"),
+        ],
+        group=[
+            app_commands.Choice(name="Group A", value="Group A"),
+            app_commands.Choice(name="Group B", value="Group B"),
+            app_commands.Choice(name="Group C", value="Group C"),
+            app_commands.Choice(name="Group D", value="Group D"),
+            app_commands.Choice(name="Group E", value="Group E"),
+            app_commands.Choice(name="Group F", value="Group F"),
+            app_commands.Choice(name="Group G", value="Group G"),
+            app_commands.Choice(name="Group H", value="Group H"),
+            app_commands.Choice(name="Group I", value="Group I"),
+            app_commands.Choice(name="Group J", value="Group J"),
+            app_commands.Choice(name="Winner", value="Winner"),
+            app_commands.Choice(name="Loser", value="Loser"),
+        ]
+    )
+    @with_guild_context
+    async def event_create(
+        self,
+        interaction: discord.Interaction,
+        team_1_captain: discord.Member,
+        team_2_captain: discord.Member,
+        hour: int,
+        minute: int,
+        date: int,
+        month: int,
+        round: app_commands.Choice[str],
+        tournament: str,
+        game: Optional[str] = None,
+        group: app_commands.Choice[str] = None,
+        team_1_name: str = None,
+        team_2_name: str = None,
+        mode: str = None
+    ):
+        await interaction.response.defer(ephemeral=False)
+        
+        if not has_event_create_permission(interaction):
+            await interaction.followup.send("❌ You need **Head Organizer**, **Head Helper** or **Helper Team** role to create events.", ephemeral=False)
+            return
+        
+        if not (0 <= hour <= 23):
+            await interaction.followup.send("❌ Hour must be between 0 and 23", ephemeral=False)
+            return
+        if not (1 <= date <= 31):
+            await interaction.followup.send("❌ Date must be between 1 and 31", ephemeral=False)
+            return
+        if not (1 <= month <= 12):
+            await interaction.followup.send("❌ Month must be between 1 and 12", ephemeral=False)
+            return
+        if not (0 <= minute <= 59):
+            await interaction.followup.send("❌ Minute must be between 0 and 59", ephemeral=False)
+            return
+
+        event_id = f"event_{int(datetime.datetime.now().timestamp())}"
+        current_year = datetime.datetime.now().year
+        event_datetime = datetime.datetime(current_year, month, date, hour, minute)
+        
+        now_utc = datetime.datetime.now(pytz.UTC)
+        event_datetime_utc = event_datetime.replace(tzinfo=pytz.UTC)
+        time_until_event = (event_datetime_utc - now_utc).total_seconds() / 60
+        
+        if time_until_event < 20:
+            await interaction.followup.send(
+                "❌ **Cannot create event within 20 minutes of start time!**\n\n"
+                "⚠️ Events must be created **at least 20 minutes before** the scheduled time.",
+                ephemeral=False
+            )
+            return
+        
+        time_info = calculate_time_difference(event_datetime)
+        round_label = round.value if isinstance(round, app_commands.Choice) else str(round)
+        group_label = group.value if group and isinstance(group, app_commands.Choice) else None
+        
+        scheduled_events[event_id] = {
+            'guild_id': interaction.guild.id if interaction.guild else None,
+            'title': f"Round {round_label} Match",
+            'datetime': event_datetime,
+            'time_str': time_info['utc_time'],
+            'date_str': f"{date:02d}/{month:02d}",
+            'round': round_label,
+            'group': group_label,
+            'minutes_left': time_info['minutes_remaining'],
+            'tournament': tournament,
+            'mode': mode,
+            'judge': None,
+            'channel_id': interaction.channel.id,
+            'team1_captain': team_1_captain,
+            'team2_captain': team_2_captain,
+            'team1_name': team_1_name,
+            'team2_name': team_2_name
+        }
+        save_scheduled_events()
+
+        asyncio.create_task(sheetdb_post("Events", {
+            "Guild_ID":          str(interaction.guild.id) if interaction.guild else "",
+            "Timestamp":         datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+            "Event_ID":          event_id,
+            "Tournament":        tournament,
+            "Round":             round_label,
+            "Group":             group_label or "",
+            "Date":              f"{date:02d}/{month:02d}",
+            "UTC_Time":          time_info['utc_time'],
+            "Team1_Captain_ID":  str(team_1_captain.id),
+            "Team1_Captain_Name": team_1_name if team_1_name else team_1_captain.name,
+            "Team2_Captain_ID":  str(team_2_captain.id),
+            "Team2_Captain_Name": team_2_name if team_2_name else team_2_captain.name,
+            "Channel_ID":        str(interaction.channel.id),
+            "Status":            "Scheduled",
+            "Created_By_ID":     str(interaction.user.id),
+            "Created_By_Name":   interaction.user.name
+        }))
+        
+        game_hint = game
+        if not game_hint and tournament and interaction.guild_id:
+            t_configs = load_guild_tournaments(interaction.guild_id)
+            t_data_hint = t_configs.get(tournament.lower(), {})
+            game_hint = t_data_hint.get('game') or t_data_hint.get('name') or t_data_hint.get('mode') or tournament
+        if not game_hint:
+            game_hint = mode
+            
+        template_image = get_random_template(game_or_mode=game_hint)
+        poster_image = None
+        
+        if template_image:
+            try:
+                t1_poster = team_1_name if team_1_name else team_1_captain.name
+                t2_poster = team_2_name if team_2_name else team_2_captain.name
+                cfg = get_guild_config(interaction.guild.id) if interaction.guild else {}
+                org_name = cfg.get('organization_name') or (interaction.guild.name if interaction.guild else "Tournament Organizer")
+                server_logo = cfg.get('server_logo_path')
+                
+                poster_image = create_event_poster(
+                    template_image, 
+                    round_label, 
+                    t1_poster, 
+                    t2_poster, 
+                    time_info['utc_time_simple'],
+                    f"{date:02d}/{month:02d}/{current_year}",
+                    server_name=org_name,
+                    server_logo_path=server_logo
+                )
+                if poster_image:
+                    scheduled_events[event_id]['poster_path'] = poster_image
+                    save_scheduled_events()
+            except Exception as e:
+                print(f"Error creating poster: {e}")
+
+        # Scheduled event in Discord
+        try:
+            event_datetime_aware = event_datetime.replace(tzinfo=datetime.timezone.utc)
+            now_aware = datetime.datetime.now(datetime.timezone.utc)
+            if event_datetime_aware <= now_aware:
+                event_datetime_aware = now_aware + datetime.timedelta(seconds=15)
+            end_time_aware = event_datetime_aware + datetime.timedelta(minutes=45)
+            
+            t1_disp = team_1_name if team_1_name else team_1_captain.name
+            t2_disp = team_2_name if team_2_name else team_2_captain.name
+            
+            image_bytes = None
+            if poster_image and os.path.exists(poster_image):
+                with open(poster_image, 'rb') as img_f:
+                    image_bytes = img_f.read()
+                    
+            scheduled_event = await interaction.guild.create_scheduled_event(
+                name=f"{t1_disp} vs {t2_disp}",
+                description=f"🏆 Tournament: {tournament}\n🔄 Round: {format_round_heading(round_label)}",
+                start_time=event_datetime_aware,
+                end_time=end_time_aware,
+                entity_type=discord.EntityType.external,
+                privacy_level=discord.PrivacyLevel.guild_only,
+                location=interaction.guild.name,
+                image=image_bytes
+            )
+            if scheduled_event:
+                scheduled_events[event_id]['scheduled_event_id'] = scheduled_event.id
+                save_scheduled_events()
+        except Exception as e:
+            print(f"Failed to create Discord scheduled event: {e}")
+
+        t1_disp = team_1_name if team_1_name else team_1_captain.name
+        t2_disp = team_2_name if team_2_name else team_2_captain.name
+        embed = discord.Embed(
+            title=f"🏆 {t1_disp} 🆚 {t2_disp}",
+            color=discord.Color.blue(),
+            timestamp=discord.utils.utcnow()
+        )
+        thumb_file, is_local_thumb = await resolve_embed_thumbnail(interaction.guild_id, embed, fallback_to_captain_avatar=team_1_captain)
+
+        timestamp = int(event_datetime.replace(tzinfo=datetime.timezone.utc).timestamp())
+        event_details = f"**Tournament:** {tournament}\n"
+        if mode: event_details += f"**Mode:** {mode}\n"
+        event_details += f"**UTC Time:** {time_info['utc_time']}\n"
+        event_details += f"**Local Time:** <t:{timestamp}:F> (<t:{timestamp}:R>)\n"
+        event_details += f"**Round:** {format_round_heading(round_label)}\n"
+        if group_label: event_details += f"**Group:** {group_label}\n"
+        event_details += f"**Channel:** {interaction.channel.mention}"
+        
+        embed.add_field(name="📋 Event Details", value=event_details, inline=False)
+        embed.add_field(name="\u200b", value="\u200b", inline=False)
+        
+        captains_text = f"**Captains**\n"
+        captains_text += f"- Team1 Captain: {team_1_captain.mention} @{team_1_captain.name}" + (f" (Team: **{team_1_name}**)\n" if team_1_name else "\n")
+        captains_text += f"- Team2 Captain: {team_2_captain.mention} @{team_2_captain.name}" + (f" (Team: **{team_2_name}**)" if team_2_name else "")
+        embed.add_field(name="👑 Team Captains", value=captains_text, inline=False)
+        embed.add_field(name="\u200b", value="\u200b", inline=False)
+        embed.add_field(name="👤 Created By", value=interaction.user.mention, inline=False)
+        
+        files_to_send = []
+        if poster_image and os.path.exists(poster_image):
+            try:
+                with open(poster_image, 'rb') as f:
+                    poster_data = f.read()
+                file_obj = discord.File(fp=io.BytesIO(poster_data), filename="event_poster.png")
+                embed.set_image(url="attachment://event_poster.png")
+                files_to_send.append(file_obj)
+            except Exception as e:
+                print(f"Error loading poster image: {e}")
+                
+        if is_local_thumb and thumb_file and not poster_image:
+            files_to_send.append(thumb_file)
+
+        embed.set_footer(text=f"Powered by • {ORGANIZATION_NAME}")
+        
+        take_schedule_view = TakeScheduleButton(event_id, team_1_captain, team_2_captain, interaction.channel)
+        await interaction.followup.send("✅ Event created and posted to both channels! Reminder will ping captains 10 minutes before start.", ephemeral=False)
+        
+        try:
+            schedule_channel = get_tournament_schedule_channel(interaction.guild, tournament) or interaction.channel
+            staff_role_id = ROLE_IDS.get('staff') or ROLE_IDS.get('judge')
+            staff_ping = f"<@&{staff_role_id}>" if staff_role_id else "@Staff"
+            
+            if files_to_send:
+                schedule_files = []
+                for file_obj in files_to_send:
+                    file_obj.fp.seek(0)
+                    schedule_files.append(discord.File(fp=io.BytesIO(file_obj.fp.read()), filename=file_obj.filename))
+                schedule_message = await schedule_channel.send(content=staff_ping, embed=embed, files=schedule_files, view=take_schedule_view)
+            else:
+                schedule_message = await schedule_channel.send(content=staff_ping, embed=embed, view=take_schedule_view)
+                
+            scheduled_events[event_id]['schedule_message_id'] = schedule_message.id
+            scheduled_events[event_id]['schedule_channel_id'] = schedule_channel.id
+            save_scheduled_events()
+        except Exception as e:
+            print(f"Error posting in schedule channel: {e}")
+
+        try:
+            if files_to_send:
+                current_files = []
+                for file_obj in files_to_send:
+                    file_obj.fp.seek(0)
+                    current_files.append(discord.File(fp=io.BytesIO(file_obj.fp.read()), filename=file_obj.filename))
+                await interaction.channel.send(embed=embed, files=current_files)
+            else:
+                await interaction.channel.send(embed=embed)
+
+            await schedule_ten_minute_reminder(event_id, team_1_captain, team_2_captain, None, interaction.channel, event_datetime)
+        except Exception as e:
+            print(f"Error posting in current channel: {e}")
+
+    @app_commands.command(name="event-result", description="Add event results (Head Organizer/Judge only)")
+    @app_commands.describe(
+        winner="Winner of the event (optional if team name is provided)",
+        winner_score="Winner's score",
+        loser="Loser of the event (optional if team name is provided)", 
+        loser_score="Loser's score",
+        tournament="Tournament name (e.g., The Zumwalt S2)",
+        round="Round name (e.g., Semi-Final, Final, Quarter-Final)",
+        group="Group assignment (A-J) - optional",
+        remarks="Remarks about the match (e.g., ggwp, close match)",
+        recorder="Staff member who recorded the match (optional)",
+        winner_team_name="Optional name of the winning team",
+        loser_team_name="Optional name of the losing team",
+        disqualified="Optional: Mark winner, loser, or both as disqualified",
+        ss_1="Screenshot 1 (upload)",
+        ss_2="Screenshot 2 (upload)",
+        ss_3="Screenshot 3 (upload)",
+        ss_4="Screenshot 4 (upload)"
+    )
+    @app_commands.choices(
+        group=[
+            app_commands.Choice(name="Group A", value="Group A"),
+            app_commands.Choice(name="Group B", value="Group B"),
+            app_commands.Choice(name="Group C", value="Group C"),
+            app_commands.Choice(name="Group D", value="Group D"),
+            app_commands.Choice(name="Group E", value="Group E"),
+            app_commands.Choice(name="Winner", value="Winner"),
+            app_commands.Choice(name="Loser", value="Loser"),
+        ],
+        disqualified=[
+            app_commands.Choice(name="Winner Disqualified", value="Winner"),
+            app_commands.Choice(name="Loser Disqualified", value="Loser"),
+            app_commands.Choice(name="Both Disqualified (0:0)", value="Both"),
+        ]
+    )
+    @with_guild_context
+    async def event_result(
+        self,
+        interaction: discord.Interaction,
+        winner_score: int,
+        loser_score: int,
+        tournament: str,
+        round: str,
+        winner: discord.Member = None,
+        loser: discord.Member = None,
+        group: app_commands.Choice[str] = None,
+        remarks: str = "ggwp",
+        recorder: discord.Member = None,
+        winner_team_name: str = None,
+        loser_team_name: str = None,
+        disqualified: app_commands.Choice[str] = None,
+        ss_1: discord.Attachment = None,
+        ss_2: discord.Attachment = None,
+        ss_3: discord.Attachment = None,
+        ss_4: discord.Attachment = None
+    ):
+        await interaction.response.defer(ephemeral=False)
+        
+        if not has_event_result_permission(interaction):
+            await interaction.followup.send("❌ You need **Head Organizer** or **Judge** role to post event results.", ephemeral=False)
+            return
+
+        if not winner and not winner_team_name:
+            await interaction.followup.send("❌ Please provide either a **Winner Member** or a **Winner Team Name**.", ephemeral=False)
+            return
+        if not loser and not loser_team_name:
+            await interaction.followup.send("❌ Please provide either a **Loser Member** or a **Loser Team Name**.", ephemeral=False)
+            return
+        if winner_score < 0 or loser_score < 0:
+            await interaction.followup.send("❌ Scores cannot be negative", ephemeral=False)
+            return
+
+        group_label = group.value if group and isinstance(group, app_commands.Choice) else None
+        w_name = winner_team_name if winner_team_name else (winner.name if winner else "Unknown")
+        l_name = loser_team_name if loser_team_name else (loser.name if loser else "Unknown")
+        w_mention = winner.mention if winner else f"**{winner_team_name}**"
+        l_mention = loser.mention if loser else f"**{loser_team_name}**"
+        dq_status = disqualified.value if disqualified and isinstance(disqualified, app_commands.Choice) else disqualified
+
+        w_display_name = f"{w_name} (Disqualified)" if dq_status in ("Winner", "Both") else w_name
+        l_display_name = f"{l_name} (Disqualified)" if dq_status in ("Loser", "Both") else l_name
+        w_display_mention = f"{w_mention} (Disqualified)" if dq_status in ("Winner", "Both") else w_mention
+        l_display_mention = f"{l_mention} (Disqualified)" if dq_status in ("Loser", "Both") else l_mention
+
+        now_utc = datetime.datetime.now(pytz.UTC)
+        timestamp = int(now_utc.timestamp())
+        
+        embed_description = f"**Result UTC Time:** {now_utc.strftime('%Y-%m-%d %H:%M')}\n"
+        embed_description += f"**Result Local Time:** <t:{timestamp}:f> (<t:{timestamp}:R>)\n\n"
+        embed_description += f"**Tournament:** {tournament}\n"
+        embed_description += f"**Round:** {format_round_heading(round)}"
+        if group_label: embed_description += f"\n**Group:** {group_label}"
+        
+        embed = discord.Embed(
+            title=f"🏆 {w_display_name} 🆚 {l_display_name}",
+            description=embed_description,
+            color=discord.Color.gold(),
+            timestamp=discord.utils.utcnow()
+        )
+        await resolve_embed_thumbnail(interaction.guild.id, embed)
+
+        captains_text = f"**Captains**\n- Team1 Captain: {w_display_mention}\n- Team2 Captain: {l_display_mention}"
+        embed.add_field(name="", value=captains_text, inline=False)
+        
+        results_text = f"**Results**\n🏆 {w_name} ({winner_score}) Vs ({loser_score}) {l_name} 💀"
+        embed.add_field(name="", value=results_text, inline=False)
+        
+        staff_text = f"👨‍⚖️ **Staffs**\n▪ Judge: {interaction.user.mention}"
+        if recorder: staff_text += f"\n▪ Recorder: {recorder.mention}"
+        embed.add_field(name="", value=staff_text, inline=False)
+        embed.add_field(name="📝 Remarks", value=remarks, inline=False)
+        
+        update_staff_stats(interaction.user, "judge")
+
+        screenshots = [ss_1, ss_2, ss_3, ss_4]
+        raw_screenshots = []
+        screenshot_names = []
+        for i, ss in enumerate(screenshots, 1):
+            if ss:
+                try:
+                    b = await ss.read()
+                    fn = f"SS-{i}_{ss.filename}"
+                    raw_screenshots.append((fn, b))
+                    screenshot_names.append(f"SS-{i}")
+                except Exception as e:
+                    print(f"Error reading screenshot {i}: {e}")
+
+        if screenshot_names:
+            embed.add_field(name="", value=f"**Screenshots of Result ({len(screenshot_names)} images)**\n📷 {' • '.join(screenshot_names)}", inline=False)
+
+        embed.set_footer(text=f"Powered by • {ORGANIZATION_NAME}")
+
+        results_channel = get_tournament_results_channel(interaction.guild, tournament)
+        if results_channel:
+            if raw_screenshots:
+                files = [discord.File(fp=io.BytesIO(b), filename=fn) for fn, b in raw_screenshots]
+                await results_channel.send(embed=embed, files=files)
+            else:
+                await results_channel.send(embed=embed)
+
+        if raw_screenshots:
+            files = [discord.File(fp=io.BytesIO(b), filename=fn) for fn, b in raw_screenshots]
+            await interaction.channel.send(embed=embed, files=files)
+        else:
+            await interaction.channel.send(embed=embed)
+
+        await interaction.followup.send("✅ Event results processed and posted successfully!", ephemeral=False)
+
+    @app_commands.command(name="event-edit", description="Edit the event in this ticket channel")
+    @app_commands.describe(
+        team_1_captain="Captain of team 1 (optional)",
+        team_2_captain="Captain of team 2 (optional)", 
+        hour="Hour of the event (0-23) (optional)",
+        minute="Minute of the event (0-59) (optional)",
+        date="Date of the event (optional)",
+        month="Month of the event (optional)",
+        round="Round label (optional)",
+        tournament="Tournament name (optional)",
+        team_1_name="Optional name of team 1",
+        team_2_name="Optional name of team 2"
+    )
+    @with_guild_context
+    async def event_edit_cmd(
+        self,
+        interaction: discord.Interaction,
+        team_1_captain: discord.Member = None,
+        team_2_captain: discord.Member = None,
+        hour: int = None,
+        minute: int = None,
+        date: int = None,
+        month: int = None,
+        round: str = None,
+        tournament: str = None,
+        team_1_name: str = None,
+        team_2_name: str = None
+    ):
+        await interaction.response.defer(ephemeral=False)
+        if not has_event_create_permission(interaction):
+            await interaction.followup.send("❌ You don't have permission to edit events.", ephemeral=False)
+            return
+
+        current_channel_id = interaction.channel.id
+        event_to_edit = None
+        event_id = None
+        for ev_id, ev_data in scheduled_events.items():
+            if ev_data.get('channel_id') == current_channel_id:
+                event_to_edit = ev_data
+                event_id = ev_id
+                break
+
+        if not event_to_edit:
+            await interaction.followup.send("❌ No event found in this ticket channel.", ephemeral=False)
+            return
+
+        current_datetime = event_to_edit.get('datetime', datetime.datetime.now())
+        current_hour = hour if hour is not None else current_datetime.hour
+        current_minute = minute if minute is not None else current_datetime.minute
+        current_date = date if date is not None else current_datetime.day
+        current_month = month if month is not None else current_datetime.month
+
+        new_datetime = datetime.datetime(datetime.datetime.now().year, current_month, current_date, current_hour, current_minute)
+        time_info = calculate_time_difference(new_datetime)
+
+        if team_1_captain: event_to_edit['team1_captain'] = team_1_captain
+        if team_2_captain: event_to_edit['team2_captain'] = team_2_captain
+        if team_1_name is not None: event_to_edit['team1_name'] = team_1_name
+        if team_2_name is not None: event_to_edit['team2_name'] = team_2_name
+        if any([hour is not None, minute is not None, date is not None, month is not None]):
+            event_to_edit['datetime'] = new_datetime
+            event_to_edit['time_str'] = time_info['utc_time']
+            event_to_edit['date_str'] = f"{current_date:02d}/{current_month:02d}"
+        if round: event_to_edit['round'] = round
+        if tournament: event_to_edit['tournament'] = tournament
+
+        save_scheduled_events()
+
+        cfg = get_guild_config(interaction.guild.id) if interaction.guild else {}
+        server_logo = cfg.get('server_logo_path')
+        template_image = get_random_template(game_or_mode=tournament)
+        if template_image:
+            try:
+                t1_poster = team_1_name or (team_1_captain.name if team_1_captain else "Team 1")
+                t2_poster = team_2_name or (team_2_captain.name if team_2_captain else "Team 2")
+                poster = create_event_poster(
+                    template_image,
+                    round or event_to_edit.get('round', 'R1'),
+                    t1_poster,
+                    t2_poster,
+                    time_info['utc_time_simple'],
+                    f"{new_datetime.day:02d}/{new_datetime.month:02d}/{new_datetime.year}",
+                    server_name=cfg.get('organization_name', 'Organizer'),
+                    server_logo_path=server_logo
+                )
+                if poster:
+                    event_to_edit['poster_path'] = poster
+                    save_scheduled_events()
+            except Exception as e:
+                print(f"Error updating poster in event-edit: {e}")
+
+        await interaction.followup.send("✅ Event details successfully updated!", ephemeral=False)
+
+    @app_commands.command(name="event-delete", description="Delete a scheduled event")
+    @with_guild_context
+    async def event_delete_cmd(self, interaction: discord.Interaction):
+        if not has_event_create_permission(interaction):
+            await interaction.response.send_message("❌ Permission denied.", ephemeral=False)
+            return
+
+        guild_events = [
+            discord.SelectOption(
+                label=f"{ev_data.get('team1_name') or 'T1'} vs {ev_data.get('team2_name') or 'T2'}",
+                description=f"{ev_data.get('round', 'R1')} - {ev_data.get('time_str', '')}",
+                value=ev_id
+            )
+            for ev_id, ev_data in scheduled_events.items()
+            if str(ev_data.get('guild_id')) == str(interaction.guild.id)
+        ]
+
+        if not guild_events:
+            await interaction.response.send_message("❌ No scheduled events found for this server.", ephemeral=False)
+            return
+
+        class EventDeleteView(View):
+            def __init__(self):
+                super().__init__(timeout=60)
+                self.select_event.options = guild_events[:25]
+
+            @discord.ui.select(placeholder="Select an event to delete...", options=guild_events[:25])
+            async def select_event(self, select_interaction: discord.Interaction, select: discord.ui.Select):
+                selected_event_id = select.values[0]
+                if selected_event_id in scheduled_events:
+                    del scheduled_events[selected_event_id]
+                    save_scheduled_events()
+                if selected_event_id in reminder_tasks:
+                    reminder_tasks[selected_event_id].cancel()
+                await select_interaction.response.edit_message(content=f"✅ Event `{selected_event_id}` has been deleted.", embed=None, view=None)
+
+        await interaction.response.send_message("Select an event to delete:", view=EventDeleteView(), ephemeral=False)
+
+    @app_commands.command(name="general_tie_breaker", description="To break a tie between two teams using the highest total score")
+    @app_commands.describe(
+        tm1_name="Name of team 1",
+        tm1_score="Total score of team 1",
+        tm2_name="Name of team 2",
+        tm2_score="Total score of team 2"
+    )
+    @with_guild_context
+    async def general_tie_breaker(
+        self,
+        interaction: discord.Interaction,
+        tm1_score: int,
+        tm2_score: int,
+        tm1_name: str = "Alpha",
+        tm2_name: str = "Bravo"
+    ):
+        if tm1_score > tm2_score:
+            winner = tm1_name
+            winner_total = tm1_score
+            loser = tm2_name
+            loser_total = tm2_score
+        elif tm2_score > tm1_score:
+            winner = tm2_name
+            winner_total = tm2_score
+            loser = tm1_name
+            loser_total = tm1_score
+        else:
+            winner = "TIE"
+            winner_total = tm1_score
+            loser_total = tm2_score
+
+        embed = discord.Embed(
+            title="⚔️ Tie Breaker Result",
+            color=discord.Color.gold(),
+            timestamp=discord.utils.utcnow()
+        )
+        if winner == "TIE":
+            embed.add_field(name="🤝 Result", value=f"**STILL TIED!** Both teams scored {winner_total} points.")
+        else:
+            embed.add_field(name="🏆 Winner", value=f"**{winner}** wins with {winner_total} points against **{loser}** ({loser_total} points)!")
+        await interaction.response.send_message(embed=embed)
+
+
+result_group = app_commands.Group(name="result", description="Manage tournament match results")
+
+@result_group.command(name="edit", description="Edit a previously posted match result (Head Organizer/Judge only)")
+@app_commands.describe(
+    match="Select the match to edit",
+    winner_team_name="Updated winner team name (optional)",
+    loser_team_name="Updated loser team name (optional)",
+    winner_score="Updated winner score (optional)",
+    loser_score="Updated loser score (optional)",
+    remarks="Updated remarks (optional)"
+)
+@app_commands.autocomplete(match=match_autocomplete)
+@with_guild_context
+async def result_edit(
+    interaction: discord.Interaction,
+    match: str,
+    winner_team_name: str = None,
+    loser_team_name: str = None,
+    winner_score: int = None,
+    loser_score: int = None,
+    remarks: str = None
+):
+    await interaction.response.defer(ephemeral=False)
+    if not has_event_result_permission(interaction):
+        await interaction.followup.send("❌ Permission denied.", ephemeral=False)
+        return
+
+    ev_id, ev_data = find_event_by_name_or_id(interaction.guild.id, match)
+    if not ev_id or not ev_data:
+        await interaction.followup.send("❌ Match not found.", ephemeral=False)
+        return
+
+    if winner_team_name: ev_data['team1_name'] = winner_team_name
+    if loser_team_name:  ev_data['team2_name'] = loser_team_name
+    if winner_score is not None: ev_data['winner_score'] = winner_score
+    if loser_score is not None:  ev_data['loser_score'] = loser_score
+    if remarks: ev_data['remarks'] = remarks
+
+    save_scheduled_events()
+    asyncio.create_task(save_event_to_supabase(ev_id, ev_data))
+    await update_results_embed_with_links(interaction.guild, ev_data)
+
+    embed = discord.Embed(
+        title=f"✅ Match Result Edited — `{ev_id}`",
+        description=f"Match result updated for **{ev_data.get('match_name') or ev_id}**.",
+        color=discord.Color.green(),
+        timestamp=discord.utils.utcnow()
+    )
+    await interaction.followup.send(embed=embed, ephemeral=False)
+
+
+async def setup(bot: commands.Bot):
+    bot.tree.add_command(result_group)
+    await bot.add_cog(Events(bot))

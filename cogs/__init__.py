@@ -1,0 +1,4 @@
+"""
+Cogs package initialization.
+"""
+
