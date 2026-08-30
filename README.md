@@ -104,54 +104,54 @@ The bot operates on the following tables in Supabase:
 ## 📋 Command Reference
 
 ### ⚙️ System Commands
-- `/help` — Displays a link to the comprehensive Notion Help Guide.
-- `/info` — Displays bot status, ping, and server information.
-- `/staff-leaderboard` — Shows current leaderboards for Judges & Recorders.
+- `/help` - Displays a link to the comprehensive Notion Help Guide.
+- `/info` - Displays bot status, ping, and server information.
+- `/staff-leaderboard` - Shows current leaderboards for Judges & Recorders.
 
 ### 🎮 Player Commands
-- `/player_information` — Searches the configured Google Sheet for a player/captain and outputs their roster, IGNs, and Discord ID mentions.
-- `/id-card` — Generates a customized graphic Clan ID Card for a player.
-- `/maps` — Randomly rolls a map selection (3, 5, or 7 maps) from the map pool.
-- `/choose` — Picks an item from a comma-separated list.
-- `/time` — Generates a random match time slot within specific parameters.
+- `/player_information` - Searches the configured Google Sheet for a player/captain and outputs their roster, IGNs, and Discord ID mentions.
+- `/id-card` - Generates a customized graphic Clan ID Card for a player.
+- `/maps` - Randomly rolls a map selection (3, 5, or 7 maps) from the map pool.
+- `/choose` - Picks an item from a comma-separated list.
+- `/time` - Generates a random match time slot within specific parameters.
 
 ### 🏆 Event Management Commands
-- `/event-create` — Creates a match event, generates a poster with scaling font margins, logs the event to the database, and schedules pre-match reminders.
-- `/event-edit` — Edits details of the active match (reschedule time, captains, round) in the current channel.
-- `/event-delete` — Un-schedules and deletes a scheduled match.
-- `/exchange` — Swaps a Judge or Recorder for an event.
+- `/event-create` - Creates a match event, generates a poster with scaling font margins, logs the event to the database, and schedules pre-match reminders.
+- `/event-edit` - Edits details of the active match (reschedule time, captains, round) in the current channel.
+- `/event-delete` - Un-schedules and deletes a scheduled match.
+- `/exchange` - Swaps a Judge or Recorder for an event.
 
 ### ⚖️ Judge Commands
-- **Take Schedule** button — Claims the match in the `#schedule` channel.
-- **Record** button — Claims the recorder slot for the match.
-- `/reassign` — Resigns from an assigned match and notifies other judges.
-- `/available_events` — Lists scheduled matches needing a judge.
-- `/event-result` — Enters official match results, uploads screenshots, logs stats, and posts results.
-- `/add-record-link` — Adds a VOD or recording link to a match (for Recorders, Judges, and Helpers).
-- `/upload-score` — Uploads scores directly to Challonge bracket using an autocomplete match list. Takes exactly three parameters:
+- **Take Schedule** button - Claims the match in the `#schedule` channel.
+- **Record** button - Claims the recorder slot for the match.
+- `/reassign` - Resigns from an assigned match and notifies other judges.
+- `/available_events` - Lists scheduled matches needing a judge.
+- `/event-result` - Enters official match results, uploads screenshots, logs stats, and posts results.
+- `/add-record-link` - Adds a VOD or recording link to a match (for Recorders, Judges, and Helpers).
+- `/upload-score` - Uploads scores directly to Challonge bracket using an autocomplete match list. Takes exactly three parameters:
   - `winner` (Dropdown): Autocompleted list of active matches. Inside a match ticket, shows clean team/player names by matching the channel topic `MatchID:XXXX`. Otherwise formats as `TeamName (vs OpponentName)`.
   - `winner_score` (Integer): Final score of the winner.
   - `loser_score` (Integer): Final score of the loser.
 
 ### 👑 Admin Commands
-- `/settings add` — Set server-wide role mappings and branding parameters (organization name, sheet links, bot name).
-- `/settings edit` — Modify server-wide role mappings and branding parameters.
-- `/settings show` — Displays a clean embed detailing all active server roles and configurations.
-- `/settings clean` — Resets all configuration data, deletes guild database tables, and wipes local cache files.
-- `/tournament add` — Registers a tournament configuration (name, Challonge key, bracket link, sheet link, channels, categories, auto room setting).
-- `/tournament edit` — Modifies an existing tournament config (bracket link, sheet link, channels, open/closed ticket categories, state: `pending`, `active`, `completed`).
-- `/tournament delete` — Deletes tournament from database and local cache.
-- `/tournament info` — Displays detailed channels, roles, and status of a tournament.
-- `/tournament list` — Lists all tournaments registered for the server.
-- `/auto_room run` — Manually triggers the automatic match room ticket creation sweep.
-- `/auto_room stop` — Suspends the automatic match room loop for a tournament.
-- `/auto_room toggle` — Toggles the automatic match room loop status.
-- `/clear category` — Deletes all open/closed ticket channels in a specified category (Organizer only).
-- `/clear cache` — Clears Challonge bracket and sheet caches.
-- `/registration` — Publishes a Google Form registration embed with a direct button.
-- `/publish-rules` — Writes and publishes tournament rules directly to guidelines.
-- `/test_channels` — Runs a diagnostic check on bot permissions in configured channels.
-- `/staff-update` — Manually update staff stats/points on the leaderboard.
+- `/settings add` - Set server-wide role mappings and branding parameters (organization name, sheet links, bot name).
+- `/settings edit` - Modify server-wide role mappings and branding parameters.
+- `/settings show` - Displays a clean embed detailing all active server roles and configurations.
+- `/settings clean` - Resets all configuration data, deletes guild database tables, and wipes local cache files.
+- `/tournament add` - Registers a tournament configuration (name, Challonge key, bracket link, sheet link, channels, categories, auto room setting).
+- `/tournament edit` - Modifies an existing tournament config (bracket link, sheet link, channels, open/closed ticket categories, state: `pending`, `active`, `completed`).
+- `/tournament delete` - Deletes tournament from database and local cache.
+- `/tournament info` - Displays detailed channels, roles, and status of a tournament.
+- `/tournament list` - Lists all tournaments registered for the server.
+- `/auto_room run` - Manually triggers the automatic match room ticket creation sweep.
+- `/auto_room stop` - Suspends the automatic match room loop for a tournament.
+- `/auto_room toggle` - Toggles the automatic match room loop status.
+- `/clear category` - Deletes all open/closed ticket channels in a specified category (Organizer only).
+- `/clear cache` - Clears Challonge bracket and sheet caches.
+- `/registration` - Publishes a Google Form registration embed with a direct button.
+- `/publish-rules` - Writes and publishes tournament rules directly to guidelines.
+- `/test_channels` - Runs a diagnostic check on bot permissions in configured channels.
+- `/staff-update` - Manually update staff stats/points on the leaderboard.
 
 ---
 
@@ -219,7 +219,7 @@ Judge/Recorder claim via buttons in #schedule
    pip install -r requirements.txt
    ```
 
-3. **Configure environment variables** — copy and fill in `.env`:
+3. **Configure environment variables** - copy and fill in `.env`:
    ```bash
    cp env.example .env
    ```
@@ -249,7 +249,7 @@ The bot is hosted on [bot.hosting.net](https://bot.hosting.net), a Python-friend
    ```bash
    pip install -r requirements.txt
    ```
-6. Click **Start** — the bot will go online.
+6. Click **Start** - the bot will go online.
 
 ### Database Setup
 
@@ -270,7 +270,7 @@ Import `supabase_schema.sql` into your Supabase SQL editor to create all require
 
 > **Latest Release:** `v1.4.0`
 
-### 🚀 v1.4.0 — Latest
+### 🚀 v1.4.0 - Latest
 **Tags:** `feature` `help-system` `commands`
 
 > **GitHub Release Title:** `v1.4.0 - Help Guide & Record Link`
@@ -278,7 +278,7 @@ Import `supabase_schema.sql` into your Supabase SQL editor to create all require
 > This release simplifies the in-bot help experience and adds VOD tracking for match recorders.
 
 #### What's Changed
-- **New Help Guide System:** Replaced the complex 500-line static paginated command dictionary with a link to a central Notion Help Guide — keeping the bot code lean and the guide easy to update without redeployments.
+- **New Help Guide System:** Replaced the complex 500-line static paginated command dictionary with a link to a central Notion Help Guide - keeping the bot code lean and the guide easy to update without redeployments.
 - **Add Record Link Command:** Introduced `/add-record-link`, allowing Judges, Recorders, and Helpers to associate VOD/recording links with scheduled matches.
 
 #### Full Changelog
@@ -307,7 +307,7 @@ Import `supabase_schema.sql` into your Supabase SQL editor to create all require
 
 > **GitHub Release Title:** `v1.3.0 - Staff Flow Overhaul & Sleeker UI`
 >
-> Major UX improvement release — tightens the staff presence pipeline, cleans up autocomplete, and makes result embeds much more compact.
+> Major UX improvement release - tightens the staff presence pipeline, cleans up autocomplete, and makes result embeds much more compact.
 
 #### What's Changed
 - **Staff Timings Shift:** Realigned pre-match staff confirmation to a 30-minute presence check-in, 20-minute presence validation/replacement trigger, and 10-minute player match reminder flow.
@@ -356,7 +356,7 @@ Import `supabase_schema.sql` into your Supabase SQL editor to create all require
 
 ---
 
-### 🌱 v1.0.0 — Initial Release
+### 🌱 v1.0.0 - Initial Release
 **Tags:** `initial-release` `core`
 
 > **GitHub Release Title:** `v1.0.0 - Initial Release`
