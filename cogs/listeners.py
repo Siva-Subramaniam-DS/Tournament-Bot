@@ -1,5 +1,6 @@
 import os
 import io
+import re
 import json
 import asyncio
 import datetime
@@ -21,13 +22,17 @@ from core.state import (
 from core.database import (
     supabase_client, load_guild_tournaments, get_guild_config,
     get_active_tournament_config, get_guild_rules, save_guild_rules,
-    get_guild_staff_stats, save_guild_staff_stats
+    get_guild_staff_stats, save_guild_staff_stats, log_bot_activity
+)
+from core.transcript import (
+    generate_html_transcript, generate_text_transcript, build_transcript_files
 )
 
 from cogs.staff import (
     TakeScheduleButton, StaffConfirmationView, StaffReplacementView
 )
 from cogs.events import schedule_ten_minute_reminder
+
 
 class Listeners(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -165,33 +170,113 @@ class Listeners(commands.Cog):
 
             if command == '$close':
                 try:
-                    closed_category_id = CHANNEL_IDS.get("closed_tickets_category") or CHANNEL_IDS.get("closed_ticket_1")
-                    closed_category = message.guild.get_channel(int(closed_category_id)) if closed_category_id else None
+                    await message.channel.send("⏳ Generating rich HTML & Text transcript, please wait...")
                     
-                    await message.channel.send("⏳ Generating transcript, please wait...")
-                    transcript_lines = []
-                    async for m in message.channel.history(limit=1000, oldest_first=True):
-                        time_str = m.created_at.strftime("%Y-%m-%d %H:%M:%S")
-                        c = m.clean_content or "[Attachment/Embed]"
-                        transcript_lines.append(f"[{time_str}] {m.author.display_name}: {c}")
-                    
-                    transcript_content = "\n".join(transcript_lines)
-                    transcript_file_local = discord.File(io.BytesIO(transcript_content.encode('utf-8')), filename=f"transcript_{message.channel.name}.txt")
-                    await message.channel.send("📄 Transcript of this ticket:", file=transcript_file_local)
-                    
+                    messages_list = []
+                    async for m in message.channel.history(limit=2000, oldest_first=True):
+                        messages_list.append(m)
+
+                    guild = message.guild
+                    clean_chan_name = re.sub(r'[^a-zA-Z0-9_\-]', '', message.channel.name).lower() or "ticket"
+                    html_content = generate_html_transcript(message.channel, messages_list, guild, closed_by=message.author)
+                    text_content = generate_text_transcript(message.channel, messages_list, guild, closed_by=message.author)
+
+                    html_filename = f"transcript_{clean_chan_name}.html"
+                    text_filename = f"transcript_{clean_chan_name}.txt"
+
+                    html_file_local = discord.File(io.BytesIO(html_content.encode('utf-8')), filename=html_filename)
+                    text_file_local = discord.File(io.BytesIO(text_content.encode('utf-8')), filename=text_filename)
+
+                    attachment_count = sum(len(m.attachments) for m in messages_list)
+
+                    await message.channel.send(
+                        f"📄 **Transcript of `{message.channel.name}`** ({len(messages_list)} messages, {attachment_count} attachments):\n"
+                        f"• Open the `.html` file in any browser for full Discord chat with images & embeds!\n"
+                        f"• Open the `.txt` file for a text log with image URLs.",
+                        files=[html_file_local, text_file_local]
+                    )
+
+                    # Resolve transcript log channel
                     transcript_channel = None
                     t_cfg = get_active_tournament_config(message.guild.id)
-                    if t_cfg and t_cfg.get('transcript'):
-                        transcript_channel = message.guild.get_channel(int(t_cfg['transcript']))
-                    if not transcript_channel and CHANNEL_IDS.get("transcript"):
-                        try:
-                            transcript_channel = message.guild.get_channel(int(CHANNEL_IDS["transcript"]))
-                        except Exception: pass
-                        
+                    if t_cfg:
+                        for k in ['transcript', 'transcript_logs', 'transcript_channel_id', 'Transcript_Channel_ID']:
+                            if t_cfg.get(k):
+                                try:
+                                    transcript_channel = message.guild.get_channel(int(t_cfg[k])) or await message.guild.fetch_channel(int(t_cfg[k]))
+                                    if transcript_channel: break
+                                except Exception: pass
+
+                    if not transcript_channel:
+                        tournaments = load_guild_tournaments(message.guild.id)
+                        for _, tdata in tournaments.items():
+                            for k in ['transcript', 'transcript_logs', 'transcript_channel_id', 'Transcript_Channel_ID']:
+                                if tdata.get(k):
+                                    try:
+                                        transcript_channel = message.guild.get_channel(int(tdata[k])) or await message.guild.fetch_channel(int(tdata[k]))
+                                        if transcript_channel: break
+                                    except Exception: pass
+                            if transcript_channel: break
+
+                    if not transcript_channel:
+                        cfg = get_guild_config(message.guild.id)
+                        for k in ['transcript_logs', 'transcript', 'transcript_channel_id', 'Transcript_Channel_ID']:
+                            t_id = cfg.get('channel_ids', {}).get(k) or cfg.get(k)
+                            if t_id:
+                                try:
+                                    transcript_channel = message.guild.get_channel(int(t_id)) or await message.guild.fetch_channel(int(t_id))
+                                    if transcript_channel: break
+                                except Exception: pass
+
                     if transcript_channel:
-                        transcript_file_record = discord.File(io.BytesIO(transcript_content.encode('utf-8')), filename=f"transcript_{message.channel.name}.txt")
-                        await transcript_channel.send(f"📋 Transcript for closed ticket `{message.channel.name}` (closed by {message.author.display_name}):", file=transcript_file_record)
-                    
+                        html_file_rec = discord.File(io.BytesIO(html_content.encode('utf-8')), filename=html_filename)
+                        text_file_rec = discord.File(io.BytesIO(text_content.encode('utf-8')), filename=text_filename)
+
+                        summary_embed = discord.Embed(
+                            title=f"📋 Ticket Closed: #{message.channel.name}",
+                            description=(
+                                f"**Closed by:** {message.author.mention}\n"
+                                f"**Total Messages:** `{len(messages_list)}`\n"
+                                f"**Attachments / Images:** `{attachment_count}`\n"
+                                f"**Participants:** `{len(set(m.author.id for m in messages_list))}`\n"
+                                f"**Closed At:** <t:{int(datetime.datetime.utcnow().timestamp())}:F>\n\n"
+                                f"📁 *HTML & Text transcripts attached below.*"
+                            ),
+                            color=discord.Color.gold(),
+                            timestamp=discord.utils.utcnow()
+                        )
+                        summary_embed.set_footer(text=f"{ORGANIZATION_NAME} • Ticket Transcripts")
+                        await transcript_channel.send(embed=summary_embed, files=[html_file_rec, text_file_rec])
+
+                    # Resolve closed tickets category
+                    closed_category = None
+                    if t_cfg:
+                        for k in ['closed_ticket_1', 'closed_ticket_2', 'closed_tickets_category', 'closed_category']:
+                            if t_cfg.get(k):
+                                try:
+                                    closed_category = message.guild.get_channel(int(t_cfg[k]))
+                                    if closed_category: break
+                                except Exception: pass
+                    if not closed_category:
+                        tournaments = load_guild_tournaments(message.guild.id)
+                        for _, tdata in tournaments.items():
+                            for k in ['closed_ticket_1', 'closed_ticket_2', 'closed_tickets_category', 'closed_category']:
+                                if tdata.get(k):
+                                    try:
+                                        closed_category = message.guild.get_channel(int(tdata[k]))
+                                        if closed_category: break
+                                    except Exception: pass
+                            if closed_category: break
+                    if not closed_category:
+                        cfg = get_guild_config(message.guild.id)
+                        for k in ['closed_tickets_category', 'closed_category']:
+                            c_id = cfg.get('channel_ids', {}).get(k) or cfg.get(k)
+                            if c_id:
+                                try:
+                                    closed_category = message.guild.get_channel(int(c_id))
+                                    if closed_category: break
+                                except Exception: pass
+
                     if closed_category:
                         await message.channel.edit(
                             category=closed_category,
@@ -204,6 +289,7 @@ class Listeners(commands.Cog):
                 except Exception as e:
                     print(f"Error closing ticket: {e}")
                 return
+
 
             elif command == '$delete':
                 try:
