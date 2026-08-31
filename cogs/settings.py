@@ -140,6 +140,118 @@ def _col_index(header: list, name: str) -> int:
     return -1
 
 
+def extract_player_fields(header: list, row: list, is_captain: bool = False, player_num: int = None, guild: discord.Guild = None) -> dict:
+    if is_captain:
+        tag_aliases = [
+            "captain discord tag", "captain discord username", "captain tag", "captain username",
+            "captain discord user name", "discord tag", "discord username", "tag", "username", "discord handle"
+        ]
+        id_aliases = [
+            "captain discord developers i'd", "captain discord developers id", "captain discord developer id",
+            "captain developer id", "discord developer id", "developer id", "captain discord id",
+            "captain discord", "captain id", "discord id", "captain", "captain's discord", "id"
+        ]
+        name_aliases = [
+            "captain in game name", "captain in-game name", "captain ign", "captain game name",
+            "captain name", "captain's ign", "captain's name", "in game name", "in-game name",
+            "game name", "ign", "in-game name (for example", "in game nickname", "in-game nickname",
+            "game nickname", "nickname", "character name", "account name", "player tag", "game tag", "name"
+        ]
+        game_id_aliases = [
+            "captain game i'd", "captain game id", "captain in-game id", "captain in game id",
+            "captain uid", "captain's game id", "game i'd", "game id", "in-game id", "in game id",
+            "uid", "riot id", "id"
+        ]
+        title_aliases = [
+            "captain title", "captain in-game title", "captain in game title", "captain rank",
+            "captain's title", "title", "in-game title", "in game title", "rank", "role"
+        ]
+    elif player_num is not None and player_num > 1:
+        n = player_num
+        tag_aliases = [
+            f"player {n} discord tag", f"player{n} discord tag", f"player {n} discord username",
+            f"player{n} discord username", f"player {n} tag", f"p{n} tag", f"p{n} discord tag",
+            f"player {n} username", f"p{n} username", f"player {n} discord user name"
+        ]
+        id_aliases = get_player_aliases(n, "Discord ID")
+        name_aliases = get_player_aliases(n, "Game Name")
+        game_id_aliases = get_player_aliases(n, "Game ID")
+        title_aliases = get_player_aliases(n, "Title")
+    else:
+        tag_aliases = [
+            "player discord tag", "player discord username", "player tag", "player username",
+            "player discord user name", "discord tag", "discord username", "tag", "username", "discord handle"
+        ]
+        id_aliases = [
+            "player discord developers i'd", "player discord developers id", "player discord developer id",
+            "discord developer id", "developer id", "player discord id", "discord id", "player discord",
+            "discord tag", "discord name", "discord", "discord developers i'd", "discord developers id",
+            "discord developer id", "player discord username", "discord username", "id"
+        ]
+        name_aliases = [
+            "player in game name", "player in-game name", "in game name", "in-game name",
+            "game name", "player name", "ign", "player ign", "in-game name (for example",
+            "in game nickname", "in-game nickname", "game nickname", "nickname", "character name",
+            "account name", "player tag", "game tag", "name"
+        ]
+        game_id_aliases = [
+            "player game i'd", "player game id", "game i'd", "game id", "player game id",
+            "player id", "uid", "riot id", "player in-game id", "in-game id (for example",
+            "in-game id", "in game id", "id"
+        ]
+        title_aliases = [
+            "player title", "title", "rank", "role", "player in-game title", "in-game title", "in game title"
+        ]
+
+    def _find_val(aliases_list):
+        for alias in aliases_list:
+            col = _col_index(header, alias)
+            if col != -1 and col < len(row):
+                v = row[col].strip()
+                if v:
+                    return v
+        return ""
+
+    raw_id = _find_val(id_aliases)
+    raw_name = _find_val(name_aliases)
+    raw_game_id = _find_val(game_id_aliases)
+    raw_title = _find_val(title_aliases)
+    raw_tag = _find_val(tag_aliases)
+
+    clean_id = ""
+    member = None
+    if raw_id:
+        m = re.search(r'\d+', raw_id)
+        if m:
+            clean_id = m.group(0)
+            if guild:
+                member = guild.get_member(int(clean_id))
+        else:
+            clean_id = raw_id
+
+    if not raw_tag and member:
+        raw_tag = member.name
+
+    return {
+        "discord_tag": raw_tag or "None",
+        "discord_id": clean_id or raw_id or "None",
+        "game_name": raw_name or "None",
+        "game_id": raw_game_id or "None",
+        "title": raw_title or "None",
+        "member": member,
+        "raw_id": raw_id
+    }
+
+def format_player_block_quote(section_header: str, data: dict, emoji: str = "💂") -> list:
+    lines = [f"{emoji} **{section_header}**"]
+    lines.append(f"> **Discord Tag:** `{data['discord_tag']}`")
+    lines.append(f"> **Discord ID:** `{data['discord_id']}`")
+    lines.append(f"> **Game Name:** `{data['game_name']}`")
+    lines.append(f"> **Game ID:** `{data['game_id']}`")
+    lines.append(f"> **Title:** `{data['title']}`")
+    return lines
+
+
 async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, format_str: str, channel: discord.TextChannel):
     sheet_match = re.search(r'/d/([a-zA-Z0-9-_]+)', sheet_link)
     if not sheet_match:
@@ -181,131 +293,42 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
         for row in rows[1:]:
             if not row or all(not cell.strip() for cell in row):
                 continue
-                
-            user_mention = "—"
-            member = None
-            
-            search_col = -1
-            if is_1v1:
-                search_col = _col_index(header, "Player Discord ID")
-                if search_col == -1:
-                    for alias in ["player discord developers i'd", "player discord developers id", "player discord developer id", "discord developer id", "developer id", "player discord id", "discord id", "player discord", "discord tag", "discord name", "discord", "discord developers i'd", "discord developers id", "discord developer id", "player discord username", "discord username"]:
-                        search_col = _col_index(header, alias)
-                        if search_col != -1:
-                            break
-            else:
-                search_col = _col_index(header, "Captain Discord ID")
-                if search_col == -1:
-                    for alias in ["captain discord developers i'd", "captain discord developers id", "captain discord developer id", "captain developer id", "discord developer id", "developer id", "captain discord id", "captain discord", "captain id", "discord id", "captain", "captain's discord", "discord tag", "captain discord name", "discord name", "captain discord username", "discord username"]:
-                        search_col = _col_index(header, alias)
-                        if search_col != -1:
-                            break
-                            
-            if search_col != -1 and search_col < len(row):
-                cell_val = row[search_col].strip()
-                digits_match = re.search(r'\d+', cell_val)
-                if digits_match:
-                    member_id = int(digits_match.group())
-                    member = guild.get_member(member_id)
-                    if not member:
-                        try:
-                            member = await guild.fetch_member(member_id)
-                        except:
-                            pass
-                    if member:
-                        user_mention = member.mention
-            
-            if is_1v1:
-                aliases_map_1v1 = {
-                    "Player Discord ID": ["player discord developers i'd", "player discord developers id", "player discord developer id", "discord developer id", "developer id", "player discord id", "discord id", "player discord", "discord tag", "discord name", "discord", "discord developers i'd", "discord developers id", "discord developer id", "player discord username", "discord username"],
-                    "Player Game Name": ["player in game name", "player in-game name", "game name", "player name", "ign", "in-game name", "player ign", "player in-game name", "in-game name (for example"],
-                    "Player Game ID": ["player game i'd", "player game id", "game i'd", "game id", "player game id", "player id", "uid", "riot id", "player in-game id", "in-game id (for example"],
-                    "Player Title": ["player title", "title", "rank", "role", "player in-game title", "in-game title"]
-                }
-                
-                embed = discord.Embed(
-                    title="🎮 PLAYER INFORMATION",
-                    description=f"**Player:** {user_mention}\n**Format:** `{format_str}`",
-                    color=discord.Color.blurple(),
-                    timestamp=discord.utils.utcnow()
-                )
-                if member and hasattr(member, 'display_avatar'):
-                    embed.set_thumbnail(url=member.display_avatar.url)
-                elif member and member.avatar:
-                    embed.set_thumbnail(url=member.avatar.url)
 
-                found_any = False
-                for field_name in _1V1_FIELDS:
-                    aliases = aliases_map_1v1.get(field_name, [])
-                    col = _col_index(header, field_name)
-                    if col == -1:
-                        for alias in aliases:
-                            col = _col_index(header, alias)
-                            if col != -1:
-                                break
-                    if col == -1:
-                        continue
-                    val = row[col].strip() if col < len(row) else ""
-                    if not val:
-                        val = "—"
-                    
-                    if ("discord id" in field_name.lower() or "discord_id" in field_name.lower()) and val != "—":
-                        digits_match = re.search(r'\d+', val)
-                        if digits_match:
-                            val = f"<@{digits_match.group()}>"
-                        elif val.isdigit():
-                            val = f"<@{val}>"
-                        else:
-                            val = f"`{val}`"
-                    elif val != "—":
-                        val = f"`{val}`"
-                        
-                    label = field_name.replace("Player ", "")
-                    emoji = ""
-                    if "discord id" in field_name.lower():
-                        emoji = "👤"
-                        label = "Discord ID"
-                    elif "game name" in field_name.lower():
-                        emoji = "🎮"
-                        label = "Game Name"
-                    elif "game id" in field_name.lower():
-                        emoji = "🆔"
-                        label = "Game ID"
-                    elif "title" in field_name.lower():
-                        emoji = "🎖️"
-                        label = "Title"
-                        
-                    embed.add_field(name=f"{emoji} {label}", value=val, inline=True)
-                    found_any = True
-                
-                if not found_any:
-                    embed.add_field(
-                        name="⚠️ Column Mismatch",
-                        value=f"Expected columns like `{'` | `'.join(_1V1_FIELDS)}`",
-                        inline=False
-                    )
-                    
-                embed.set_footer(text=f"{guild.name} • Player Info")
-                await channel.send(embed=embed)
-                
-            else:
-                tn_val = "—"
-                tn_col = _col_index(header, "Team Name")
-                if tn_col == -1:
-                    for alias in ["teamname", "team", "clan name", "clan"]:
-                        tn_col = _col_index(header, alias)
-                        if tn_col != -1:
-                            break
-                if tn_col != -1:
-                    tn_val = row[tn_col].strip() if tn_col < len(row) else "—"
+            # Seed extraction
+            seed_val = ""
+            col_seed = _col_index(header, "Seed")
+            if col_seed == -1:
+                for alias in ["seed", "seed number", "seed #", "seeding", "team seed"]:
+                    col_seed = _col_index(header, alias)
+                    if col_seed != -1: break
+            if col_seed != -1 and col_seed < len(row):
+                seed_val = row[col_seed].strip()
+
+            if is_1v1:
+                p_data = extract_player_fields(header, row, is_captain=False, guild=guild)
+                member = p_data['member']
+                if not member and p_data['discord_id'] != "None" and p_data['discord_id'].isdigit():
+                    try:
+                        member = await guild.fetch_member(int(p_data['discord_id']))
+                        p_data['member'] = member
+                        if p_data['discord_tag'] == "None" and member:
+                            p_data['discord_tag'] = member.name
+                    except:
+                        pass
+
+                title_name = p_data['game_name'] if p_data['game_name'] != 'None' else (p_data['discord_tag'] if p_data['discord_tag'] != 'None' else "Player Information")
+
+                desc_lines = []
+                if member:
+                    desc_lines.append(f"💂 {member.mention}\n")
+                elif p_data['discord_id'] != 'None' and p_data['discord_id'].isdigit():
+                    desc_lines.append(f"💂 <@{p_data['discord_id']}>\n")
+
+                desc_lines.extend(format_player_block_quote("Captain details" if is_1v1 else "Player details", p_data, emoji="💂"))
 
                 embed = discord.Embed(
-                    title="🏆 TEAM INFORMATION",
-                    description=(
-                        f"**Captain:** {user_mention}\n"
-                        f"**Team Name:** `{tn_val or '—'}`\n"
-                        f"**Format:** `{format_str}`"
-                    ),
+                    title=f"🏆 {title_name}",
+                    description="\n".join(desc_lines),
                     color=discord.Color.gold(),
                     timestamp=discord.utils.utcnow()
                 )
@@ -313,109 +336,70 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
                     embed.set_thumbnail(url=member.display_avatar.url)
                 elif member and member.avatar:
                     embed.set_thumbnail(url=member.avatar.url)
-                    
-                cap_block = []
-                aliases_map_captain = {
-                    "Captain Discord ID": ["captain discord developers i'd", "captain discord developers id", "captain discord developer id", "captain developer id", "discord developer id", "developer id", "captain discord id", "captain discord", "captain id", "discord id", "captain", "captain's discord", "discord tag", "captain discord username", "discord username", "captain discord user name"],
-                    "Captain Game Name": ["captain in game name", "captain in-game name", "captain ign", "captain game name", "captain name", "captain's ign", "captain's name", "game name", "ign"],
-                    "Captain Game ID": ["captain game i'd", "captain game id", "captain in-game id", "captain uid", "captain's game id", "game id", "uid", "game i'd"],
-                    "Captain Title": ["captain title", "captain in-game title", "captain rank", "captain's title", "title", "rank"]
-                }
-                
-                for fname in ["Captain Discord ID", "Captain Game Name", "Captain Game ID", "Captain Title"]:
-                    aliases = aliases_map_captain.get(fname, [])
-                    col = _col_index(header, fname)
-                    if col == -1:
-                        for alias in aliases:
-                            col = _col_index(header, alias)
-                            if col != -1:
-                                break
-                    if col == -1:
-                        continue
-                    val = row[col].strip() if col < len(row) else "—"
-                    if not val:
-                        val = "—"
-                    
-                    if ("discord id" in fname.lower() or "discord_id" in fname.lower()) and val != "—":
-                        digits_match = re.search(r'\d+', val)
-                        if digits_match:
-                            val = f"<@{digits_match.group()}>"
-                        elif val.isdigit():
-                            val = f"<@{val}>"
-                        else:
-                            val = f"`{val}`"
-                    elif val != "—":
-                        val = f"`{val}`"
-                        
-                    label = fname.replace("Captain ", "")
-                    emoji = ""
-                    if "discord id" in fname.lower():
-                        emoji = "👤 "
-                        label = "Discord ID"
-                    elif "game name" in fname.lower():
-                        emoji = "🎮 "
-                        label = "Game Name"
-                    elif "game id" in fname.lower():
-                        emoji = "🆔 "
-                        label = "Game ID"
-                    elif "title" in fname.lower():
-                        emoji = "🎖️ "
-                        label = "Title"
-                    cap_block.append(f"{emoji}**{label}:** {val}")
-                    
-                if cap_block:
-                    embed.add_field(name="👑 Captain", value="\n".join(cap_block), inline=False)
-                    
-                for n in range(2, team_size + 1):
-                    player_block = []
-                    for tmpl in _TEAM_PLAYER_FIELDS_TEMPLATE:
-                        fname = tmpl.format(n=n)
-                        attr_type = fname.replace(f"Player {n} ", "")
-                        aliases = get_player_aliases(n, attr_type)
-                            
-                        col = _col_index(header, fname)
-                        if col == -1:
-                            for alias in aliases:
-                                col = _col_index(header, alias)
-                                if col != -1:
-                                    break
-                        if col == -1:
-                            continue
-                        val = row[col].strip() if col < len(row) else "—"
-                        if not val:
-                            val = "—"
-                        
-                        if ("discord id" in fname.lower() or "discord_id" in fname.lower()) and val != "—":
-                            digits_match = re.search(r'\d+', val)
-                            if digits_match:
-                                val = f"<@{digits_match.group()}>"
-                            elif val.isdigit():
-                                val = f"<@{val}>"
-                            else:
-                                val = f"`{val}`"
-                        elif val != "—":
-                            val = f"`{val}`"
-                            
-                        label = fname.replace(f"Player {n} ", "")
-                        emoji = ""
-                        if "discord id" in fname.lower():
-                            emoji = "👤 "
-                            label = "Discord ID"
-                        elif "game name" in fname.lower():
-                            emoji = "🎮 "
-                            label = "Game Name"
-                        elif "game id" in fname.lower():
-                            emoji = "🆔 "
-                            label = "Game ID"
-                        elif "title" in fname.lower():
-                            emoji = "🎖️ "
-                            label = "Title"
-                        player_block.append(f"{emoji}**{label}:** {val}")
-                        
-                    if player_block:
-                        embed.add_field(name=f"👥 Player {n}", value="\n".join(player_block), inline=False)
+                elif guild and guild.icon:
+                    embed.set_thumbnail(url=guild.icon.url)
 
-                embed.set_footer(text=f"{guild.name} • Team Info")
+                footer_parts = [guild.name, "Player Info"]
+                if seed_val:
+                    footer_parts.append(f"Seed #{seed_val}")
+                embed.set_footer(text=" • ".join(footer_parts))
+                await channel.send(embed=embed)
+
+            else:
+                tn_val = ""
+                tn_col = _col_index(header, "Team Name")
+                if tn_col == -1:
+                    for alias in ["teamname", "team", "clan name", "clan"]:
+                        tn_col = _col_index(header, alias)
+                        if tn_col != -1:
+                            break
+                if tn_col != -1 and tn_col < len(row):
+                    tn_val = row[tn_col].strip()
+
+                cap_data = extract_player_fields(header, row, is_captain=True, guild=guild)
+                member = cap_data['member']
+                if not member and cap_data['discord_id'] != "None" and cap_data['discord_id'].isdigit():
+                    try:
+                        member = await guild.fetch_member(int(cap_data['discord_id']))
+                        cap_data['member'] = member
+                        if cap_data['discord_tag'] == "None" and member:
+                            cap_data['discord_tag'] = member.name
+                    except:
+                        pass
+
+                team_title = tn_val or (cap_data['game_name'] if cap_data['game_name'] != 'None' else "Team Information")
+
+                desc_lines = []
+                if member:
+                    desc_lines.append(f"💂 {member.mention}\n")
+                elif cap_data['discord_id'] != 'None' and cap_data['discord_id'].isdigit():
+                    desc_lines.append(f"💂 <@{cap_data['discord_id']}>\n")
+
+                desc_lines.extend(format_player_block_quote("Captain details", cap_data, emoji="💂"))
+
+                for n in range(2, team_size + 1):
+                    pn_data = extract_player_fields(header, row, is_captain=False, player_num=n, guild=guild)
+                    if any(pn_data[k] != "None" for k in ["discord_tag", "discord_id", "game_name", "game_id", "title"]):
+                        desc_lines.append("")
+                        desc_lines.extend(format_player_block_quote(f"Player {n} details", pn_data, emoji="👥"))
+
+                embed = discord.Embed(
+                    title=f"🏆 {team_title}",
+                    description="\n".join(desc_lines),
+                    color=discord.Color.gold(),
+                    timestamp=discord.utils.utcnow()
+                )
+                if member and hasattr(member, 'display_avatar'):
+                    embed.set_thumbnail(url=member.display_avatar.url)
+                elif member and member.avatar:
+                    embed.set_thumbnail(url=member.avatar.url)
+                elif guild and guild.icon:
+                    embed.set_thumbnail(url=guild.icon.url)
+
+                footer_parts = [guild.name, "Team Info"]
+                if seed_val:
+                    footer_parts.append(f"Seed #{seed_val}")
+                embed.set_footer(text=" • ".join(footer_parts))
                 await channel.send(embed=embed)
 
             posted_count += 1
@@ -425,6 +409,7 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
     except Exception as e:
         print(f"Error syncing player information sheet: {e}")
         return False, f"Failed to sync sheet: {str(e)}"
+
 
 
 # ===========================================================================================
@@ -919,67 +904,49 @@ class Settings(commands.Cog):
             info_format = str(PLAYER_INFO_FORMAT)
             is_1v1 = (info_format == "1 vs 1")
 
+            # Seed extraction
+            seed_val = ""
+            col_seed = _col_index(header, "Seed")
+            if col_seed == -1:
+                for alias in ["seed", "seed number", "seed #", "seeding", "team seed"]:
+                    col_seed = _col_index(header, alias)
+                    if col_seed != -1: break
+            if col_seed != -1 and col_seed < len(found_row):
+                seed_val = found_row[col_seed].strip()
+
             if is_1v1:
-                aliases_map_1v1 = {
-                    "Player Discord ID": ["player discord developers i'd", "player discord developers id", "player discord developer id", "discord developer id", "developer id", "player discord id", "discord id", "player discord", "discord tag", "discord name", "discord", "discord developers i'd", "discord developers id", "discord developer id", "player discord username", "discord username"],
-                    "Player Game Name": ["player in game name", "player in-game name", "game name", "player name", "ign", "in-game name", "player ign", "player in-game name", "in-game name (for example"],
-                    "Player Game ID": ["player game i'd", "player game id", "game i'd", "game id", "player game id", "player id", "uid", "riot id", "player in-game id", "in-game id (for example"],
-                    "Player Title": ["player title", "title", "rank", "role", "player in-game title", "in-game title"]
-                }
+                p_data = extract_player_fields(header, found_row, is_captain=False, guild=interaction.guild)
+                if user:
+                    p_data['member'] = user
+                    if p_data['discord_tag'] == "None":
+                        p_data['discord_tag'] = user.name
+                    if p_data['discord_id'] == "None":
+                        p_data['discord_id'] = str(user.id)
+
+                title_name = p_data['game_name'] if p_data['game_name'] != 'None' else (p_data['discord_tag'] if p_data['discord_tag'] != 'None' else user.display_name)
+
+                desc_lines = []
+                desc_lines.append(f"💂 {user.mention}\n")
+                desc_lines.extend(format_player_block_quote("Captain details" if is_1v1 else "Player details", p_data, emoji="💂"))
 
                 pi_embed = discord.Embed(
-                    title="🎮 Player Information",
-                    description=f"**Player:** {user.mention}\n**Format:** `{info_format}`",
-                    color=discord.Color.blurple(),
+                    title=f"🏆 {title_name}",
+                    description="\n".join(desc_lines),
+                    color=discord.Color.gold(),
                     timestamp=discord.utils.utcnow()
                 )
-                if user.avatar:
+                if user.display_avatar:
+                    pi_embed.set_thumbnail(url=user.display_avatar.url)
+                elif user.avatar:
                     pi_embed.set_thumbnail(url=user.avatar.url)
+                elif interaction.guild and interaction.guild.icon:
+                    pi_embed.set_thumbnail(url=interaction.guild.icon.url)
 
-                found_any = False
-                for field_name in _1V1_FIELDS:
-                    aliases = aliases_map_1v1.get(field_name, [])
-                    col = _col_index(header, field_name)
-                    if col == -1:
-                        for alias in aliases:
-                            col = _col_index(header, alias)
-                            if col != -1:
-                                break
-                    if col == -1:
-                        continue
-                    val = found_row[col].strip() if col < len(found_row) else ""
-                    if not val:
-                        val = "—"
-                    
-                    if ("discord id" in field_name.lower() or "discord_id" in field_name.lower()) and val != "—":
-                        digits_match = re.search(r'\d+', val)
-                        if digits_match:
-                            val = f"<@{digits_match.group()}>"
-                        elif val.isdigit():
-                            val = f"<@{val}>"
-                        else:
-                            val = f"`{val}`"
-                    elif val != "—":
-                        val = f"`{val}`"
-
-                    label = field_name.replace("Player ", "")
-                    emoji = ""
-                    if "discord id" in field_name.lower():
-                        emoji = "👤"; label = "Discord ID"
-                    elif "game name" in field_name.lower():
-                        emoji = "🎮"; label = "Game Name"
-                    elif "game id" in field_name.lower():
-                        emoji = "🆔"; label = "Game ID"
-                    elif "title" in field_name.lower():
-                        emoji = "🎖️"; label = "Title"
-
-                    pi_embed.add_field(name=f"{emoji} {label}", value=val, inline=True)
-                    found_any = True
-
-                if not found_any:
-                    pi_embed.add_field(name="⚠️ Column Mismatch", value=f"Expected columns like `{'` | `'.join(_1V1_FIELDS)}`", inline=False)
-
-                pi_embed.set_footer(text=f"{ORGANIZATION_NAME} • Player Info • Requested by {interaction.user.display_name}")
+                footer_parts = [ORGANIZATION_NAME, "Player Info"]
+                if seed_val:
+                    footer_parts.append(f"Seed #{seed_val}")
+                footer_parts.append(f"Requested by {interaction.user.display_name}")
+                pi_embed.set_footer(text=" • ".join(footer_parts))
                 await interaction.followup.send(embed=pi_embed)
 
             else:
@@ -989,130 +956,60 @@ class Settings(commands.Cog):
                 except Exception:
                     team_size = 5
 
-                tn_val = "—"
+                tn_val = ""
                 tn_col = _col_index(header, "Team Name")
                 if tn_col == -1:
                     for alias in ["teamname", "team", "clan name", "clan"]:
                         tn_col = _col_index(header, alias)
                         if tn_col != -1:
                             break
-                if tn_col != -1:
-                    tn_val = found_row[tn_col].strip() if tn_col < len(found_row) else "—"
+                if tn_col != -1 and tn_col < len(found_row):
+                    tn_val = found_row[tn_col].strip()
+
+                cap_data = extract_player_fields(header, found_row, is_captain=True, guild=interaction.guild)
+                if user:
+                    cap_data['member'] = user
+                    if cap_data['discord_tag'] == "None":
+                        cap_data['discord_tag'] = user.name
+                    if cap_data['discord_id'] == "None":
+                        cap_data['discord_id'] = str(user.id)
+
+                team_title = tn_val or (cap_data['game_name'] if cap_data['game_name'] != 'None' else f"Team {user.display_name}")
+
+                desc_lines = []
+                desc_lines.append(f"💂 {user.mention}\n")
+                desc_lines.extend(format_player_block_quote("Captain details", cap_data, emoji="💂"))
+
+                for n in range(2, team_size + 1):
+                    pn_data = extract_player_fields(header, found_row, is_captain=False, player_num=n, guild=interaction.guild)
+                    if any(pn_data[k] != "None" for k in ["discord_tag", "discord_id", "game_name", "game_id", "title"]):
+                        desc_lines.append("")
+                        desc_lines.extend(format_player_block_quote(f"Player {n} details", pn_data, emoji="👥"))
 
                 ti_embed = discord.Embed(
-                    title="🏆 Team Information",
-                    description=(
-                        f"**Captain:** {user.mention}\n"
-                        f"**Team Name:** `{tn_val}`\n"
-                        f"**Format:** `{info_format}`"
-                    ),
+                    title=f"🏆 {team_title}",
+                    description="\n".join(desc_lines),
                     color=discord.Color.gold(),
                     timestamp=discord.utils.utcnow()
                 )
-                if user.avatar:
+                if user.display_avatar:
+                    ti_embed.set_thumbnail(url=user.display_avatar.url)
+                elif user.avatar:
                     ti_embed.set_thumbnail(url=user.avatar.url)
+                elif interaction.guild and interaction.guild.icon:
+                    ti_embed.set_thumbnail(url=interaction.guild.icon.url)
 
-                aliases_map_captain = {
-                    "Captain Discord ID": ["captain discord developers i'd", "captain discord developers id", "captain discord developer id", "captain developer id", "discord developer id", "developer id", "captain discord id", "captain discord", "captain id", "discord id", "captain", "captain's discord", "discord tag", "captain discord username", "discord username", "captain discord user name"],
-                    "Captain Game Name": ["captain in game name", "captain in-game name", "captain ign", "captain game name", "captain name", "captain's ign", "captain's name", "game name", "ign"],
-                    "Captain Game ID": ["captain game i'd", "captain game id", "captain in-game id", "captain uid", "captain's game id", "game id", "uid", "game i'd"],
-                    "Captain Title": ["captain title", "captain in-game title", "captain rank", "captain's title", "title", "rank"]
-                }
-
-                cap_lines = []
-                for fname in ["Captain Discord ID", "Captain Game Name", "Captain Game ID", "Captain Title"]:
-                    aliases = aliases_map_captain.get(fname, [])
-                    col = _col_index(header, fname)
-                    if col == -1:
-                        for alias in aliases:
-                            col = _col_index(header, alias)
-                            if col != -1:
-                                break
-                    if col == -1:
-                        continue
-                    val = found_row[col].strip() if col < len(found_row) else "—"
-                    if not val:
-                        val = "—"
-                    
-                    if ("discord id" in fname.lower() or "discord_id" in fname.lower()) and val != "—":
-                        digits_match = re.search(r'\d+', val)
-                        if digits_match:
-                            val = f"<@{digits_match.group()}>"
-                        elif val.isdigit():
-                            val = f"<@{val}>"
-                        else:
-                            val = f"`{val}`"
-                    elif val != "—":
-                        val = f"`{val}`"
-
-                    label = fname.replace("Captain ", "")
-                    emoji = ""
-                    if "discord id" in fname.lower():
-                        emoji = "👤"; label = "Discord ID"
-                    elif "game name" in fname.lower():
-                        emoji = "🎮"; label = "Game Name"
-                    elif "game id" in fname.lower():
-                        emoji = "🆔"; label = "Game ID"
-                    elif "title" in fname.lower():
-                        emoji = "🎖️"; label = "Title"
-
-                    cap_lines.append(f"{emoji} **{label}:** {val}")
-
-                if cap_lines:
-                    ti_embed.add_field(name="👑 Captain", value="\n".join(cap_lines), inline=False)
-
-                for n in range(2, team_size + 1):
-                    player_lines = []
-                    for tmpl in _TEAM_PLAYER_FIELDS_TEMPLATE:
-                        fname = tmpl.format(n=n)
-                        attr_type = fname.replace(f"Player {n} ", "")
-                        aliases = get_player_aliases(n, attr_type)
-
-                        col = _col_index(header, fname)
-                        if col == -1:
-                            for alias in aliases:
-                                col = _col_index(header, alias)
-                                if col != -1:
-                                    break
-                        if col == -1:
-                            continue
-                        val = found_row[col].strip() if col < len(found_row) else "—"
-                        if not val:
-                            val = "—"
-                        
-                        if ("discord id" in fname.lower() or "discord_id" in fname.lower()) and val != "—":
-                            digits_match = re.search(r'\d+', val)
-                            if digits_match:
-                                val = f"<@{digits_match.group()}>"
-                            elif val.isdigit():
-                                val = f"<@{val}>"
-                            else:
-                                val = f"`{val}`"
-                        elif val != "—":
-                            val = f"`{val}`"
-
-                        label = fname.replace(f"Player {n} ", "")
-                        emoji = ""
-                        if "discord id" in fname.lower():
-                            emoji = "👤 "; label = "Discord ID"
-                        elif "game name" in fname.lower():
-                            emoji = "🎮 "; label = "Game Name"
-                        elif "game id" in fname.lower():
-                            emoji = "🆔 "; label = "Game ID"
-                        elif "title" in fname.lower():
-                            emoji = "🎖️ "; label = "Title"
-
-                        player_lines.append(f"{emoji}**{label}:** {val}")
-
-                    if player_lines:
-                        ti_embed.add_field(name=f"👥 Player {n}", value="\n".join(player_lines), inline=False)
-
-                ti_embed.set_footer(text=f"{ORGANIZATION_NAME} • Team Info • Requested by {interaction.user.display_name}")
+                footer_parts = [ORGANIZATION_NAME, "Team Info"]
+                if seed_val:
+                    footer_parts.append(f"Seed #{seed_val}")
+                footer_parts.append(f"Requested by {interaction.user.display_name}")
+                ti_embed.set_footer(text=" • ".join(footer_parts))
                 await interaction.followup.send(embed=ti_embed)
 
         except Exception as e:
             print(f"Error fetching player information: {e}")
             await interaction.followup.send("❌ Error fetching player info from the configured Google Sheet.")
+
 
     @app_commands.command(name="player_edit", description="Edit a player's or team's name/details in the posted participant list and database")
     @app_commands.describe(

@@ -7,11 +7,11 @@
 ![Supabase](https://img.shields.io/badge/Supabase-PostgreSQL-3ECF8E?style=for-the-badge&logo=supabase&logoColor=white)
 ![Hosting](https://img.shields.io/badge/Hosted%20on-bot.hosting.net-6C47FF?style=for-the-badge&logo=server&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)
-![Release](https://img.shields.io/badge/Release-v1.4.0-blue?style=for-the-badge)
+![Release](https://img.shields.io/badge/Release-v1.5.0-blue?style=for-the-badge)
 ![Status](https://img.shields.io/badge/Status-Active-brightgreen?style=for-the-badge)
 
 **A fully-featured, multi-guild Discord tournament management bot.**  
-Officiates events · Syncs Challonge brackets · Tracks staff · Generates match posters
+Officiates events · Syncs Challonge brackets · Tracks staff · Generates match posters · Generates HTML transcripts
 
 </div>
 
@@ -28,13 +28,16 @@ Officiates events · Syncs Challonge brackets · Tracks staff · Generates match
    - [System Commands](#️-system-commands)
    - [Player Commands](#-player-commands)
    - [Event Management Commands](#-event-management-commands)
-   - [Judge Commands](#️-judge-commands)
+   - [Link & VOD Management Commands](#-link--vod-management-commands)
+   - [Judge & Staff Commands](#️-judge--staff-commands)
    - [Admin Commands](#-admin-commands)
 5. [Player Information System](#-player-information-system)
-6. [Event Lifecycle](#-event-lifecycle)
-7. [Environment Setup & Installation](#-environment-setup--installation)
-8. [Credits](#-credits--developer-info)
-9. [Changelog](#️-version-history--changelog)
+6. [Ticket & Transcript System](#-ticket--transcript-system)
+7. [Event Lifecycle](#-event-lifecycle)
+8. [Environment Setup & Installation](#-environment-setup--installation)
+9. [Credits](#-credits--developer-info)
+10. [Changelog](#️-version-history--changelog)
+
 
 ---
 
@@ -87,90 +90,148 @@ graph TD
 
 ## 🗄️ Database Configuration (Supabase)
 
-The bot operates on the following tables in Supabase:
+The bot operates on the following production PostgreSQL tables in Supabase:
 
 | Table | Purpose |
 |---|---|
-| `GuildConfig` | Server configurations (rules channel, schedule channel, judge role, results channel, organization name) |
-| `Tournaments` | Configurations for individual tournaments per guild |
-| `Events` | Created match records (`Created_By_ID`, `Created_By_Name` columns required) |
-| `JudgeAssignments` | Logs judge and recorder claims and assignments |
-| `Results` | Finalized match scores, remarks, and screenshot attachment counts |
-| `StaffStats` | Match points for judges/recorders on the leaderboards |
-| `Challonge_Uploads` | Challonge score update success/failure histories |
+| `GuildConfig` | Server-wide role IDs, default channel IDs, organization branding, logo assets, and player info link/format |
+| `Tournaments` | Tournament-specific channel mappings, open/closed ticket categories, Challonge bracket URLs, sheet links, and state (`pending`, `active`, `completed`) |
+| `Matches` | Official match records, integer `Round`, `Group`, team IDs/scores, VOD links (`General_VOD`, `Recorder_VOD`, `Judge_VOD`, `recording_link`), results message IDs, and status |
+| `MatchStaff` | Assigned match staff, role mappings (`Judge`, `Recorder`), and pre-match presence confirmation statuses |
+| `StaffStats` | Official staff activity records (`Judge_Count`, `Recorder_Count`, `Total_Count`, `Timestamp`) synced live |
+| `Deadlines` | Scheduled round deadline timestamps per tournament |
+| `Players` & `Teams` | Registered player rosters, game IDs, and team profiles |
+| `TournamentSponsors` | Sponsor banner placements, logo URLs, and redirect links |
+| `SponsorClickLogs` | Real-time analytics tracking sponsor click conversions |
+| `AffiliateProducts` | Product catalog, pricing, and affiliate purchase links |
 
 ---
 
 ## 📋 Command Reference
 
 ### ⚙️ System Commands
-- `/help` - Displays a link to the comprehensive Notion Help Guide.
-- `/info` - Displays bot status, ping, and server information.
-- `/staff-leaderboard` - Shows current leaderboards for Judges & Recorders.
+- `/help` — Displays a link to the comprehensive Notion Help Guide.
+- `/info` — Displays bot status, ping, and server information.
+- `/staff-leaderboard` — Shows current leaderboards for Judges & Recorders (Solo Judge, Solo Recorder, and Dual Role).
+- `/staff work` — View individual staff work breakdown with tournament autocomplete and active filters.
 
 ### 🎮 Player Commands
-- `/player_information` - Searches the configured Google Sheet for a player/captain and outputs their roster, IGNs, and Discord ID mentions.
-- `/id-card` - Generates a customized graphic Clan ID Card for a player.
-- `/maps` - Randomly rolls a map selection (3, 5, or 7 maps) from the map pool.
-- `/choose` - Picks an item from a comma-separated list.
-- `/time` - Generates a random match time slot within specific parameters.
+- `/player_information` — Searches the configured Google Sheet for a player/captain and outputs their roster, IGNs, and Discord ID mentions in clean blockquote (`> `) format.
+- `/config_player_information` — Configures the player sheet link, format, and participant channel, automatically syncing all participants.
+- `/player_edit` — Edits a participant's details in the posted list and database.
+- `/id-card` — Generates a customized graphic Clan ID Card for a player.
+- `/maps` — Randomly rolls a map selection (3, 5, or 7 maps) from the map pool.
+- `/choose` — Picks an item from a comma-separated list.
+- `/time` — Generates a random match time slot within specific parameters.
 
 ### 🏆 Event Management Commands
-- `/event-create` - Creates a match event, generates a poster with scaling font margins, logs the event to the database, and schedules pre-match reminders.
-- `/event-edit` - Edits details of the active match (reschedule time, captains, round) in the current channel.
-- `/event-delete` - Un-schedules and deletes a scheduled match.
-- `/exchange` - Swaps a Judge or Recorder for an event.
+- `/event-create` — Creates a match event, generates a poster with scaling font margins and server logo badge, logs the event to Supabase, and schedules pre-match reminders.
+- `/event-edit` — Edits details of the active match (reschedule time, captains, round) in the current channel.
+- `/event-delete` — Un-schedules and deletes a scheduled match.
+- `/exchange` — Swaps a Judge or Recorder for an event.
 
-### ⚖️ Judge Commands
-- **Take Schedule** button - Claims the match in the `#schedule` channel.
-- **Record** button - Claims the recorder slot for the match.
-- `/reassign` - Resigns from an assigned match and notifies other judges.
-- `/available_events` - Lists scheduled matches needing a judge.
-- `/event-result` - Enters official match results, uploads screenshots, logs stats, and posts results.
-- `/add-record-link` - Adds a VOD or recording link to a match (for Recorders, Judges, and Helpers).
-- `/upload-score` - Uploads scores directly to Challonge bracket using an autocomplete match list. Takes exactly three parameters:
-  - `winner` (Dropdown): Autocompleted list of active matches. Inside a match ticket, shows clean team/player names by matching the channel topic `MatchID:XXXX`. Otherwise formats as `TeamName (vs OpponentName)`.
-  - `winner_score` (Integer): Final score of the winner.
-  - `loser_score` (Integer): Final score of the loser.
+### 🎥 Link & VOD Management Commands
+- `/link add` — Adds recording/VOD links for a match event. Supports up to 5 multi-link inputs (`link1` to `link5`), selects link type (`General Recording`, `Recorder VOD`, `Judge VOD`), awards recorder credit in staff stats, syncs to Supabase `Matches`, and updates the results channel embed live.
+- `/link edit` — Edits an existing recording/VOD link for a match.
+- `/link delete` — Removes specific link types (`General`, `Recorder`, `Judge`, or `All Links`) from a match record.
+- `/link missing` — Displays a paginated view of completed matches missing recording links.
+
+### ⚖️ Judge & Staff Commands
+- **Take Schedule** button — Claims the match judge slot in `#schedule`.
+- **Record** button — Claims the recorder slot for the match.
+- `/reassign` — Resigns from an assigned match and notifies other judges.
+- `/available_events` — Lists scheduled matches needing a judge.
+- `/event-result` — Enters official match results, uploads screenshots, logs stats, delivers staff attendance logs, and posts results.
+- `/upload-score` — Uploads scores directly to Challonge bracket using an autocomplete match list.
 
 ### 👑 Admin Commands
-- `/settings add` - Set server-wide role mappings and branding parameters (organization name, sheet links, bot name).
-- `/settings edit` - Modify server-wide role mappings and branding parameters.
-- `/settings show` - Displays a clean embed detailing all active server roles and configurations.
-- `/settings clean` - Resets all configuration data, deletes guild database tables, and wipes local cache files.
-- `/tournament add` - Registers a tournament configuration (name, Challonge key, bracket link, sheet link, channels, categories, auto room setting).
-- `/tournament edit` - Modifies an existing tournament config (bracket link, sheet link, channels, open/closed ticket categories, state: `pending`, `active`, `completed`).
-- `/tournament delete` - Deletes tournament from database and local cache.
-- `/tournament info` - Displays detailed channels, roles, and status of a tournament.
-- `/tournament list` - Lists all tournaments registered for the server.
-- `/auto_room run` - Manually triggers the automatic match room ticket creation sweep.
-- `/auto_room stop` - Suspends the automatic match room loop for a tournament.
-- `/auto_room toggle` - Toggles the automatic match room loop status.
-- `/clear category` - Deletes all open/closed ticket channels in a specified category (Organizer only).
-- `/clear cache` - Clears Challonge bracket and sheet caches.
-- `/registration` - Publishes a Google Form registration embed with a direct button.
-- `/publish-rules` - Writes and publishes tournament rules directly to guidelines.
-- `/test_channels` - Runs a diagnostic check on bot permissions in configured channels.
-- `/staff-update` - Manually update staff stats/points on the leaderboard.
+- `/settings add` — Set server-wide role mappings and branding parameters (organization name, sheet links, bot name).
+- `/settings edit` — Modify server-wide role mappings and branding parameters.
+- `/settings show` — Displays a clean embed detailing all active server roles and configurations.
+- `/settings clean` — Resets all configuration data, deletes guild database tables, and wipes local cache files.
+- `/tournament add` — Registers a tournament configuration (name, Challonge key, bracket link, sheet link, channels, categories, auto room setting).
+- `/tournament edit` — Modifies an existing tournament config (bracket link, sheet link, channels, open/closed ticket categories, state: `pending`, `active`, `completed`).
+- `/tournament delete` — Deletes tournament from database and local cache.
+- `/tournament info` — Displays detailed channels, roles, and status of a tournament.
+- `/tournament list` — Lists all tournaments registered for the server.
+- `/auto_room run` — Manually triggers the automatic match room ticket creation sweep.
+- `/auto_room stop` — Suspends the automatic match room loop for a tournament.
+- `/auto_room toggle` — Toggles the automatic match room loop status.
+- `/clear category` — Deletes all open/closed ticket channels in a specified category (Organizer only).
+- `/clear cache` — Clears Challonge bracket and sheet caches.
+- `/registration` — Publishes a Google Form registration embed with a direct button.
+- `/publish-rules` — Writes and publishes tournament rules directly to guidelines.
+- `/test_channels` — Runs a diagnostic check on bot permissions in configured channels.
+- `/staff-update` — Manually update staff stats/points on the leaderboard.
 
 ---
 
 ## 🎮 Player Information System
 
-The `/player_information` command searches your Google Sheet. Setup requires columns matching your format:
+The player information system automatically synchronizes rosters from Google Sheets and renders them using sleek Discord blockquote (`> `) formatting.
 
-- **1 vs 1 Columns:** `Player Discord ID` | `Player Game Name` | `Player Game ID` | `Player Title`  
-  *(Supports flexible match names like `Discord`, `UID`, `ID`, `IGN`)*
-- **Team Columns (2v2 – 5v5):** `Team Name` | `Captain Discord ID` | `Captain Game Name` | `Captain Game ID` | `Captain Title` | `Player 2 Discord ID` ... `Player 5 Title`
+### 📱 1 vs 1 Format:
+```markdown
+🏆 YG-GamingMW
 
-Configure links and formats via `/settings add` or `/settings edit` using the `player_info_link` and `player_info_format` parameters.
+💂 @ZeroPing
+
+💂 **Player details**
+> **Discord Tag:** `yg_gamingmw`
+> **Discord ID:** `713394981213175829`
+> **Game Name:** `YG-GamingMW`
+> **Game ID:** `8202C9AF0056E12A`
+> **Title:** `None`
+```
+
+### 👥 Team Format (2v2 – 5v5):
+```markdown
+🏆 Team Alpha
+
+💂 @CaptainPing
+
+💂 **Captain details**
+> **Discord Tag:** `captain_tag`
+> **Discord ID:** `111222333444555`
+> **Game Name:** `CaptainIGN`
+> **Game ID:** `CAP12345`
+> **Title:** `Leader`
+
+👥 **Player 2 details**
+> **Discord Tag:** `player2_tag`
+> **Discord ID:** `666777888999000`
+> **Game Name:** `Player2IGN`
+> **Game ID:** `P2_98765`
+> **Title:** `None`
+```
+
+- **Supported Columns & Flexible Aliases:**
+  - **Discord ID / Tag:** `Player Discord ID`, `Discord Developer ID`, `Discord Tag`, `Discord Username`, `UID`
+  - **Game Name:** `In Game Name`, `In-Game Name`, `IGN`, `Game Name`, `Nickname`, `Character Name`, `Player Tag`
+  - **Game ID:** `Game ID`, `Game I'd`, `UID`, `Riot ID`, `Player ID`, `In-Game ID`
+  - **Title:** `Title`, `Rank`, `Role`, `In-Game Title`
+  - **Seed:** `Seed`, `Seed #`, `Seed Number`, `Seeding` (displayed in footer: `Guild • Tournament • Seed #93`)
+
+---
+
+## 📜 Ticket & Transcript System
+
+### Ticket Commands:
+- `$close` — Closes a match ticket channel and executes the full transcript pipeline:
+  1. Generates a rich standalone **Discord Dark Theme HTML transcript (`.html`)** with inline screenshot/image rendering, media previews, embed cards, and avatars.
+  2. Generates a structured **Plain-Text transcript (`.txt`)** with full attachment URLs.
+  3. Sends both transcript files to the ticket channel.
+  4. Automatically uploads the transcripts to the tournament's `#transcript` / `#transcript-logs` channel with a closed ticket summary card.
+  5. Moves the channel to the configured closed tickets category and syncs permissions.
+- `$delete` — Permanently deletes a ticket channel.
+- Status Prefix Commands: `?sh` (🟢 scheduled), `?dq` (🔴 disqualified), `?dd` (✅ deadline passed), `?ho` (🟡 on hold).
 
 ---
 
 ## 🔄 Event Lifecycle
 
 ```
-/event-create → Poster Generated → Logged to DB → Schedule Posted
+/event-create → Poster Generated → Logged to Supabase → Schedule Posted
      ↓
 Judge/Recorder claim via buttons in #schedule
      ↓
@@ -180,20 +241,14 @@ Judge/Recorder claim via buttons in #schedule
      ↓
 [T-10 min] Captains Reminder sent to ticket
      ↓
-/event-result → Scores logged → Screenshots uploaded → Results posted
+/event-result → Scores logged → Attendance logged → Screenshots uploaded → Results posted
+     ↓
+/link add → VOD links added (link1..link5) → Results embed updated live → Supabase synced
      ↓
 /upload-score → Challonge bracket updated
+     ↓
+$close → Rich HTML & TXT transcripts generated → Uploaded to #transcript-logs → Channel archived
 ```
-
-| Step | Trigger | Action |
-|---|---|---|
-| **Create** | `/event-create` | Renders poster, logs to DB, posts schedule |
-| **Claim** | Button click | Judge/Recorder assigned; ticket notified |
-| **Presence Ask** | T-30 min | Confirmation embed sent to match ticket |
-| **Presence Check** | T-20 min | Confirms staff; triggers replacement if absent |
-| **Player Reminder** | T-10 min | Match player reminder sent to captains |
-| **Finalize** | `/event-result` | Logs scores, screenshots, posts results embed |
-| **Sync** | `/upload-score` | Pushes result to Challonge bracket |
 
 ---
 
@@ -219,7 +274,7 @@ Judge/Recorder claim via buttons in #schedule
    pip install -r requirements.txt
    ```
 
-3. **Configure environment variables** - copy and fill in `.env`:
+3. **Configure environment variables** — copy and fill in `.env`:
    ```bash
    cp env.example .env
    ```
@@ -241,7 +296,7 @@ The bot is hosted on [bot.hosting.net](https://bot.hosting.net), a Python-friend
 1. Log in to your [bot.hosting.net](https://bot.hosting.net) panel and create a new **Python** server.
 2. Upload your project files (or connect via Git/SFTP).
 3. Set the **Startup File** to `main.py`.
-4. Add the three environment variables under the **Startup** or **Environment** tab:
+4. Add the environment variables under the **Startup** or **Environment** tab:
    - `DISCORD_TOKEN`
    - `SUPABASE_URL`
    - `SUPABASE_KEY`
@@ -249,11 +304,7 @@ The bot is hosted on [bot.hosting.net](https://bot.hosting.net), a Python-friend
    ```bash
    pip install -r requirements.txt
    ```
-6. Click **Start** - the bot will go online.
-
-### Database Setup
-
-Import `supabase_schema.sql` into your Supabase SQL editor to create all required tables.
+6. Click **Start** — the bot will go online.
 
 ---
 
@@ -268,18 +319,36 @@ Import `supabase_schema.sql` into your Supabase SQL editor to create all require
 
 ## 🗓️ Version History & Changelog
 
-> **Latest Release:** `v1.4.0`
+> **Latest Release:** `v1.5.0`
 
-### 🚀 v1.4.0 - Latest
+### 🚀 v1.5.0 — Latest
+**Tags:** `transcripts` `vods` `supabase` `ui` `player-info`
+
+> **GitHub Release Title:** `v1.5.0 - Rich Transcripts, Multi-Link VODs & Blockquote Player Info`
+>
+> Major feature release introducing rich HTML chat transcripts, multi-link VOD uploads, blockquote player info styling, and database hardening.
+
+#### What's Changed
+- **Rich HTML Transcripts:** `$close` now generates a standalone Discord Dark Theme `.html` transcript featuring full inline screenshot/image previews, avatar rendering, embed boxes, and markdown parsing, alongside a `.txt` fallback.
+- **Transcript Logs Channel Delivery:** Transcripts are automatically posted to the tournament's `#transcript` / `#transcript-logs` channel with a closed ticket metadata embed.
+- **Multi-Link VOD System (`/link add`):** Accepts up to 5 recording links (`link1`..`link5`) per match, assigns recorder credit in staff statistics, syncs to the Supabase `Matches` table, and updates result embeds live with numbered part links.
+- **Blockquote (`> `) Player Info UI:** Reworked `/player_information` and `/config_player_information` embeds with Discord blockquotes and expanded column aliases (`In-Game Name`, `IGN`, `UID`, `Seed`).
+- **Supabase Realignment & Sync:** Fixed PostgreSQL `Matches.Round` integer constraints, eliminated obsolete table fallbacks, and added automatic live syncing of staff leaderboard stats to `StaffStats`.
+- **Match Poster Server Badge:** Embedded circular server logo badges with gold ring borders on generated match posters.
+
+#### Full Changelog
+`v1.4.0...v1.5.0`
+
+---
+
+### 🚀 v1.4.0
 **Tags:** `feature` `help-system` `commands`
 
 > **GitHub Release Title:** `v1.4.0 - Help Guide & Record Link`
->
-> This release simplifies the in-bot help experience and adds VOD tracking for match recorders.
 
 #### What's Changed
-- **New Help Guide System:** Replaced the complex 500-line static paginated command dictionary with a link to a central Notion Help Guide - keeping the bot code lean and the guide easy to update without redeployments.
-- **Add Record Link Command:** Introduced `/add-record-link`, allowing Judges, Recorders, and Helpers to associate VOD/recording links with scheduled matches.
+- **New Help Guide System:** Central Notion Help Guide integration.
+- **Add Record Link Command:** Introduced `/add-record-link`.
 
 #### Full Changelog
 `v1.3.1...v1.4.0`
@@ -290,12 +359,10 @@ Import `supabase_schema.sql` into your Supabase SQL editor to create all require
 **Tags:** `bugfix` `poster-engine` `path-resolution`
 
 > **GitHub Release Title:** `v1.3.1 - Poster Path & Result Embed Fix`
->
-> Hotfix addressing poster generation failures and missing posters in result embeds.
 
 #### What's Changed
-- **Absolute Path Resolution:** Resolved image templates and local fonts relative to the script directory (`BASE_DIR`) dynamically, fixing errors where posters weren't generating when the bot was run from a different working directory.
-- **Match Poster in Result Embed:** Integrated match posters into results cards generated by `/event-result` by fetching the previously rendered poster path from the scheduled event data and attaching it to the final result embed.
+- **Absolute Path Resolution:** Resolved image templates and local fonts relative to `BASE_DIR`.
+- **Match Poster in Result Embed:** Integrated match posters into result cards.
 
 #### Full Changelog
 `v1.3.0...v1.3.1`
@@ -306,15 +373,11 @@ Import `supabase_schema.sql` into your Supabase SQL editor to create all require
 **Tags:** `feature` `staff-flow` `autocomplete` `ui`
 
 > **GitHub Release Title:** `v1.3.0 - Staff Flow Overhaul & Sleeker UI`
->
-> Major UX improvement release - tightens the staff presence pipeline, cleans up autocomplete, and makes result embeds much more compact.
 
 #### What's Changed
-- **Staff Timings Shift:** Realigned pre-match staff confirmation to a 30-minute presence check-in, 20-minute presence validation/replacement trigger, and 10-minute player match reminder flow.
-- **Simplified Claim Messages:** Replaced initial claim embeds in tickets with plain-text `{mention} assigned as **role** {emoji}` alerts. Confirmation buttons are now exclusively posted at the 30-minute reminder mark.
-- **Sleeker Autocomplete:** Restructured `/upload-score` autocompletes to show clean team/player names. If executed inside a match ticket, it automatically reads the channel topic's `MatchID:XXXX` and shows only the relevant two competing teams.
-- **Tighter Results Layout:** Removed redundant vertical blank space fields from the `/event-result` embed.
-- **Detailed Logs:** Log presence confirmations, staff replacements, and score uploads directly to the Discord bot logs and tournament-specific Challonge logs channels.
+- **Staff Timings Shift:** Pre-match 30-min presence check-in, 20-min replacement, 10-min player reminder.
+- **Sleeker Autocomplete:** Topic-aware team autocompletion in match tickets.
+- **Tighter Results Layout:** Compact `/event-result` embed.
 
 #### Full Changelog
 `v1.2.0...v1.3.0`
@@ -325,14 +388,10 @@ Import `supabase_schema.sql` into your Supabase SQL editor to create all require
 **Tags:** `database` `branding` `sheets`
 
 > **GitHub Release Title:** `v1.2.0 - Database Alignment & Sheet Tab Support`
->
-> Internal database cleanup and Google Sheets improvements for more reliable player lookups.
 
 #### What's Changed
-- **Database Alignment:** Re-arranged and cleaned up `GuildConfig` and `Tournaments` database column header orders in Supabase to match custom sheet sequences exactly.
-- **Branding Clean:** Removed `Tournament Name`, `Player Info Link`, and `Player Info Format` fields from the `/settings show` embed presentation.
-- **Google Sheet Tab `gid` Support:** Updated player information commands to extract the sheet tab ID (`gid=`) from the URL, syncing the exact configured sheet sub-tab instead of defaulting to the first tab.
-- **Deployment Crash Fix:** Added the missing `supabase` package dependency to `requirements.txt` to prevent boot crashes on hosted deployment.
+- **Database Alignment:** Aligned `GuildConfig` and `Tournaments` columns.
+- **Google Sheet Tab `gid` Support:** Added support for exact sheet tab extraction.
 
 #### Full Changelog
 `v1.1.0...v1.2.0`
@@ -343,32 +402,25 @@ Import `supabase_schema.sql` into your Supabase SQL editor to create all require
 **Tags:** `supabase` `multi-guild` `challonge`
 
 > **GitHub Release Title:** `v1.1.0 - Supabase Backend & Multi-Guild Support`
->
-> Moves the bot off local-only JSON storage onto a cloud PostgreSQL backend, enabling reliable multi-server operation.
 
 #### What's Changed
-- **Supabase Integration:** Migrated guild configs and tournament settings storage to Supabase PostgreSQL backend.
-- **Multi-Guild Isolation:** Added workspace isolation supporting config/attendance channels across multiple Discord servers.
-- **Challonge Logs:** Added tracking database tables for bracket upload stats.
+- **Supabase Integration:** Migrated storage to Supabase PostgreSQL backend.
+- **Multi-Guild Isolation:** Multi-server workspace isolation.
 
 #### Full Changelog
 `v1.0.0...v1.1.0`
 
 ---
 
-### 🌱 v1.0.0 - Initial Release
+### 🌱 v1.0.0 — Initial Release
 **Tags:** `initial-release` `core`
 
 > **GitHub Release Title:** `v1.0.0 - Initial Release`
->
-> First stable release of the Tournament Bot. Covers the complete event lifecycle from scheduling to result submission.
 
 #### What's New
-- Full event lifecycle management (`/event-create` → claims → reminders → `/event-result`).
-- Judge & Recorder claim buttons in the schedule channel.
-- PIL-powered match poster generation with custom fonts and background templates.
-- Local JSON config caching for offline-safe boot.
-- Challonge bracket score upload via `/upload-score`.
+- Full event lifecycle management.
+- PIL-powered match poster generation.
+- Challonge bracket score upload.
 
 #### Full Changelog
 `Initial commit...v1.0.0`
