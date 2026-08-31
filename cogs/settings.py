@@ -848,7 +848,7 @@ class Settings(commands.Cog):
     @app_commands.command(name="player_information", description="Look up player or team info from the configured Google Sheet")
     @app_commands.describe(user="The player or team captain to look up")
     @with_guild_context
-    async def player_information_command(self, interaction: discord.Interaction, user: discord.Member):
+    async def player_information_command(self, interaction: discord.Interaction, user: Union[discord.Member, discord.User]):
         await interaction.response.defer()
 
         link_str = str(PLAYER_INFO_LINK)
@@ -1031,7 +1031,7 @@ class Settings(commands.Cog):
     async def player_edit_command(
         self,
         interaction: discord.Interaction,
-        user: discord.Member,
+        user: Union[discord.Member, discord.User],
         field: app_commands.Choice[str],
         new_value: str,
         channel: Optional[discord.TextChannel] = None
