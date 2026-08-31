@@ -1109,6 +1109,23 @@ async def resolve_scheduled_event_members(bot_client: discord.Client):
                     pass
     print(f"✅ Resolved {resolved_count} member ID(s) to Member objects.")
 
+def parse_round_to_int(round_val) -> int:
+    if not round_val:
+        return 1
+    s = str(round_val).strip().lower()
+    m = re.search(r'\d+', s)
+    if m:
+        return int(m.group())
+    if 'final' in s:
+        if 'semi' in s:
+            return 98
+        if 'quarter' in s:
+            return 97
+        return 99
+    if 'qualifier' in s or 'qual' in s:
+        return 95
+    return 1
+
 def load_scheduled_deadlines():
     global scheduled_deadlines
     try:
@@ -1117,7 +1134,10 @@ def load_scheduled_deadlines():
                 data = json.load(f)
                 for dl_id, dl_data in data.items():
                     if 'deadline_dt' in dl_data:
-                        dl_data['deadline_dt'] = datetime.datetime.fromisoformat(dl_data['deadline_dt'])
+                        try:
+                            dl_data['deadline_dt'] = datetime.datetime.fromisoformat(dl_data['deadline_dt'])
+                        except Exception:
+                            pass
                 scheduled_deadlines = data
                 print(f"Loaded {len(scheduled_deadlines)} scheduled deadlines from local fallback")
     except Exception as e:
@@ -1130,14 +1150,22 @@ def load_scheduled_deadlines():
             if resp.data:
                 for row in resp.data:
                     try:
-                        g_id = int(row["Guild_ID"])
-                        rnd = row["Round"]
-                        dl_id = f"dl_{rnd.lower().replace('-', '_').replace(' ', '_')}_{g_id}"
-                        scheduled_deadlines[dl_id] = {
-                            'guild_id': g_id,
-                            'round': rnd,
-                            'deadline_dt': datetime.datetime.fromisoformat(row["Deadline_Time"])
-                        }
+                        t_id = str(row.get("Tournament_ID", ""))
+                        rnd_int = row.get("Round", 1)
+                        rnd_name = f"Round {rnd_int}" if rnd_int < 90 else ("Final" if rnd_int == 99 else "Semi-Final")
+                        dl_id = f"dl_{t_id}_{rnd_int}"
+                        g_id = None
+                        for t_cfg in TOURNAMENTS_CACHE.values():
+                            if t_cfg.get('id') == t_id or t_cfg.get('Tournament_ID') == t_id:
+                                g_id = t_cfg.get('guild_id')
+                                break
+                        if dl_id not in scheduled_deadlines:
+                            scheduled_deadlines[dl_id] = {
+                                'guild_id': g_id,
+                                'tournament': t_id,
+                                'round': rnd_name,
+                                'deadline_dt': datetime.datetime.fromisoformat(row["Deadline_Time"])
+                            }
                     except Exception as parse_err:
                         print(f"Error parsing Supabase deadline row {row}: {parse_err}")
                 print(f"Merged config with {len(resp.data)} deadlines from Supabase.")
@@ -1160,14 +1188,81 @@ def save_scheduled_deadline(dl_id: str, dl_data: dict):
 
     if supabase_client:
         try:
-            row = {
-                "Guild_ID": str(dl_data['guild_id']),
-                "Round": dl_data['round'],
-                "Deadline_Time": dl_data['deadline_dt'].isoformat()
-            }
-            supabase_client.table("Deadlines").upsert(row).execute()
+            g_id = dl_data.get('guild_id')
+            t_name = dl_data.get('tournament', '')
+            t_id = dl_data.get('tournament_id')
+            if not t_id and g_id:
+                tourns = load_guild_tournaments(g_id)
+                for tk, tv in tourns.items():
+                    if tv.get('name', '').lower() == t_name.lower() or tk.lower() == t_name.lower():
+                        t_id = tv.get('id') or tv.get('Tournament_ID') or tk
+                        break
+            if not t_id:
+                tourns = load_guild_tournaments(g_id) if g_id else {}
+                if tourns:
+                    first_t = next(iter(tourns.values()))
+                    t_id = first_t.get('id') or first_t.get('Tournament_ID') or next(iter(tourns.keys()))
+                else:
+                    t_id = t_name
+
+            rnd_int = parse_round_to_int(dl_data.get('round', 1))
+            dt_val = dl_data['deadline_dt']
+            dt_iso = dt_val.isoformat() if isinstance(dt_val, datetime.datetime) else str(dt_val)
+
+            existing = supabase_client.table("Deadlines").select("id").eq("Tournament_ID", t_id).eq("Round", rnd_int).execute()
+            if existing and existing.data:
+                row_id = existing.data[0]["id"]
+                supabase_client.table("Deadlines").update({
+                    "Deadline_Time": dt_iso
+                }).eq("id", row_id).execute()
+            else:
+                supabase_client.table("Deadlines").insert({
+                    "Tournament_ID": t_id,
+                    "Round": rnd_int,
+                    "Deadline_Time": dt_iso,
+                    "Created_At": datetime.datetime.utcnow().isoformat()
+                }).execute()
         except Exception as e:
             print(f"[Supabase] Failed to upsert deadline to Supabase: {e}")
+
+def delete_scheduled_deadline(dl_id: str) -> bool:
+    dl_data = scheduled_deadlines.pop(dl_id, None)
+    if not dl_data:
+        return False
+    
+    try:
+        data_to_save = {}
+        for d_id, d_data in scheduled_deadlines.items():
+            copy_data = d_data.copy()
+            if 'deadline_dt' in copy_data and isinstance(copy_data['deadline_dt'], datetime.datetime):
+                copy_data['deadline_dt'] = copy_data['deadline_dt'].isoformat()
+            data_to_save[d_id] = copy_data
+        with open('scheduled_deadlines.json', 'w', encoding='utf-8') as f:
+            json.dump(data_to_save, f, indent=4)
+    except Exception as e:
+        print(f"Error saving scheduled_deadlines.json on delete: {e}")
+
+    if supabase_client:
+        try:
+            g_id = dl_data.get('guild_id')
+            t_name = dl_data.get('tournament', '')
+            t_id = dl_data.get('tournament_id')
+            if not t_id and g_id:
+                tourns = load_guild_tournaments(g_id)
+                for tk, tv in tourns.items():
+                    if tv.get('name', '').lower() == t_name.lower() or tk.lower() == t_name.lower():
+                        t_id = tv.get('id') or tv.get('Tournament_ID') or tk
+                        break
+            if not t_id:
+                t_id = t_name
+            rnd_int = parse_round_to_int(dl_data.get('round', 1))
+            supabase_client.table("Deadlines").delete().eq("Tournament_ID", t_id).eq("Round", rnd_int).execute()
+        except Exception as e:
+            print(f"[Supabase] Failed to delete deadline from Supabase: {e}")
+            
+    return True
+
+
 
 
 # ===========================================================================================

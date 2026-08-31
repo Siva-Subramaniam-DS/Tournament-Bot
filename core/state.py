@@ -40,6 +40,9 @@ reminder_tasks = {}
 cleanup_tasks = {}
 judge_assignments = {}
 deadline_tasks = {}
+auto_room_loops = {}
+auto_room_locks = {}
+
 
 def get_default_config() -> dict:
     return {

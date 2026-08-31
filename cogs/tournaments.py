@@ -9,6 +9,7 @@ from typing import Optional, List, Union
 import discord
 from discord import app_commands
 from discord.ext import commands
+import pytz
 from PIL import Image
 
 from core.config import (
@@ -22,7 +23,9 @@ from core.state import (
     get_system_name, get_bracket_link, get_bracket_api_key,
     get_link_bracket, get_link_deadline, get_link_rules,
     ROLE_IDS, CHANNEL_IDS, scheduled_events, save_scheduled_events,
-    scheduled_deadlines, reminder_tasks, get_default_tournament_data
+    scheduled_deadlines, reminder_tasks, deadline_tasks, get_default_tournament_data
+    scheduled_deadlines, reminder_tasks, deadline_tasks,
+    auto_room_loops, auto_room_locks, get_default_tournament_data
 )
 from core.database import (
     supabase_client, load_guild_tournaments, save_guild_tournaments,
@@ -30,8 +33,12 @@ from core.database import (
     save_event_to_supabase, log_bot_activity, sheetdb_post,
     update_challonge_match, get_challonge_matches, get_challonge_participants,
     get_guild_staff_stats, save_guild_staff_stats, update_staff_stats,
-    update_results_embed_with_links
+    update_results_embed_with_links, save_scheduled_deadline, delete_scheduled_deadline
+    update_results_embed_with_links, save_scheduled_deadline, delete_scheduled_deadline,
+    fetch_challonge_open_matches, fetch_google_sheet_captains
 )
+
+
 
 
 from core.image_generator import get_random_template, get_thumbnail_url_from_channel
@@ -908,12 +915,1178 @@ async def link_missing(interaction: discord.Interaction, tournament: str = None)
 
 
 # ===========================================================================================
+# DEADLINE HELPERS & REMINDER SCHEDULING
+# ===========================================================================================
+
+def parse_deadline_datetime(date_str: str, time_str: str = "23:59") -> Optional[datetime.datetime]:
+    date_str = date_str.strip()
+    time_str = time_str.strip() if time_str else "23:59"
+    
+    date_formats = ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%Y/%m/%d", "%d.%m.%Y"]
+    parsed_date = None
+    for fmt in date_formats:
+        try:
+            parsed_date = datetime.datetime.strptime(date_str, fmt).date()
+            break
+        except ValueError:
+            continue
+            
+    if not parsed_date:
+        return None
+        
+    time_formats = ["%H:%M", "%H:%M:%S", "%I:%M %p", "%I:%M%p", "%H%M"]
+    parsed_time = None
+    for t_fmt in time_formats:
+        try:
+            parsed_time = datetime.datetime.strptime(time_str, t_fmt).time()
+            break
+        except ValueError:
+            continue
+            
+    if not parsed_time:
+        parsed_time = datetime.time(23, 59)
+        
+    dt = datetime.datetime.combine(parsed_date, parsed_time).replace(tzinfo=pytz.UTC)
+    return dt
+
+async def deadline_autocomplete(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
+    g_id = interaction.guild_id
+    choices = []
+    for dl_id, dl_data in scheduled_deadlines.items():
+        if dl_data.get('guild_id') == g_id:
+            rnd = dl_data.get('round', 'Unknown')
+            t_name = dl_data.get('tournament', '')
+            dt = dl_data.get('deadline_dt')
+            dt_str = ""
+            if isinstance(dt, datetime.datetime):
+                dt_str = dt.strftime("%d/%m/%Y %H:%M UTC")
+            elif isinstance(dt, str):
+                try:
+                    parsed = datetime.datetime.fromisoformat(dt)
+                    dt_str = parsed.strftime("%d/%m/%Y %H:%M UTC")
+                except Exception:
+                    dt_str = dt
+            label = f"{t_name + ' - ' if t_name else ''}{rnd} ({dt_str})".strip()
+            if current.lower() in label.lower() or current.lower() in dl_id.lower():
+                choices.append(app_commands.Choice(name=label[:100], value=dl_id))
+    return choices[:25]
+
+def cancel_deadline_tasks(dl_id: str):
+    if dl_id in deadline_tasks:
+        for t in deadline_tasks[dl_id]:
+            if not t.done():
+                t.cancel()
+        del deadline_tasks[dl_id]
+
+def schedule_deadline_tasks(bot: commands.Bot, dl_id: str):
+    cancel_deadline_tasks(dl_id)
+    
+    dl_data = scheduled_deadlines.get(dl_id)
+    if not dl_data:
+        return
+        
+    guild_id = dl_data.get('guild_id')
+    deadline_dt = dl_data.get('deadline_dt')
+    if isinstance(deadline_dt, str):
+        try:
+            deadline_dt = datetime.datetime.fromisoformat(deadline_dt)
+        except Exception:
+            return
+    if not isinstance(deadline_dt, datetime.datetime):
+        return
+    if deadline_dt.tzinfo is None:
+        deadline_dt = deadline_dt.replace(tzinfo=pytz.UTC)
+        
+    now = datetime.datetime.now(pytz.UTC)
+    deadline_date = deadline_dt.date()
+    reminder_1_dt = datetime.datetime.combine(deadline_date - datetime.timedelta(days=1), datetime.time(6, 0)).replace(tzinfo=pytz.UTC)
+    reminder_2_dt = datetime.datetime.combine(deadline_date, datetime.time(6, 0)).replace(tzinfo=pytz.UTC)
+    
+    tasks = []
+    if reminder_1_dt > now:
+        t1 = asyncio.create_task(run_deadline_reminder_task(bot, dl_id, reminder_1_dt, "one_day_before"))
+        tasks.append(t1)
+    if reminder_2_dt > now:
+        t2 = asyncio.create_task(run_deadline_reminder_task(bot, dl_id, reminder_2_dt, "deadline_day"))
+        tasks.append(t2)
+        
+    if tasks:
+        deadline_tasks[dl_id] = tasks
+
+async def run_deadline_reminder_task(bot: commands.Bot, dl_id: str, target_dt: datetime.datetime, reminder_type: str):
+    try:
+        now = datetime.datetime.now(pytz.UTC)
+        delay = (target_dt - now).total_seconds()
+        if delay > 0:
+            await asyncio.sleep(delay)
+            
+        dl_data = scheduled_deadlines.get(dl_id)
+        if not dl_data:
+            return
+            
+        guild_id = dl_data.get('guild_id')
+        round_name = dl_data.get('round')
+        deadline_dt = dl_data.get('deadline_dt')
+        if isinstance(deadline_dt, str):
+            deadline_dt = datetime.datetime.fromisoformat(deadline_dt)
+        if deadline_dt.tzinfo is None:
+            deadline_dt = deadline_dt.replace(tzinfo=pytz.UTC)
+            
+        current_guild_id.set(guild_id)
+        
+        guild = bot.get_guild(guild_id)
+        if not guild:
+            try:
+                guild = await bot.fetch_guild(guild_id)
+            except Exception:
+                return
+                
+        # Resolve deadline channel
+        t_name = dl_data.get('tournament')
+        channel_id = dl_data.get('channel_id')
+        if not channel_id:
+            t_cfg = get_active_tournament_config(guild_id)
+            if t_cfg:
+                channel_id = t_cfg.get('deadline') or t_cfg.get('Deadline_Channel_ID')
+            if not channel_id:
+                cfg = get_guild_config(guild_id)
+                channel_id = cfg.get('channel_ids', {}).get('deadlines')
+                
+        if not channel_id:
+            return
+            
+        channel = guild.get_channel(int(channel_id))
+        if not channel:
+            try:
+                channel = await guild.fetch_channel(int(channel_id))
+            except Exception:
+                return
+                
+        # Ping the Players_Role_ID
+        cfg = get_guild_config(guild_id)
+        players_role_ping = "@Player"
+        players_r_id = dl_data.get('players_role_id')
+        if not players_r_id:
+            t_cfg_dl = get_active_tournament_config(guild_id)
+            if t_cfg_dl:
+                raw = t_cfg_dl.get('players_role_id')
+                if raw:
+                    try: players_r_id = int(raw)
+                    except: pass
+        if not players_r_id:
+            raw = cfg.get('role_ids', {}).get('players')
+            if raw:
+                try: players_r_id = int(raw)
+                except: pass
+        if players_r_id:
+            role_obj = guild.get_role(players_r_id)
+            if role_obj:
+                players_role_ping = role_obj.mention
+
+        deadline_date_str = deadline_dt.strftime("%d/%m/%Y")
+        deadline_time_str = deadline_dt.strftime("%H:%M UTC")
+
+        if reminder_type == "one_day_before":
+            message = (
+                f"Hello {players_role_ping}!\n"
+                f"Tomorrow ({deadline_date_str}) is the deadline for Round **{round_name}**. If you have not opened your ticket and scheduled your match time, please do so.\n"
+                f"**Deadline: {deadline_time_str}** (<t:{int(deadline_dt.timestamp())}:R>)\n\n"
+                f"Good luck!"
+            )
+        else:
+            message = (
+                f"Hello {players_role_ping}!\n"
+                f"Today ({deadline_date_str}) is the deadline for Round **{round_name}**. If you have not opened your ticket and scheduled your match time, please do so immediately!\n"
+                f"**Deadline: {deadline_time_str}** (<t:{int(deadline_dt.timestamp())}:R>)\n\n"
+                f"Good luck!"
+            )
+
+        await channel.send(message)
+    except Exception as e:
+        print(f"Error running deadline reminder task for {dl_id}: {e}")
+
+
+# ===========================================================================================
+# DEADLINE COMMAND GROUP
+# ===========================================================================================
+
+deadline_group = app_commands.Group(name="deadline", description="Manage round match deadlines and automated player reminders")
+
+@deadline_group.command(name="add", description="Add and announce a round match deadline with automated player reminders")
+@app_commands.describe(
+    round="Round name (e.g. Round 1, Round 2, Quarter-Finals, Semi-Finals, Finals)",
+    date="Deadline date (e.g. DD/MM/YYYY or YYYY-MM-DD)",
+    time="Deadline time in UTC (e.g. 23:59 or 18:00 - default: 23:59)",
+    tournament="Tournament to associate with (optional)",
+    note="Optional additional notes or instructions"
+)
+@app_commands.autocomplete(tournament=tournament_autocomplete)
+@with_guild_context
+async def deadline_add_cmd(
+    interaction: discord.Interaction,
+    round: str,
+    date: str,
+    time: Optional[str] = "23:59",
+    tournament: Optional[str] = None,
+    note: Optional[str] = None
+):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    if not is_authorized_to_configure(interaction) and not is_staff(interaction.user):
+        await interaction.response.send_message("❌ You do not have permission to manage deadlines.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=False)
+
+    dt = parse_deadline_datetime(date, time or "23:59")
+    if not dt:
+        await interaction.followup.send(
+            "❌ Invalid date/time format. Please use `DD/MM/YYYY` (or `YYYY-MM-DD`) and `HH:MM` in UTC (e.g. `05/09/2026 23:59`).",
+            ephemeral=True
+        )
+        return
+
+    # Resolve tournament
+    guild_id = interaction.guild.id
+    t_cfg = None
+    t_name = tournament
+    if t_name:
+        all_t = load_guild_tournaments(guild_id)
+        for t_k, t_v in all_t.items():
+            if t_v.get('name', '').lower() == t_name.lower() or t_k.lower() == t_name.lower():
+                t_cfg = t_v
+                t_name = t_v.get('name', t_name)
+                break
+    if not t_cfg:
+        t_cfg = get_active_tournament_config(guild_id)
+        if t_cfg:
+            t_name = t_cfg.get('name', 'Tournament')
+
+    # Resolve deadline channel
+    channel_id = None
+    if t_cfg:
+        channel_id = t_cfg.get('deadline') or t_cfg.get('Deadline_Channel_ID')
+    if not channel_id:
+        cfg = get_guild_config(guild_id)
+        channel_id = cfg.get('channel_ids', {}).get('deadlines')
+
+    deadline_channel = None
+    if channel_id:
+        try:
+            deadline_channel = interaction.guild.get_channel(int(channel_id))
+            if not deadline_channel:
+                deadline_channel = await interaction.guild.fetch_channel(int(channel_id))
+        except Exception:
+            deadline_channel = None
+
+    if not deadline_channel:
+        await interaction.followup.send(
+            "❌ No deadline channel is configured for this tournament or server. Please set `deadline_channel` in `/tournament edit` or `/settings add` first.",
+            ephemeral=True
+        )
+        return
+
+    # Resolve Players_Role_ID
+    cfg = get_guild_config(guild_id)
+    players_role = None
+    players_r_id = None
+    if t_cfg:
+        raw = t_cfg.get('players_role_id')
+        if raw:
+            try: players_r_id = int(raw)
+            except: pass
+    if not players_r_id:
+        raw = cfg.get('role_ids', {}).get('players')
+        if raw:
+            try: players_r_id = int(raw)
+            except: pass
+    if players_r_id:
+        players_role = interaction.guild.get_role(players_r_id)
+
+    unix_ts = int(dt.timestamp())
+    embed = discord.Embed(
+        title=f"⏰ MATCH DEADLINE — {round.upper()}",
+        description=(
+            f"🏆 **Tournament:** `{t_name or 'Tournament'}`\n"
+            f"⚔️ **Round:** `{round}`\n"
+            f"📅 **Deadline:** <t:{unix_ts}:F> (<t:{unix_ts}:R>)\n"
+            + (f"📌 **Note:** {note}\n" if note else "")
+            + f"\n⚠️ Please ensure all matches for **{round}** are scheduled and completed in tickets before this deadline!"
+        ),
+        color=discord.Color.red(),
+        timestamp=discord.utils.utcnow()
+    )
+    if interaction.guild.icon:
+        embed.set_thumbnail(url=interaction.guild.icon.url)
+    embed.set_footer(text=f"{interaction.guild.name} • Match Deadlines • Set by {interaction.user.display_name}")
+
+    msg_content = players_role.mention if players_role else ""
+    try:
+        announcement_msg = await deadline_channel.send(content=msg_content, embed=embed)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Failed to post deadline to {deadline_channel.mention}: {e}")
+        return
+
+    clean_round = re.sub(r'[^a-zA-Z0-9_]', '_', round.lower())
+    clean_tname = re.sub(r'[^a-zA-Z0-9_]', '_', (t_name or 'tourney').lower())
+    dl_id = f"dl_{clean_tname}_{clean_round}_{guild_id}"
+
+    dl_data = {
+        'guild_id': guild_id,
+        'tournament': t_name or '',
+        'round': round,
+        'deadline_dt': dt,
+        'channel_id': deadline_channel.id,
+        'message_id': announcement_msg.id,
+        'note': note or '',
+        'players_role_id': players_role.id if players_role else None
+    }
+
+    save_scheduled_deadline(dl_id, dl_data)
+    schedule_deadline_tasks(interaction.client, dl_id)
+
+    log_embed = discord.Embed(
+        title="⏰ Match Deadline Scheduled",
+        description=f"**{interaction.user.mention}** scheduled deadline for **{round}** in {deadline_channel.mention}.",
+        color=discord.Color.gold(),
+        timestamp=discord.utils.utcnow()
+    )
+    log_embed.add_field(name="Tournament", value=t_name or "—", inline=True)
+    log_embed.add_field(name="Deadline", value=f"<t:{unix_ts}:F>", inline=True)
+    if note:
+        log_embed.add_field(name="Note", value=note, inline=False)
+    await log_bot_activity(interaction.guild, log_embed)
+
+    confirm_embed = discord.Embed(
+        title="✅ Deadline Scheduled",
+        description=(
+            f"Successfully posted and scheduled deadline for **{round}** in {deadline_channel.mention}!\n\n"
+            f"📅 **Deadline:** <t:{unix_ts}:F> (<t:{unix_ts}:R>)\n"
+            f"🔔 **Pings:** {players_role.mention if players_role else 'None'}\n"
+            f"⏰ **Automated Reminders:** 24 hours before & day of deadline at 06:00 UTC"
+        ),
+        color=discord.Color.green(),
+        timestamp=discord.utils.utcnow()
+    )
+    await interaction.followup.send(embed=confirm_embed)
+
+@deadline_group.command(name="edit", description="Edit an existing round match deadline")
+@app_commands.describe(
+    deadline="Select the deadline to edit",
+    new_date="New deadline date (e.g. DD/MM/YYYY or YYYY-MM-DD)",
+    new_time="New deadline time in UTC (e.g. 23:59)",
+    new_round="New round name (optional)",
+    note="New or updated note (optional)"
+)
+@app_commands.autocomplete(deadline=deadline_autocomplete)
+@with_guild_context
+async def deadline_edit_cmd(
+    interaction: discord.Interaction,
+    deadline: str,
+    new_date: Optional[str] = None,
+    new_time: Optional[str] = None,
+    new_round: Optional[str] = None,
+    note: Optional[str] = None
+):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    if not is_authorized_to_configure(interaction) and not is_staff(interaction.user):
+        await interaction.response.send_message("❌ You do not have permission to manage deadlines.", ephemeral=True)
+        return
+
+    dl_data = scheduled_deadlines.get(deadline)
+    if not dl_data:
+        await interaction.response.send_message("❌ Deadline not found. Please select from the autocomplete list.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=False)
+
+    old_dt = dl_data.get('deadline_dt')
+    if isinstance(old_dt, str):
+        try:
+            old_dt = datetime.datetime.fromisoformat(old_dt)
+        except Exception:
+            old_dt = datetime.datetime.now(pytz.UTC)
+
+    if new_date or new_time:
+        date_str = new_date if new_date else old_dt.strftime("%d/%m/%Y")
+        time_str = new_time if new_time else old_dt.strftime("%H:%M")
+        dt = parse_deadline_datetime(date_str, time_str)
+        if not dt:
+            await interaction.followup.send("❌ Invalid date/time format. Please use `DD/MM/YYYY` and `HH:MM` UTC.", ephemeral=True)
+            return
+        dl_data['deadline_dt'] = dt
+    else:
+        dt = old_dt
+
+    if new_round:
+        dl_data['round'] = new_round
+    if note is not None:
+        dl_data['note'] = note
+
+    save_scheduled_deadline(deadline, dl_data)
+    schedule_deadline_tasks(interaction.client, deadline)
+
+    unix_ts = int(dt.timestamp())
+    channel_id = dl_data.get('channel_id')
+    round_name = dl_data.get('round')
+    t_name = dl_data.get('tournament', 'Tournament')
+
+    # Resolve players role
+    guild_id = interaction.guild.id
+    cfg = get_guild_config(guild_id)
+    players_role = None
+    players_r_id = dl_data.get('players_role_id')
+    if not players_r_id:
+        raw = cfg.get('role_ids', {}).get('players')
+        if raw:
+            try: players_r_id = int(raw)
+            except: pass
+    if players_r_id:
+        players_role = interaction.guild.get_role(players_r_id)
+
+    if channel_id:
+        try:
+            chan = interaction.guild.get_channel(int(channel_id))
+            if chan:
+                update_embed = discord.Embed(
+                    title=f"📢 DEADLINE UPDATED — {round_name.upper()}",
+                    description=(
+                        f"🏆 **Tournament:** `{t_name}`\n"
+                        f"⚔️ **Round:** `{round_name}`\n"
+                        f"📅 **New Deadline:** <t:{unix_ts}:F> (<t:{unix_ts}:R>)\n"
+                        + (f"📌 **Note:** {dl_data.get('note')}\n" if dl_data.get('note') else "")
+                        + f"\n⚠️ The deadline has been updated by staff. Please adjust match schedules accordingly!"
+                    ),
+                    color=discord.Color.orange(),
+                    timestamp=discord.utils.utcnow()
+                )
+                update_embed.set_footer(text=f"{interaction.guild.name} • Match Deadlines")
+                await chan.send(content=players_role.mention if players_role else "", embed=update_embed)
+        except Exception as e:
+            print(f"Failed to post deadline update notice: {e}")
+
+    log_embed = discord.Embed(
+        title="⏰ Match Deadline Edited",
+        description=f"**{interaction.user.mention}** edited the deadline for **{round_name}**.",
+        color=discord.Color.gold(),
+        timestamp=discord.utils.utcnow()
+    )
+    log_embed.add_field(name="New Deadline", value=f"<t:{unix_ts}:F>", inline=True)
+    await log_bot_activity(interaction.guild, log_embed)
+
+    confirm_embed = discord.Embed(
+        title="✅ Deadline Updated",
+        description=(
+            f"Successfully updated deadline for **{round_name}**!\n\n"
+            f"📅 **New Deadline:** <t:{unix_ts}:F> (<t:{unix_ts}:R>)"
+        ),
+        color=discord.Color.green(),
+        timestamp=discord.utils.utcnow()
+    )
+    await interaction.followup.send(embed=confirm_embed)
+
+@deadline_group.command(name="delete", description="Delete an active match deadline and cancel reminders")
+@app_commands.describe(deadline="Select the deadline to delete")
+@app_commands.autocomplete(deadline=deadline_autocomplete)
+@with_guild_context
+async def deadline_delete_cmd(interaction: discord.Interaction, deadline: str):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    if not is_authorized_to_configure(interaction) and not is_staff(interaction.user):
+        await interaction.response.send_message("❌ You do not have permission to manage deadlines.", ephemeral=True)
+        return
+
+    dl_data = scheduled_deadlines.get(deadline)
+    if not dl_data:
+        await interaction.response.send_message("❌ Deadline not found. Please select from the autocomplete list.", ephemeral=True)
+        return
+
+    round_name = dl_data.get('round', 'Unknown')
+    cancel_deadline_tasks(deadline)
+    delete_scheduled_deadline(deadline)
+
+    log_embed = discord.Embed(
+        title="🗑️ Match Deadline Deleted",
+        description=f"**{interaction.user.mention}** deleted the deadline for **{round_name}**.",
+        color=discord.Color.red(),
+        timestamp=discord.utils.utcnow()
+    )
+    await log_bot_activity(interaction.guild, log_embed)
+
+    await interaction.response.send_message(f"🗑️ Successfully deleted deadline for **{round_name}** and cancelled automated reminders.")
+
+@deadline_group.command(name="list", description="List all scheduled match deadlines for the server")
+@app_commands.describe(tournament="Filter by tournament name (optional)")
+@app_commands.autocomplete(tournament=tournament_autocomplete)
+@with_guild_context
+async def deadline_list_cmd(interaction: discord.Interaction, tournament: Optional[str] = None):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    guild_id = interaction.guild.id
+    guild_deadlines = []
+    for dl_id, dl_data in scheduled_deadlines.items():
+        if dl_data.get('guild_id') == guild_id:
+            if tournament:
+                t_name = dl_data.get('tournament', '')
+                if tournament.lower() not in t_name.lower():
+                    continue
+            guild_deadlines.append(dl_data)
+
+    if not guild_deadlines:
+        await interaction.response.send_message(f"ℹ️ No active deadlines found{' for `' + tournament + '`' if tournament else ''}.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="⏰ Scheduled Match Deadlines",
+        description=f"Active round deadlines for **{interaction.guild.name}**:",
+        color=discord.Color.gold(),
+        timestamp=discord.utils.utcnow()
+    )
+    if interaction.guild.icon:
+        embed.set_thumbnail(url=interaction.guild.icon.url)
+
+    for dl in guild_deadlines:
+        rnd = dl.get('round', 'Unknown')
+        t_name = dl.get('tournament', 'Tournament')
+        dt = dl.get('deadline_dt')
+        if isinstance(dt, str):
+            try: dt = datetime.datetime.fromisoformat(dt)
+            except: pass
+        
+        ts_str = "—"
+        if isinstance(dt, datetime.datetime):
+            unix_ts = int(dt.timestamp())
+            ts_str = f"<t:{unix_ts}:F> (<t:{unix_ts}:R>)"
+        note = dl.get('note')
+        val = f"📅 **Deadline:** {ts_str}"
+        if note:
+            val += f"\n📌 **Note:** {note}"
+        embed.add_field(name=f"🏆 {t_name} — {rnd}", value=val, inline=False)
+
+    embed.set_footer(text=f"{interaction.guild.name} • Match Deadlines")
+    await interaction.response.send_message(embed=embed)
+
+
+# ===========================================================================================
+# AUTO ROOM CREATION LOGIC & BACKGROUND SWEEPER
+# ===========================================================================================
+
+async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: dict, on_progress=None) -> tuple[int, str]:
+    guild_id = guild.id
+    if guild_id not in auto_room_locks:
+        auto_room_locks[guild_id] = asyncio.Lock()
+        
+    async with auto_room_locks[guild_id]:
+        import time as pytime
+        last_edit = 0
+        
+        async def report(percent: int, text: str, force: bool = False):
+            nonlocal last_edit
+            if not on_progress:
+                return
+            now = pytime.time()
+            if force or (now - last_edit >= 1.5):
+                try:
+                    await on_progress(percent, text)
+                except Exception:
+                    pass
+                last_edit = now
+
+        await report(0, "Fetching matches from Challonge...", force=True)
+        
+        cfg = get_guild_config(guild.id)
+        bracket_link = t_cfg.get('challonge_bracket_link') or t_cfg.get('id')
+        api_key = t_cfg.get('key') or get_bracket_api_key(guild.id)
+        sheet_link = t_cfg.get('captains_sheet_link') or t_cfg.get('sheet_link') or cfg.get('player_info_link') or cfg.get('google_sheet_link')
+        
+        missing_fields = []
+        if not bracket_link or not bracket_link.strip():
+            missing_fields.append("❌ Challonge Bracket Link is missing.")
+        if not api_key or not api_key.strip():
+            missing_fields.append("❌ Challonge API Key is missing.")
+        if not sheet_link or not sheet_link.strip():
+            missing_fields.append("❌ Google Sheet Link is missing.")
+            
+        if missing_fields:
+            return 0, "\n".join(missing_fields)
+            
+        matches, err = await fetch_challonge_open_matches(bracket_link, api_key)
+        if err:
+            return 0, f"Challonge API Error: {err}"
+        if not matches:
+            return 0, ""
+            
+        await report(15, f"Fetched {len(matches)} open match(es). Fetching captains from Google Sheet...", force=True)
+        
+        captains_dict, is_1v1, err2 = await fetch_google_sheet_captains(sheet_link)
+        if err2:
+            return 0, f"Google Sheet Error: {err2}"
+            
+        await report(30, "Parsing categories and role permissions...", force=True)
+        
+        categories = []
+        for i in range(1, 5):
+            cat_id = t_cfg.get(f'ticket_open_category_{i}') or t_cfg.get(f'Open_Category_{i}_ID')
+            if cat_id:
+                try:
+                    cat_id = int(cat_id)
+                except (ValueError, TypeError):
+                    pass
+                cat = discord.utils.get(guild.categories, id=cat_id)
+                if cat:
+                    categories.append(cat)
+                    
+        if not categories:
+            return 0, "No open ticket categories configured for this tournament (set in `/tournament edit`)."
+            
+        helper_team_role = None
+        if helper_role_id := t_cfg.get('helper_role_id'):
+            try: helper_role_id = int(helper_role_id)
+            except (ValueError, TypeError): pass
+            helper_team_role = discord.utils.get(guild.roles, id=helper_role_id)
+        if not helper_team_role:
+            if global_helper_id := cfg.get('role_ids', {}).get('helper_team'):
+                try: global_helper_id = int(global_helper_id)
+                except (ValueError, TypeError): pass
+                helper_team_role = discord.utils.get(guild.roles, id=global_helper_id)
+                
+        rules_link = f"https://discord.com/channels/{guild.id}/{t_cfg.get('rules')}" if t_cfg.get('rules') else "Not Set"
+        deadline_link = f"https://discord.com/channels/{guild.id}/{t_cfg.get('deadline')}" if t_cfg.get('deadline') else "Not Set"
+        bracket_display_link = bracket_link if bracket_link.startswith("http") else f"https://challonge.com/{bracket_link}"
+        
+        created_count = 0
+        total_matches = len(matches)
+
+        for idx, match in enumerate(matches):
+            team1, team2 = match['team1'], match['team2']
+            p1_id, p2_id = match['player1_id'], match['player2_id']
+            match_id, mod_round = match['id'], match['round']
+            round_name = match.get('round_name', f"Round {mod_round}")
+            
+            loop_percent = 35 + int(((idx + 1) / total_matches) * 60)
+            await report(loop_percent, f"Processing match {idx+1}/{total_matches}: {team1} vs {team2}...")
+            
+            c1_raw = captains_dict.get(team1, "") or captains_dict.get(team1.strip(), "")
+            c2_raw = captains_dict.get(team2, "") or captains_dict.get(team2.strip(), "")
+            
+            async def resolve_member(raw: str) -> Optional[discord.Member]:
+                if not raw or not raw.strip():
+                    return None
+                clean_raw = raw.strip()
+                if clean_raw.startswith('@'):
+                    clean_raw = clean_raw[1:].strip()
+                    
+                m = re.search(r'<@!?(\d+)>', clean_raw)
+                uid = None
+                if m:
+                    uid = int(m.group(1))
+                elif clean_raw.isdigit():
+                    uid = int(clean_raw)
+                    
+                if uid:
+                    member = guild.get_member(uid)
+                    if not member:
+                        try:
+                            member = await guild.fetch_member(uid)
+                        except Exception:
+                            pass
+                    return member
+                
+                for member in guild.members:
+                    if member.name.lower() == clean_raw.lower() or member.display_name.lower() == clean_raw.lower():
+                        return member
+                
+                try:
+                    found_members = await guild.query_members(query=clean_raw, limit=5)
+                    for member in found_members:
+                        if member.name.lower() == clean_raw.lower() or member.display_name.lower() == clean_raw.lower():
+                            return member
+                except Exception:
+                    pass
+                return None
+                
+            captain1 = await resolve_member(c1_raw)
+            captain2 = await resolve_member(c2_raw)
+            
+            round_lbl = str(mod_round)
+            r_name_lower = round_name.lower()
+            if "semi" in r_name_lower:
+                round_lbl = "lsf" if "loser" in r_name_lower else "sf"
+            elif "quarter" in r_name_lower:
+                round_lbl = "lq" if "loser" in r_name_lower else "q"
+            elif "final" in r_name_lower:
+                round_lbl = "lfinal" if "loser" in r_name_lower else "final"
+            elif "losers round" in r_name_lower:
+                m_num = re.search(r'\d+', r_name_lower)
+                round_lbl = f"lr{m_num.group(0)}" if m_num else f"lr{abs(mod_round)}"
+            elif "round" in r_name_lower:
+                m_num = re.search(r'\d+', r_name_lower)
+                round_lbl = f"r{m_num.group(0)}" if m_num else f"r{mod_round}"
+            else:
+                round_lbl = re.sub(r'[^a-zA-Z0-9]', '', r_name_lower)
+
+            if is_1v1:
+                n1 = (captain1.name if captain1 else re.sub(r'[^a-zA-Z0-9]', '', team1))[:12].lower()
+                n2 = (captain2.name if captain2 else re.sub(r'[^a-zA-Z0-9]', '', team2))[:12].lower()
+                chan_name = f"{round_lbl}-{n1}-vs-{n2}"
+            else:
+                safe_t1 = re.sub(r'[^a-zA-Z0-9]', '', team1).lower()[:8]
+                safe_t2 = re.sub(r'[^a-zA-Z0-9]', '', team2).lower()[:8]
+                chan_name = f"{round_lbl}-{safe_t1}-vs-{safe_t2}"
+                
+            chan_name = re.sub(r'[^a-zA-Z0-9\-]', '-', chan_name)
+            chan_name = re.sub(r'-+', '-', chan_name).strip('-')[:100].lower()
+            topic = f"MatchID:{match_id}"
+            
+            # Duplicate check
+            already_exists = False
+            STATUS_PREFIXES = ("sh-", "dq-", "dd-", "ho-", "closed-", "done-")
+            all_channels = list(guild._channels.values()) if hasattr(guild, '_channels') else list(guild.text_channels)
+            for channel in all_channels:
+                if not isinstance(channel, discord.TextChannel):
+                    continue
+                if channel.topic and f"MatchID:{match_id}" in channel.topic:
+                    already_exists = True
+                    break
+                base_name = channel.name
+                for pfx in STATUS_PREFIXES:
+                    if base_name.startswith(pfx):
+                        base_name = base_name[len(pfx):]
+                        break
+                if base_name == chan_name:
+                    already_exists = True
+                    break
+
+            if already_exists:
+                continue
+                
+            target_category = None
+            for c in categories:
+                if len(c.channels) < 49:
+                    target_category = c
+                    break
+            if not target_category:
+                break
+                
+            try:
+                overwrites = {}
+                overwrites[guild.default_role] = discord.PermissionOverwrite(view_channel=False)
+                overwrites[guild.me] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_channels=True, manage_permissions=True)
+
+                for role_key in ["admin_role_id", "helper_role_id"]:
+                    if r_id := t_cfg.get(role_key):
+                        try: r_id = int(r_id)
+                        except (ValueError, TypeError): pass
+                        if staff_r := discord.utils.get(guild.roles, id=r_id):
+                            overwrites[staff_r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+
+                for role_key in ["head_organizer", "organizer", "helper_team"]:
+                    if r_id := cfg.get('role_ids', {}).get(role_key):
+                        try: r_id = int(r_id)
+                        except (ValueError, TypeError): pass
+                        if staff_r := discord.utils.get(guild.roles, id=r_id):
+                            overwrites[staff_r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+
+                if captain1:
+                    overwrites[captain1] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+                if captain2:
+                    overwrites[captain2] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+                    
+                new_ch = await guild.create_text_channel(
+                    name=chan_name,
+                    category=target_category,
+                    topic=topic,
+                    overwrites=overwrites
+                )
+                
+                event_id = f"challonge_{match_id}"
+                scheduled_events[event_id] = {
+                    'guild_id': guild.id,
+                    'title': f"{round_name} Match",
+                    'datetime': datetime.datetime.utcnow(),
+                    'time_str': "Live",
+                    'date_str': "Live",
+                    'round': round_name,
+                    'group': None,
+                    'minutes_left': 0,
+                    'tournament': t_cfg.get('name', 'Tournament'),
+                    'mode': None,
+                    'judge': None,
+                    'recorder': None,
+                    'channel_id': new_ch.id,
+                    'team1_captain': captain1.id if captain1 else None,
+                    'team2_captain': captain2.id if captain2 else None,
+                    'team1_name': team1,
+                    'team2_name': team2
+                }
+                save_scheduled_events()
+                try:
+                    await save_event_to_supabase(event_id, scheduled_events[event_id])
+                except Exception as db_err:
+                    print(f"Error syncing auto-room event to Supabase: {db_err}")
+                
+                org_name = cfg.get('organization_name', 'Tournament Organizer')
+                rules_embed = discord.Embed(
+                    title=f"⚓ {get_system_name(guild)} | {t_cfg.get('name')} — Match Setup",
+                    description="Welcome to your match channel. Use this channel for all tournament discussions and match scheduling.",
+                    color=discord.Color(BRAND_COLOR)
+                )
+                if guild.icon:
+                    rules_embed.set_thumbnail(url=guild.icon.url)
+                rules_embed.add_field(
+                    name="📋 Tournament Information",
+                    value=(
+                        f"• 🏆 [Live Bracket]({bracket_display_link})\n"
+                        f"• ⏰ [Deadlines]({deadline_link})\n"
+                        f"• 📜 [Rules]({rules_link})"
+                    ),
+                    inline=False
+                )
+                
+                round_display = round_name
+                if is_1v1:
+                    pval = f"**Round:** {round_display}\n**Captain 1:** {captain1.mention if captain1 else c1_raw or team1}\n**Captain 2:** {captain2.mention if captain2 else c2_raw or team2}"
+                else:
+                    pval = f"**Round:** {round_display}\n**Team 1:** {team1} — Captain: {captain1.mention if captain1 else c1_raw or 'Not Found'}\n**Team 2:** {team2} — Captain: {captain2.mention if captain2 else c2_raw or 'Not Found'}"
+                    
+                rules_embed.add_field(name="👥 Match Participants", value=pval, inline=False)
+                rules_embed.add_field(
+                    name="🆘 Need Help?",
+                    value=f"Ping {helper_team_role.mention if helper_team_role else '@Helper Team'} for assistance. ⚓",
+                    inline=False
+                )
+                rules_embed.set_footer(text=f"{org_name} • Auto-Ticket")
+                
+                ping_content = " ".join(filter(None, [
+                    captain1.mention if captain1 else (c1_raw or None),
+                    captain2.mention if captain2 else (c2_raw or None),
+                ])) or f"{team1} vs {team2}"
+                
+                await new_ch.send(content=ping_content, embed=rules_embed)
+                created_count += 1
+            except Exception as e:
+                print(f"Error creating auto-room channel {chan_name}: {e}")
+                
+        if created_count > 0:
+            try:
+                log_embed = discord.Embed(
+                    title="🎫 Auto Rooms Created",
+                    description=f"Automatically created **{created_count}** match room channel(s) for tournament **{t_cfg.get('name')}**.",
+                    color=discord.Color.green(),
+                    timestamp=discord.utils.utcnow()
+                )
+                if guild.icon:
+                    log_embed.set_thumbnail(url=guild.icon.url)
+                await log_bot_activity(guild, log_embed)
+            except Exception as log_err:
+                print(f"Failed to log auto room creation: {log_err}")
+                
+        return created_count, ""
+
+async def auto_room_background_loop(bot: commands.Bot, guild_id: int):
+    try:
+        await asyncio.sleep(5)
+    except asyncio.CancelledError:
+        return
+
+    while True:
+        try:
+            guild = bot.get_guild(guild_id)
+            if guild:
+                all_tournaments = load_guild_tournaments(guild_id)
+                for t_k, t_cfg in all_tournaments.items():
+                    if t_cfg.get('auto_room_creation'):
+                        await auto_create_open_tickets_for_tournament(guild, t_cfg)
+        except Exception as e:
+            print(f"Error in auto_room background loop for guild {guild_id}: {e}")
+            
+        try:
+            await asyncio.sleep(300)
+        except asyncio.CancelledError:
+            break
+
+def start_auto_room_loop(bot: commands.Bot, guild_id: int):
+    if guild_id in auto_room_loops and not auto_room_loops[guild_id].done():
+        return
+    task = asyncio.create_task(auto_room_background_loop(bot, guild_id))
+    auto_room_loops[guild_id] = task
+    print(f"🚀 Started auto-room background loop for guild {guild_id}")
+
+def stop_auto_room_loop(guild_id: int):
+    if task := auto_room_loops.pop(guild_id, None):
+        task.cancel()
+        print(f"⏹️ Stopped auto-room background loop for guild {guild_id}")
+
+
+# ===========================================================================================
+# AUTO ROOM COMMAND GROUP
+# ===========================================================================================
+
+auto_room_group = app_commands.Group(name="auto_room", description="Manage automatic match room ticket creation")
+
+@auto_room_group.command(name="toggle", description="Toggle automatic room creation for a tournament")
+@app_commands.describe(
+    tournament="Tournament to configure (optional, defaults to active tournament)",
+    enabled="Explicitly enable or disable auto room creation (optional)"
+)
+@app_commands.autocomplete(tournament=tournament_autocomplete)
+@with_guild_context
+async def auto_room_toggle_cmd(
+    interaction: discord.Interaction,
+    tournament: Optional[str] = None,
+    enabled: Optional[bool] = None
+):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    if not is_authorized_to_configure(interaction) and not is_staff(interaction.user):
+        await interaction.response.send_message("❌ You do not have permission to manage tournament settings.", ephemeral=True)
+        return
+
+    guild_id = interaction.guild.id
+    all_tournaments = load_guild_tournaments(guild_id)
+    target_key = None
+    target_cfg = None
+
+    if tournament:
+        for k, v in all_tournaments.items():
+            if v.get('name', '').lower() == tournament.lower() or k.lower() == tournament.lower():
+                target_key = k
+                target_cfg = v
+                break
+        if not target_cfg:
+            await interaction.response.send_message(f"❌ Tournament `{tournament}` not found.", ephemeral=True)
+            return
+    else:
+        for k, v in all_tournaments.items():
+            if v.get('state') == 'active':
+                target_key = k
+                target_cfg = v
+                break
+        if not target_cfg and all_tournaments:
+            target_key, target_cfg = next(iter(all_tournaments.items()))
+
+    if not target_cfg:
+        await interaction.response.send_message("❌ No tournaments configured for this server. Use `/tournament add` first.", ephemeral=True)
+        return
+
+    curr_val = bool(target_cfg.get('auto_room_creation', False))
+    new_val = (not curr_val) if enabled is None else enabled
+    target_cfg['auto_room_creation'] = new_val
+    all_tournaments[target_key] = target_cfg
+    save_guild_tournaments(guild_id, all_tournaments)
+
+    if new_val:
+        start_auto_room_loop(interaction.client, guild_id)
+    else:
+        has_other_enabled = any(v.get('auto_room_creation') for v in all_tournaments.values())
+        if not has_other_enabled:
+            stop_auto_room_loop(guild_id)
+
+    status_str = "ENABLED ✅" if new_val else "DISABLED ❌"
+    embed = discord.Embed(
+        title="⚙️ Automatic Room Creation",
+        description=f"Auto room creation for **{target_cfg.get('name')}** is now **{status_str}**.",
+        color=discord.Color.green() if new_val else discord.Color.red(),
+        timestamp=discord.utils.utcnow()
+    )
+    if new_val:
+        embed.add_field(name="🔄 Background Sweep", value="Bot will automatically poll Challonge for open matches every 5 minutes and create ticket channels.", inline=False)
+    else:
+        embed.add_field(name="⏹️ Background Sweep", value="Background ticket creation suspended. You can still trigger manual sweeps with `/auto_room run`.", inline=False)
+    
+    embed.set_footer(text=f"{interaction.guild.name} • Auto Room System")
+    await interaction.response.send_message(embed=embed)
+
+@auto_room_group.command(name="run", description="Manually trigger the automatic match room ticket creation sweep")
+@app_commands.describe(tournament="Tournament to run room creation for (optional)")
+@app_commands.autocomplete(tournament=tournament_autocomplete)
+@with_guild_context
+async def auto_room_run_cmd(interaction: discord.Interaction, tournament: Optional[str] = None):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    if not is_authorized_to_configure(interaction) and not is_staff(interaction.user):
+        await interaction.response.send_message("❌ You do not have permission to run auto room creation.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=False)
+
+    guild_id = interaction.guild.id
+    all_tournaments = load_guild_tournaments(guild_id)
+    target_cfg = None
+
+    if tournament:
+        for k, v in all_tournaments.items():
+            if v.get('name', '').lower() == tournament.lower() or k.lower() == tournament.lower():
+                target_cfg = v
+                break
+        if not target_cfg:
+            await interaction.followup.send(f"❌ Tournament `{tournament}` not found.", ephemeral=True)
+            return
+    else:
+        target_cfg = get_active_tournament_config(guild_id)
+        if not target_cfg and all_tournaments:
+            target_cfg = next(iter(all_tournaments.values()))
+
+    if not target_cfg:
+        await interaction.followup.send("❌ No tournament found for this server. Use `/tournament add` first.", ephemeral=True)
+        return
+
+    msg = await interaction.followup.send("⏳ Running automatic match room creation sweep... Please wait.")
+
+    async def progress_hook(pct: int, text: str):
+        try:
+            await msg.edit(content=f"⏳ **[{pct}%]** {text}")
+        except Exception:
+            pass
+
+    created_count, err = await auto_create_open_tickets_for_tournament(interaction.guild, target_cfg, on_progress=progress_hook)
+    if err:
+        await msg.edit(content=f"❌ Auto room creation encountered an issue:\n```{err}```")
+        return
+
+    embed = discord.Embed(
+        title="🎫 Auto Room Sweep Complete",
+        description=f"Created **{created_count}** new match room ticket(s) for **{target_cfg.get('name')}**.",
+        color=discord.Color.green() if created_count > 0 else discord.Color.blue(),
+        timestamp=discord.utils.utcnow()
+    )
+    if created_count == 0:
+        embed.description = f"🎉 All open matches for **{target_cfg.get('name')}** already have tickets created!"
+    embed.set_footer(text=f"{interaction.guild.name} • Auto Room System")
+    await msg.edit(content=None, embed=embed)
+
+@auto_room_group.command(name="stop", description="Suspend automatic room creation and stop the background loop")
+@app_commands.describe(tournament="Tournament to stop auto rooms for (optional)")
+@app_commands.autocomplete(tournament=tournament_autocomplete)
+@with_guild_context
+async def auto_room_stop_cmd(interaction: discord.Interaction, tournament: Optional[str] = None):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    if not is_authorized_to_configure(interaction) and not is_staff(interaction.user):
+        await interaction.response.send_message("❌ You do not have permission to manage tournament settings.", ephemeral=True)
+        return
+
+    guild_id = interaction.guild.id
+    all_tournaments = load_guild_tournaments(guild_id)
+    target_key = None
+    target_cfg = None
+
+    if tournament:
+        for k, v in all_tournaments.items():
+            if v.get('name', '').lower() == tournament.lower() or k.lower() == tournament.lower():
+                target_key = k
+                target_cfg = v
+                break
+    else:
+        for k, v in all_tournaments.items():
+            if v.get('state') == 'active':
+                target_key = k
+                target_cfg = v
+                break
+        if not target_cfg and all_tournaments:
+            target_key, target_cfg = next(iter(all_tournaments.items()))
+
+    if target_cfg:
+        target_cfg['auto_room_creation'] = False
+        all_tournaments[target_key] = target_cfg
+        save_guild_tournaments(guild_id, all_tournaments)
+
+    stop_auto_room_loop(guild_id)
+    await interaction.response.send_message(f"⏹️ Auto room creation background loop has been stopped for **{target_cfg.get('name') if target_cfg else interaction.guild.name}**.")
+
+@auto_room_group.command(name="status", description="Check auto room creation configuration and loop status")
+@app_commands.describe(tournament="Filter by tournament name (optional)")
+@app_commands.autocomplete(tournament=tournament_autocomplete)
+@with_guild_context
+async def auto_room_status_cmd(interaction: discord.Interaction, tournament: Optional[str] = None):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    guild_id = interaction.guild.id
+    all_tournaments = load_guild_tournaments(guild_id)
+    is_loop_running = guild_id in auto_room_loops and not auto_room_loops[guild_id].done()
+
+    embed = discord.Embed(
+        title="⚙️ Auto Room Creation Status",
+        description=f"Server: **{interaction.guild.name}**\nBackground Loop Running: **{'Yes ✅' if is_loop_running else 'No ❌'}**",
+        color=discord.Color.blue(),
+        timestamp=discord.utils.utcnow()
+    )
+    if interaction.guild.icon:
+        embed.set_thumbnail(url=interaction.guild.icon.url)
+
+    for k, t in all_tournaments.items():
+        if tournament and tournament.lower() not in t.get('name', '').lower() and tournament.lower() not in k.lower():
+            continue
+        t_name = t.get('name', k)
+        auto_enabled = "Enabled ✅" if t.get('auto_room_creation') else "Disabled ❌"
+        bracket = t.get('challonge_bracket_link') or "Not Set"
+        sheet = t.get('captains_sheet_link') or t.get('sheet_link') or "Not Set"
+        
+        cats = []
+        for i in range(1, 5):
+            c_id = t.get(f'ticket_open_category_{i}') or t.get(f'Open_Category_{i}_ID')
+            if c_id:
+                cats.append(f"<#{c_id}>")
+        cats_str = ", ".join(cats) if cats else "None"
+
+        val = (
+            f"• **Auto Room:** `{auto_enabled}`\n"
+            f"• **Bracket:** `{bracket}`\n"
+            f"• **Sheet:** `{'Configured' if sheet != 'Not Set' else 'Not Set'}`\n"
+            f"• **Open Categories:** {cats_str}"
+        )
+        embed.add_field(name=f"🏆 {t_name}", value=val, inline=False)
+
+    embed.set_footer(text=f"{interaction.guild.name} • Auto Room Status")
+    await interaction.response.send_message(embed=embed)
+
+
+# ===========================================================================================
 # TOURNAMENTS COG
 # ===========================================================================================
 
 class Tournaments(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        asyncio.create_task(self._init_deadline_tasks())
+        asyncio.create_task(self._init_auto_room_loops())
+
+    async def _init_deadline_tasks(self):
+        await self.bot.wait_until_ready()
+        for dl_id, dl_data in list(scheduled_deadlines.items()):
+            try:
+                schedule_deadline_tasks(self.bot, dl_id)
+            except Exception as e:
+                print(f"Error initializing deadline task {dl_id}: {e}")
+
+    async def _init_auto_room_loops(self):
+        await self.bot.wait_until_ready()
+        for guild in self.bot.guilds:
+            try:
+                tourns = load_guild_tournaments(guild.id)
+                if any(t.get('auto_room_creation') for t in tourns.values()):
+                    start_auto_room_loop(self.bot, guild.id)
+            except Exception as e:
+                print(f"Error initializing auto_room loop for guild {guild.id}: {e}")
+
+
 
     @app_commands.command(name="add_captain", description="Add two captains to a tournament match and rename the channel")
     @app_commands.describe(
@@ -1134,4 +2307,8 @@ class Tournaments(commands.Cog):
 async def setup(bot: commands.Bot):
     bot.tree.add_command(tournament_group)
     bot.tree.add_command(link_group)
+    bot.tree.add_command(deadline_group)
+    bot.tree.add_command(auto_room_group)
     await bot.add_cog(Tournaments(bot))
+
+

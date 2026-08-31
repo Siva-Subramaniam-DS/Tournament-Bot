@@ -144,6 +144,12 @@ The bot operates on the following production PostgreSQL tables in Supabase:
 - `/event-result` — Enters official match results, uploads screenshots, logs stats, delivers staff attendance logs, and posts results.
 - `/upload-score` — Uploads scores directly to Challonge bracket using an autocomplete match list.
 
+### ⏰ Match Deadline Commands
+- `/deadline add` — Add and announce a round match deadline in the `#deadlines` channel with `<t:TIMESTAMP:F>` and `<t:TIMESTAMP:R>` relative countdowns. Automatically pings `Players_Role_ID`, saves to Supabase `Deadlines` table, and schedules automated reminder pings (24 hours before & on the day of the deadline at 06:00 UTC).
+- `/deadline edit` — Edit an existing deadline's date, time, round, or note. Automatically updates Supabase and posts an update announcement to `#deadlines` pinging players.
+- `/deadline delete` — Delete a scheduled round deadline and cancel background automated reminders.
+- `/deadline list` — List all active round deadlines with live countdown timestamps.
+
 ### 👑 Admin Commands
 - `/settings add` — Set server-wide role mappings and branding parameters (organization name, sheet links, bot name).
 - `/settings edit` — Modify server-wide role mappings and branding parameters.
@@ -157,6 +163,12 @@ The bot operates on the following production PostgreSQL tables in Supabase:
 - `/auto_room run` — Manually triggers the automatic match room ticket creation sweep.
 - `/auto_room stop` — Suspends the automatic match room loop for a tournament.
 - `/auto_room toggle` — Toggles the automatic match room loop status.
+### 🎫 Automatic Room Creation Commands
+- `/auto_room toggle` — Toggle automatic match room ticket creation on/off for a tournament (with optional explicit `enabled` boolean). Automatically starts or stops the background 5-minute Challonge polling loop.
+- `/auto_room run` — Manually triggers an immediate match room ticket creation sweep for all open Challonge matches, setting up private captain channels and syncing with Supabase.
+- `/auto_room stop` — Suspends automatic room creation and stops the background loop for a tournament.
+- `/auto_room status` — Displays detailed auto-room configuration, bracket & sheet links, open categories, and background loop active state.
+
 - `/clear category` — Deletes all open/closed ticket channels in a specified category (Organizer only).
 - `/clear cache` — Clears Challonge bracket and sheet caches.
 - `/registration` — Publishes a Google Form registration embed with a direct button.
