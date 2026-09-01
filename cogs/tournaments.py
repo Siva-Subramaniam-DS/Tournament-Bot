@@ -40,6 +40,8 @@ from core.database import (
 
 
 from core.image_generator import get_random_template, get_thumbnail_url_from_channel
+from core.transcript import generate_html_transcript, generate_text_transcript
+
 
 # ===========================================================================================
 # AUTOCOMPLETE HELPERS
@@ -2057,10 +2059,163 @@ async def auto_room_status_cmd(interaction: discord.Interaction, tournament: Opt
 
 
 # ===========================================================================================
+# CLEAR / PURGE CATEGORY COMMAND GROUP
+# ===========================================================================================
+
+class ConfirmClearCategoryView(discord.ui.View):
+    def __init__(self, author_id: int, category: discord.CategoryChannel):
+        super().__init__(timeout=60.0)
+        self.author_id = author_id
+        self.category = category
+        self.confirmed = False
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("❌ Only the command author can confirm this action.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Confirm & Delete All Channels", style=discord.ButtonStyle.danger, emoji="⚠️")
+    async def confirm_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.confirmed = True
+        self.stop()
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="✖️")
+    async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.confirmed = False
+        self.stop()
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content="❌ Clear category operation cancelled.", embed=None, view=self)
+
+
+clear_group = app_commands.Group(name="clear", description="Clear and bulk-delete ticket channels or categories")
+
+@clear_group.command(name="category", description="Bulk delete all open or closed ticket channels in a specified category")
+@app_commands.describe(
+    category="The category containing the ticket channels to delete",
+    keep_category="Keep the category container itself and only delete channels inside it (default: True)"
+)
+@with_guild_context
+async def clear_category_cmd(
+    interaction: discord.Interaction,
+    category: discord.CategoryChannel,
+    keep_category: Optional[bool] = True
+):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ Server only.", ephemeral=True)
+        return
+
+    if not is_authorized_to_configure(interaction) and not is_staff(interaction.user):
+        await interaction.response.send_message("❌ You do not have permission to clear categories (Organizer only).", ephemeral=True)
+        return
+
+    channels_to_delete = list(category.channels)
+    if not channels_to_delete:
+        await interaction.response.send_message(f"ℹ️ Category **{category.name}** is already empty (0 channels).", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="⚠️ Bulk Delete Category Channels Confirmation",
+        description=(
+            f"Are you sure you want to delete **all {len(channels_to_delete)} channel(s)** in category **{category.name}**?\n\n"
+            f"⚠️ **Warning:** This action is permanent and cannot be undone! Any chat logs or open match tickets in these channels will be removed."
+        ),
+        color=discord.Color.red(),
+        timestamp=discord.utils.utcnow()
+    )
+    embed.add_field(name="📁 Target Category", value=f"{category.name} (`{category.id}`)", inline=True)
+    embed.add_field(name="📊 Channels to Delete", value=f"**{len(channels_to_delete)}** channel(s)", inline=True)
+    embed.set_footer(text=f"Requested by {interaction.user.display_name}")
+
+    view = ConfirmClearCategoryView(interaction.user.id, category)
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
+
+    await view.wait()
+    if not view.confirmed:
+        return
+
+    status_msg = await interaction.followup.send(f"⏳ Bulk deleting {len(channels_to_delete)} channel(s) in **{category.name}**... Please wait.")
+
+    deleted_count = 0
+    failed_count = 0
+
+    for idx, channel in enumerate(channels_to_delete):
+        try:
+            for ev_id, ev_data in list(scheduled_events.items()):
+                if ev_data.get('channel_id') == channel.id:
+                    ev_data['status'] = 'deleted'
+            await channel.delete(reason=f"Bulk category clear by {interaction.user.name}")
+            deleted_count += 1
+            if (idx + 1) % 5 == 0 or (idx + 1) == len(channels_to_delete):
+                try:
+                    await status_msg.edit(content=f"⏳ Deleted **{deleted_count}/{len(channels_to_delete)}** channel(s)...")
+                except Exception:
+                    pass
+            await asyncio.sleep(0.3)
+        except Exception as e:
+            print(f"Error deleting channel {channel.name}: {e}")
+            failed_count += 1
+
+    save_scheduled_events()
+
+    if not keep_category:
+        try:
+            await category.delete(reason=f"Category deleted by {interaction.user.name}")
+        except Exception as e:
+            print(f"Error deleting category itself: {e}")
+
+    log_embed = discord.Embed(
+        title="🗑️ Category Channels Bulk Deleted",
+        description=f"**{interaction.user.mention}** bulk deleted **{deleted_count}** channel(s) from category **{category.name}**.",
+        color=discord.Color.red(),
+        timestamp=discord.utils.utcnow()
+    )
+    if failed_count > 0:
+        log_embed.add_field(name="Failed", value=f"{failed_count} channel(s)", inline=True)
+    await log_bot_activity(interaction.guild, log_embed)
+
+    result_embed = discord.Embed(
+        title="✅ Category Cleared",
+        description=f"Successfully deleted **{deleted_count}** channel(s) in category **{category.name}**.",
+        color=discord.Color.green(),
+        timestamp=discord.utils.utcnow()
+    )
+    if failed_count > 0:
+        result_embed.add_field(name="⚠️ Failed", value=f"Could not delete {failed_count} channel(s) due to permissions or rate limits.", inline=False)
+    result_embed.set_footer(text=f"{ORGANIZATION_NAME} • Category Cleaner")
+
+    await status_msg.edit(content=None, embed=result_embed)
+
+@clear_group.command(name="cache", description="Clear Challonge bracket, sheet, and local memory caches")
+@with_guild_context
+async def clear_cache_cmd(interaction: discord.Interaction):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ Server only.", ephemeral=True)
+        return
+
+    if not is_authorized_to_configure(interaction) and not is_staff(interaction.user):
+        await interaction.response.send_message("❌ You do not have permission to clear cache.", ephemeral=True)
+        return
+
+    from core.state import GUILD_CONFIG_CACHE, RULES_CACHE, STAFF_STATS_CACHE, TOURNAMENTS_CACHE
+    GUILD_CONFIG_CACHE.clear()
+    RULES_CACHE.clear()
+    STAFF_STATS_CACHE.clear()
+    TOURNAMENTS_CACHE.clear()
+
+    await interaction.response.send_message("✅ Successfully cleared all server configuration, tournament, bracket, and sheet caches!", ephemeral=False)
+
+
+# ===========================================================================================
 # TOURNAMENTS COG
 # ===========================================================================================
 
 class Tournaments(commands.Cog):
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         asyncio.create_task(self._init_deadline_tasks())
@@ -2307,12 +2462,166 @@ class Tournaments(commands.Cog):
         else:
             await interaction.followup.send(f"❌ Challonge rejected the score upload:\n```{error[:500] if error else 'Unknown error'}```", ephemeral=False)
 
+    @app_commands.command(name="close", description="Close the current match ticket room, generate transcripts, and move to closed category")
+    @with_guild_context
+    async def close_room_cmd(self, interaction: discord.Interaction):
+        if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
+            await interaction.response.send_message("❌ This command can only be used in server text channels.", ephemeral=True)
+            return
+
+        if not is_authorized_to_configure(interaction) and not is_staff(interaction.user):
+            await interaction.response.send_message("❌ You do not have permission to close tickets.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=False)
+        message_channel = interaction.channel
+
+        try:
+            messages_list = []
+            async for m in message_channel.history(limit=2000, oldest_first=True):
+                messages_list.append(m)
+
+            guild = interaction.guild
+            clean_chan_name = re.sub(r'[^a-zA-Z0-9_\-]', '', message_channel.name).lower() or "ticket"
+            html_content = generate_html_transcript(message_channel, messages_list, guild, closed_by=interaction.user)
+            text_content = generate_text_transcript(message_channel, messages_list, guild, closed_by=interaction.user)
+
+            html_filename = f"transcript_{clean_chan_name}.html"
+            text_filename = f"transcript_{clean_chan_name}.txt"
+
+            html_file_local = discord.File(io.BytesIO(html_content.encode('utf-8')), filename=html_filename)
+            text_file_local = discord.File(io.BytesIO(text_content.encode('utf-8')), filename=text_filename)
+
+            attachment_count = sum(len(m.attachments) for m in messages_list)
+
+            await interaction.followup.send(
+                f"📄 **Transcript of `{message_channel.name}`** ({len(messages_list)} messages, {attachment_count} attachments):\n"
+                f"• Open the `.html` file in any browser for full Discord chat with images & embeds!\n"
+                f"• Open the `.txt` file for a text log with image URLs.",
+                files=[html_file_local, text_file_local]
+            )
+
+            # Resolve transcript log channel
+            transcript_channel = None
+            t_cfg = get_active_tournament_config(guild.id)
+            if t_cfg:
+                for k in ['transcript', 'transcript_logs', 'transcript_channel_id', 'Transcript_Channel_ID']:
+                    if t_cfg.get(k):
+                        try:
+                            transcript_channel = guild.get_channel(int(t_cfg[k])) or await guild.fetch_channel(int(t_cfg[k]))
+                            if transcript_channel: break
+                        except Exception: pass
+
+            if not transcript_channel:
+                tournaments = load_guild_tournaments(guild.id)
+                for _, tdata in tournaments.items():
+                    for k in ['transcript', 'transcript_logs', 'transcript_channel_id', 'Transcript_Channel_ID']:
+                        if tdata.get(k):
+                            try:
+                                transcript_channel = guild.get_channel(int(tdata[k])) or await guild.fetch_channel(int(tdata[k]))
+                                if transcript_channel: break
+                            except Exception: pass
+                    if transcript_channel: break
+
+            if not transcript_channel:
+                cfg = get_guild_config(guild.id)
+                for k in ['transcript_logs', 'transcript', 'transcript_channel_id', 'Transcript_Channel_ID']:
+                    t_id = cfg.get('channel_ids', {}).get(k) or cfg.get(k)
+                    if t_id:
+                        try:
+                            transcript_channel = guild.get_channel(int(t_id)) or await guild.fetch_channel(int(t_id))
+                            if transcript_channel: break
+                        except Exception: pass
+
+            if transcript_channel:
+                html_file_rec = discord.File(io.BytesIO(html_content.encode('utf-8')), filename=html_filename)
+                text_file_rec = discord.File(io.BytesIO(text_content.encode('utf-8')), filename=text_filename)
+
+                summary_embed = discord.Embed(
+                    title=f"📋 Ticket Closed: #{message_channel.name}",
+                    description=(
+                        f"**Closed by:** {interaction.user.mention}\n"
+                        f"**Total Messages:** `{len(messages_list)}`\n"
+                        f"**Attachments / Images:** `{attachment_count}`\n"
+                        f"**Participants:** `{len(set(m.author.id for m in messages_list))}`\n"
+                        f"**Closed At:** <t:{int(datetime.datetime.utcnow().timestamp())}:F>\n\n"
+                        f"📁 *HTML & Text transcripts attached below.*"
+                    ),
+                    color=discord.Color.gold(),
+                    timestamp=discord.utils.utcnow()
+                )
+                summary_embed.set_footer(text=f"{ORGANIZATION_NAME} • Ticket Transcripts")
+                await transcript_channel.send(embed=summary_embed, files=[html_file_rec, text_file_rec])
+
+            # Resolve closed tickets category
+            closed_category = None
+            if t_cfg:
+                for k in ['closed_ticket_1', 'closed_ticket_2', 'closed_tickets_category', 'closed_category']:
+                    if t_cfg.get(k):
+                        try:
+                            closed_category = guild.get_channel(int(t_cfg[k]))
+                            if closed_category: break
+                        except Exception: pass
+            if not closed_category:
+                tournaments = load_guild_tournaments(guild.id)
+                for _, tdata in tournaments.items():
+                    for k in ['closed_ticket_1', 'closed_ticket_2', 'closed_tickets_category', 'closed_category']:
+                        if tdata.get(k):
+                            try:
+                                closed_category = guild.get_channel(int(tdata[k]))
+                                if closed_category: break
+                            except Exception: pass
+                    if closed_category: break
+            if not closed_category:
+                cfg = get_guild_config(guild.id)
+                for k in ['closed_tickets_category', 'closed_category']:
+                    c_id = cfg.get('channel_ids', {}).get(k) or cfg.get(k)
+                    if c_id:
+                        try:
+                            closed_category = guild.get_channel(int(c_id))
+                            if closed_category: break
+                        except Exception: pass
+
+            if closed_category:
+                await message_channel.edit(
+                    category=closed_category,
+                    sync_permissions=True,
+                    reason=f"Ticket closed by {interaction.user.name}"
+                )
+                await message_channel.send("🔒 Ticket closed and moved to closed category. Use `$delete` (or `/delete_room`) to permanently delete it.")
+            else:
+                await message_channel.send("🔒 Ticket closed.")
+        except Exception as e:
+            print(f"Error closing ticket via slash command: {e}")
+            await interaction.followup.send(f"❌ Failed to close ticket: {e}")
+
+    @app_commands.command(name="delete_room", description="Permanently delete the current ticket channel")
+    @with_guild_context
+    async def delete_room_cmd(self, interaction: discord.Interaction):
+        if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
+            await interaction.response.send_message("❌ This command can only be used in server text channels.", ephemeral=True)
+            return
+
+        if not is_authorized_to_configure(interaction) and not is_staff(interaction.user):
+            await interaction.response.send_message("❌ You do not have permission to delete ticket rooms.", ephemeral=True)
+            return
+
+        await interaction.response.send_message("🗑️ Deleting this ticket channel in 3 seconds...")
+        await asyncio.sleep(3)
+        try:
+            await interaction.channel.delete(reason=f"Ticket deleted by {interaction.user.name}")
+        except Exception as e:
+            print(f"Error deleting channel: {e}")
+
+
 
 async def setup(bot: commands.Bot):
     bot.tree.add_command(tournament_group)
     bot.tree.add_command(link_group)
     bot.tree.add_command(deadline_group)
     bot.tree.add_command(auto_room_group)
+    bot.tree.add_command(clear_group)
     await bot.add_cog(Tournaments(bot))
+
 
 
