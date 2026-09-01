@@ -24,8 +24,10 @@ from core.state import (
     get_link_bracket, get_link_deadline, get_link_rules,
     ROLE_IDS, CHANNEL_IDS, scheduled_events, save_scheduled_events,
     scheduled_deadlines, reminder_tasks, deadline_tasks,
-    auto_room_loops, auto_room_locks, get_default_tournament_data
+    auto_room_loops, auto_room_locks, get_default_tournament_data,
+    category_monitors
 )
+
 from core.database import (
     supabase_client, load_guild_tournaments, save_guild_tournaments,
     get_guild_config, get_active_tournament_config,
@@ -1575,41 +1577,23 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
             loop_percent = 35 + int(((idx + 1) / total_matches) * 60)
             await report(loop_percent, f"Processing match {idx+1}/{total_matches}: {team1} vs {team2}...")
             
-            def get_captain_raw(t_name: str) -> str:
-                if not t_name:
-                    return ""
-                if t_name in captains_dict:
-                    return captains_dict[t_name]
-                if t_name.strip() in captains_dict:
-                    return captains_dict[t_name.strip()]
-                clean = t_name.strip().lower()
-                for k, v in captains_dict.items():
-                    if k.strip().lower() == clean:
-                        return v
-                alpha_clean = re.sub(r'[^a-zA-Z0-9]', '', clean)
-                if alpha_clean:
-                    for k, v in captains_dict.items():
-                        if re.sub(r'[^a-zA-Z0-9]', '', k).lower() == alpha_clean:
-                            return v
-                for k, v in captains_dict.items():
-                    k_alpha = re.sub(r'[^a-zA-Z0-9]', '', k).lower()
-                    if len(k_alpha) >= 3 and (k_alpha in alpha_clean or alpha_clean in k_alpha):
-                        return v
-                return ""
-
-            c1_raw = get_captain_raw(team1)
-            c2_raw = get_captain_raw(team2)
+            c1_raw = captains_dict.get(team1, "") or captains_dict.get(team1.strip(), "")
+            c2_raw = captains_dict.get(team2, "") or captains_dict.get(team2.strip(), "")
             
-            async def resolve_member_and_mention(raw: str, fallback_name: str) -> tuple[Optional[Union[discord.Member, discord.Object]], str]:
+            async def resolve_member(raw: str) -> Optional[discord.Member]:
                 if not raw or not raw.strip():
-                    raw = fallback_name
-                clean_raw = raw.strip() if raw else ""
+                    return None
+                clean_raw = raw.strip()
                 if clean_raw.startswith('@'):
                     clean_raw = clean_raw[1:].strip()
-
-                m = re.search(r'\b(\d{17,20})\b', clean_raw)
-                uid = int(m.group(1)) if m else None
-
+                    
+                m = re.search(r'<@!?(\d+)>', clean_raw)
+                uid = None
+                if m:
+                    uid = int(m.group(1))
+                elif clean_raw.isdigit():
+                    uid = int(clean_raw)
+                    
                 if uid:
                     member = guild.get_member(uid)
                     if not member:
@@ -1617,40 +1601,23 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                             member = await guild.fetch_member(uid)
                         except Exception:
                             pass
-                    if member:
-                        return member, member.mention
-                    return discord.Object(id=uid), f"<@{uid}>"
-
+                    return member
+                
                 for member in guild.members:
-                    m_names = [member.name.lower(), member.display_name.lower()]
-                    if hasattr(member, 'global_name') and member.global_name:
-                        m_names.append(member.global_name.lower())
-                    if clean_raw.lower() in m_names:
-                        return member, member.mention
-
+                    if member.name.lower() == clean_raw.lower() or member.display_name.lower() == clean_raw.lower():
+                        return member
+                
                 try:
-                    found_members = await guild.query_members(query=clean_raw, limit=10)
+                    found_members = await guild.query_members(query=clean_raw, limit=5)
                     for member in found_members:
-                        m_names = [member.name.lower(), member.display_name.lower()]
-                        if hasattr(member, 'global_name') and member.global_name:
-                            m_names.append(member.global_name.lower())
-                        if clean_raw.lower() in m_names:
-                            return member, member.mention
-                    if found_members:
-                        return found_members[0], found_members[0].mention
+                        if member.name.lower() == clean_raw.lower() or member.display_name.lower() == clean_raw.lower():
+                            return member
                 except Exception:
                     pass
-
-                if clean_raw.startswith("<@") and clean_raw.endswith(">"):
-                    return None, clean_raw
-
-                return None, clean_raw
+                return None
                 
-            cap1_obj, cap1_mention = await resolve_member_and_mention(c1_raw, team1)
-            cap2_obj, cap2_mention = await resolve_member_and_mention(c2_raw, team2)
-
-            captain1 = cap1_obj if isinstance(cap1_obj, discord.Member) else None
-            captain2 = cap2_obj if isinstance(cap2_obj, discord.Member) else None
+            captain1 = await resolve_member(c1_raw)
+            captain2 = await resolve_member(c2_raw)
             
             round_lbl = str(mod_round)
             r_name_lower = round_name.lower()
@@ -1731,10 +1698,10 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                         if staff_r := discord.utils.get(guild.roles, id=r_id):
                             overwrites[staff_r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
 
-                if cap1_obj:
-                    overwrites[cap1_obj] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-                if cap2_obj:
-                    overwrites[cap2_obj] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+                if captain1:
+                    overwrites[captain1] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+                if captain2:
+                    overwrites[captain2] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
                     
                 new_ch = await guild.create_text_channel(
                     name=chan_name,
@@ -1758,8 +1725,8 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                     'judge': None,
                     'recorder': None,
                     'channel_id': new_ch.id,
-                    'team1_captain': getattr(cap1_obj, 'id', None),
-                    'team2_captain': getattr(cap2_obj, 'id', None),
+                    'team1_captain': captain1.id if captain1 else None,
+                    'team2_captain': captain2.id if captain2 else None,
                     'team1_name': team1,
                     'team2_name': team2
                 }
@@ -1789,9 +1756,9 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                 
                 round_display = round_name
                 if is_1v1:
-                    pval = f"**Round:** {round_display}\n**Captain 1:** {cap1_mention}\n**Captain 2:** {cap2_mention}"
+                    pval = f"**Round:** {round_display}\n**Captain 1:** {captain1.mention if captain1 else c1_raw or team1}\n**Captain 2:** {captain2.mention if captain2 else c2_raw or team2}"
                 else:
-                    pval = f"**Round:** {round_display}\n**Team 1:** {team1} — Captain: {cap1_mention}\n**Team 2:** {team2} — Captain: {cap2_mention}"
+                    pval = f"**Round:** {round_display}\n**Team 1:** {team1} — Captain: {captain1.mention if captain1 else c1_raw or 'Not Found'}\n**Team 2:** {team2} — Captain: {captain2.mention if captain2 else c2_raw or 'Not Found'}"
                     
                 rules_embed.add_field(name="👥 Match Participants", value=pval, inline=False)
                 rules_embed.add_field(
@@ -1801,16 +1768,13 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                 )
                 rules_embed.set_footer(text=f"{org_name} • Auto-Ticket")
                 
-                ping_parts = []
-                if cap1_mention:
-                    ping_parts.append(cap1_mention)
-                if cap2_mention:
-                    ping_parts.append(cap2_mention)
-                ping_content = " ".join(ping_parts) if ping_parts else f"⚔️ {team1} vs {team2}"
+                ping_content = " ".join(filter(None, [
+                    captain1.mention if captain1 else (c1_raw or None),
+                    captain2.mention if captain2 else (c2_raw or None),
+                ])) or f"{team1} vs {team2}"
                 
                 await new_ch.send(content=ping_content, embed=rules_embed)
                 created_count += 1
-
             except Exception as e:
                 print(f"Error creating auto-room channel {chan_name}: {e}")
                 
@@ -1827,8 +1791,34 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                 await log_bot_activity(guild, log_embed)
             except Exception as log_err:
                 print(f"Failed to log auto room creation: {log_err}")
-                
+
+        # Check Category Monitors for Capacity
+        for cat in categories:
+            cat_key = f"{guild.id}:{cat.id}"
+            if cat_key in category_monitors:
+                mon = category_monitors[cat_key]
+                thresh = mon.get("threshold", 45)
+                if len(cat.channels) >= thresh:
+                    try:
+                        p_id = mon.get("ping_target_id")
+                        is_r = mon.get("is_role", False)
+                        p_mention = f"<@&{p_id}>" if is_r else f"<@{p_id}>"
+                        ch_id = mon.get("alert_channel_id")
+                        alert_ch = guild.get_channel(ch_id) or guild.system_channel
+                        if alert_ch:
+                            warn_embed = discord.Embed(
+                                title="⚠️ Category Capacity Alert",
+                                description=f"Category **{cat.name}** has reached **{len(cat.channels)} / 50** channels (Threshold: `{thresh}`).\nPlease clear or rotate ticket categories before hitting Discord's 50-channel limit.",
+                                color=discord.Color.orange(),
+                                timestamp=discord.utils.utcnow()
+                            )
+                            warn_embed.set_footer(text=f"{guild.name} • Category Monitor")
+                            await alert_ch.send(content=f"🔔 {p_mention}", embed=warn_embed)
+                    except Exception as mon_err:
+                        print(f"Error sending category monitor alert: {mon_err}")
+
         return created_count, ""
+
 
 async def auto_room_background_loop(bot: commands.Bot, guild_id: int):
     try:
@@ -2650,6 +2640,272 @@ class Tournaments(commands.Cog):
             await interaction.channel.delete(reason=f"Ticket deleted by {interaction.user.name}")
         except Exception as e:
             print(f"Error deleting channel: {e}")
+
+    @app_commands.command(name="assign_role", description="Assign a role to all participants in a tournament")
+    @app_commands.describe(
+        tournament="Tournament to assign roles for",
+        role="The role to assign to participants",
+        id_header="Optional sheet column header for Discord IDs (e.g., Discord ID, Developer ID, UID)",
+        dry_run="If True, simulates role assignment without making actual changes"
+    )
+    @app_commands.autocomplete(tournament=tournament_autocomplete)
+    @with_guild_context
+    async def assign_role_cmd(
+        self,
+        interaction: discord.Interaction,
+        tournament: str,
+        role: discord.Role,
+        id_header: Optional[str] = None,
+        dry_run: Optional[bool] = False
+    ):
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Server only.", ephemeral=True)
+            return
+
+        if not is_authorized_to_configure(interaction) and not is_staff(interaction.user):
+            await interaction.response.send_message("❌ You do not have permission to assign tournament roles.", ephemeral=True)
+            return
+
+        if interaction.guild.me.top_role <= role:
+            await interaction.response.send_message(f"❌ Cannot assign {role.mention} because it is higher than or equal to my highest role ({interaction.guild.me.top_role.mention}).", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=False)
+        guild = interaction.guild
+        guild_id = guild.id
+
+        tournaments = load_guild_tournaments(guild_id)
+        target_t = None
+        for k, v in tournaments.items():
+            if v.get('name', '').lower() == tournament.lower() or k.lower() == tournament.lower():
+                target_t = v
+                break
+
+        if not target_t:
+            await interaction.followup.send(f"❌ Tournament `{tournament}` not found.")
+            return
+
+        cfg = get_guild_config(guild_id)
+        sheet_link = target_t.get('captains_sheet_link') or target_t.get('sheet_link') or cfg.get('player_info_link') or cfg.get('google_sheet_link')
+        if not sheet_link:
+            await interaction.followup.send(f"❌ No Google Sheet configured for **{target_t.get('name')}**.")
+            return
+
+        msg = await interaction.followup.send(f"⏳ Reading Google Sheet for **{target_t.get('name')}**...")
+
+        match = re.search(r'/d/([a-zA-Z0-9-_]+)', sheet_link)
+        if not match:
+            await msg.edit(content="❌ Invalid Google Sheet URL.")
+            return
+        sheet_id = match.group(1)
+        url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+
+        try:
+            resp = await asyncio.to_thread(requests.get, url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+            resp.raise_for_status()
+            reader = list(csv.reader(io.StringIO(resp.text)))
+        except Exception as e:
+            await msg.edit(content=f"❌ Failed to fetch Google Sheet: {e}")
+            return
+
+        if not reader:
+            await msg.edit(content="❌ The Google Sheet appears to be empty.")
+            return
+
+        h_row = [h.strip().lower() for h in reader[0]]
+        val_col = -1
+
+        if id_header:
+            clean_hdr = id_header.strip().lower()
+            for i, h in enumerate(h_row):
+                if clean_hdr in h or h in clean_hdr:
+                    val_col = i
+                    break
+
+        if val_col == -1:
+            for i, h in enumerate(h_row):
+                if any(x in h for x in ['developer id', 'developers id', 'discord id', 'discord_id', 'discord uid', 'uid', 'user id', 'captain id']) and not any(x in h for x in ['username', 'user name', 'display name']):
+                    val_col = i
+                    break
+
+        if val_col == -1:
+            for i, h in enumerate(h_row):
+                if any(x in h for x in ['discord', 'player id', 'id', 'tag']):
+                    val_col = i
+                    break
+
+        if val_col == -1:
+            val_col = 1 if len(h_row) > 1 else 0
+
+        extracted_targets = []
+        for row in reader[1:]:
+            if len(row) > val_col:
+                raw_v = row[val_col].strip()
+                if raw_v:
+                    extracted_targets.append(raw_v)
+
+        if not extracted_targets:
+            await msg.edit(content="❌ No participant entries found in the selected ID column.")
+            return
+
+        await msg.edit(content=f"⏳ Processing **{len(extracted_targets)}** player entries...")
+
+        assigned_count = 0
+        already_had_count = 0
+        failed_count = 0
+        not_found_count = 0
+
+        for idx, raw_target in enumerate(extracted_targets):
+            clean_target = raw_target.strip().lstrip('@')
+            id_m = re.search(r'\b(\d{17,20})\b', clean_target)
+            member = None
+
+            if id_m:
+                uid = int(id_m.group(1))
+                member = guild.get_member(uid)
+                if not member:
+                    try:
+                        member = await guild.fetch_member(uid)
+                    except Exception:
+                        pass
+            else:
+                for m in guild.members:
+                    if m.name.lower() == clean_target.lower() or m.display_name.lower() == clean_target.lower():
+                        member = m
+                        break
+                if not member:
+                    try:
+                        found = await guild.query_members(query=clean_target, limit=5)
+                        for m in found:
+                            if m.name.lower() == clean_target.lower() or m.display_name.lower() == clean_target.lower():
+                                member = m
+                                break
+                    except Exception:
+                        pass
+
+            if not member:
+                not_found_count += 1
+                continue
+
+            if role in member.roles:
+                already_had_count += 1
+                continue
+
+            if not dry_run:
+                try:
+                    await member.add_roles(role, reason=f"Participant in {target_t.get('name')} assigned by {interaction.user.name}")
+                    assigned_count += 1
+                    await asyncio.sleep(0.35)
+                except Exception as e:
+                    print(f"Error adding role to {member.display_name}: {e}")
+                    failed_count += 1
+            else:
+                assigned_count += 1
+
+            if (idx + 1) % 10 == 0 or (idx + 1) == len(extracted_targets):
+                try:
+                    await msg.edit(content=f"⏳ {'[DRY RUN] ' if dry_run else ''}Processed **{idx+1}/{len(extracted_targets)}** players...")
+                except Exception:
+                    pass
+
+        summary_embed = discord.Embed(
+            title=f"👥 {'[DRY RUN] ' if dry_run else ''}Role Assignment Complete",
+            description=f"Assigned role {role.mention} for tournament **{target_t.get('name')}**.",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow()
+        )
+        summary_embed.add_field(name="📊 Total Processed", value=f"`{len(extracted_targets)}`", inline=True)
+        summary_embed.add_field(name="✅ Newly Assigned", value=f"`{assigned_count}`", inline=True)
+        summary_embed.add_field(name="⏩ Already Had Role", value=f"`{already_had_count}`", inline=True)
+        if not_found_count > 0:
+            summary_embed.add_field(name="❓ Not Found in Server", value=f"`{not_found_count}`", inline=True)
+        if failed_count > 0:
+            summary_embed.add_field(name="❌ Errors", value=f"`{failed_count}`", inline=True)
+
+        summary_embed.set_footer(text=f"{interaction.guild.name} • Participant Roles")
+        await msg.edit(content=None, embed=summary_embed)
+
+    @app_commands.command(name="reopen", description="Reopen a closed ticket room and move it back to active tournament categories")
+    @with_guild_context
+    async def reopen_room_cmd(self, interaction: discord.Interaction):
+        if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
+            await interaction.response.send_message("❌ Server text channels only.", ephemeral=True)
+            return
+
+        if not is_authorized_to_configure(interaction) and not is_staff(interaction.user):
+            await interaction.response.send_message("❌ You do not have permission to reopen tickets.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=False)
+        channel = interaction.channel
+        guild = interaction.guild
+
+        t_cfg = get_active_tournament_config(guild.id)
+        open_category = None
+        if t_cfg:
+            for i in range(1, 5):
+                cat_id = t_cfg.get(f'ticket_open_category_{i}') or t_cfg.get(f'Open_Category_{i}_ID')
+                if cat_id:
+                    try:
+                        cat = guild.get_channel(int(cat_id))
+                        if cat and len(cat.channels) < 49:
+                            open_category = cat
+                            break
+                    except Exception:
+                        pass
+
+        if not open_category:
+            tournaments = load_guild_tournaments(guild.id)
+            for _, tdata in tournaments.items():
+                for i in range(1, 5):
+                    cat_id = tdata.get(f'ticket_open_category_{i}') or tdata.get(f'Open_Category_{i}_ID')
+                    if cat_id:
+                        try:
+                            cat = guild.get_channel(int(cat_id))
+                            if cat and len(cat.channels) < 49:
+                                open_category = cat
+                                break
+                        except Exception:
+                            pass
+                if open_category:
+                    break
+
+        clean_name = channel.name
+        for pfx in ["closed-", "done-", "🔴-", "✅-"]:
+            if clean_name.startswith(pfx):
+                clean_name = clean_name[len(pfx):]
+                break
+
+        try:
+            if open_category:
+                await channel.edit(
+                    name=clean_name,
+                    category=open_category,
+                    sync_permissions=True,
+                    reason=f"Ticket reopened by {interaction.user.name}"
+                )
+            else:
+                await channel.edit(name=clean_name, reason=f"Ticket reopened by {interaction.user.name}")
+
+            embed = discord.Embed(
+                title="🔓 Ticket Reopened",
+                description=f"This ticket has been reopened by {interaction.user.mention} and moved back to active match channels.",
+                color=discord.Color.green(),
+                timestamp=discord.utils.utcnow()
+            )
+            embed.set_footer(text=f"{ORGANIZATION_NAME} • Ticket Manager")
+            await interaction.followup.send(embed=embed)
+
+            log_embed = discord.Embed(
+                title="🔓 Ticket Reopened",
+                description=f"Ticket #{channel.name} was reopened by {interaction.user.mention}.",
+                color=discord.Color.green(),
+                timestamp=discord.utils.utcnow()
+            )
+            await log_bot_activity(guild, log_embed)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Failed to reopen channel: {e}")
+
 
 
 

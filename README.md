@@ -229,14 +229,33 @@ The player information system automatically synchronizes rosters from Google She
 ## 📜 Ticket & Transcript System
 
 ### Ticket Commands:
-- `$close` — Closes a match ticket channel and executes the full transcript pipeline:
-  1. Generates a rich standalone **Discord Dark Theme HTML transcript (`.html`)** with inline screenshot/image rendering, media previews, embed cards, and avatars.
-  2. Generates a structured **Plain-Text transcript (`.txt`)** with full attachment URLs.
-  3. Sends both transcript files to the ticket channel.
-  4. Automatically uploads the transcripts to the tournament's `#transcript` / `#transcript-logs` channel with a closed ticket summary card.
-  5. Moves the channel to the configured closed tickets category and syncs permissions.
-- `$delete` — Permanently deletes a ticket channel.
-- Status Prefix Commands: `?sh` (🟢 scheduled), `?dq` (🔴 disqualified), `?dd` (✅ deadline passed), `?ho` (🟡 on hold).
+- **`$close` / `/close`** — Closes a match ticket channel and executes the permanent transcript pipeline:
+  1. Generates a standalone **Discord Dark Theme HTML transcript (`.html`)** with **Base64 inline image embedding** (downloading screenshot bytes directly so images never expire).
+  2. Generates a structured **Plain-Text transcript (`.txt`)** with full timestamps and attachment URLs.
+  3. Sends both files to the ticket channel.
+  4. Automatically uploads transcripts to the tournament's `#transcripts` channel.
+  5. Moves the channel to the configured closed tickets category.
+- **`$reopen` / `/reopen`** — Reopens a closed ticket channel, clears closed prefixes (`closed-`, `done-`, `🔴-`, `✅-`), and moves the channel back to active match categories with synced permissions.
+- **`$delete` / `/delete_room`** — Permanently deletes a ticket channel.
+- **Status Prefix Commands**: `?sh` (🟢 scheduled), `?dq` (🔴 disqualified), `?dd` (✅ deadline passed), `?ho` (🟡 on hold).
+
+---
+
+## 🛠️ Moderation & Server Utility Commands
+
+| Command | Subcommands / Parameters | Description |
+|---|---|---|
+| `/assign_role` | `tournament`, `role`, `id_header?`, `dry_run?` | Assigns a role to all tournament participants from Google Sheets. |
+| `/role` | `remove all` | Bulk removes a specified role from all members with confirmation. |
+| `/nickname` | `reset` | Resets a member's display name to their username. |
+| `/channel` | `lock`, `unlock`, `add` | Locks/unlocks channel for @everyone or adds specific members/roles. |
+| `/timeout` | `add`, `remove` | Times out a user (`5m`, `1h`, `1d`, `7d`, `28d`) or removes timeout. |
+| `/categorymonitor` | `set`, `view`, `remove` | Monitors channel capacity in categories to prevent the 50-channel limit. |
+| `/avatar` | `user?` | Displays user avatar in high resolution with download links. |
+| `/server` | `info`, `banlist` | Displays server statistics or exports banned users to CSV/embed. |
+| `/clear` | `category`, `cache` | Bulk deletes category channels or flushes cache. |
+| `/purge` | `all`, `amount`, `word` | Bulk purges messages from a channel. |
+
 
 ---
 

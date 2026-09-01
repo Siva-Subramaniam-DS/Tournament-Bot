@@ -1462,7 +1462,7 @@ async def update_challonge_match(bracket_link: str, api_key: str, match_id: str,
 def _sync_fetch_google_sheet_captains(sheet_link: str):
     match = re.search(r'/d/([a-zA-Z0-9-_]+)', sheet_link)
     if not match:
-        return None, False, "Invalid Google Sheet link — could not extract sheet ID"
+        return None, "Invalid Google Sheet link — could not extract sheet ID"
     sheet_id = match.group(1)
     url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
     try:
@@ -1472,38 +1472,30 @@ def _sync_fetch_google_sheet_captains(sheet_link: str):
         reader = csv.reader(io.StringIO(resp.text))
         
         h_row = next(reader, [])
-        h_lower = [h.lower().strip() for h in h_row]
+        h_lower = [h.lower() for h in h_row]
         
         key_col = -1
         is_1v1 = False
-        
-        # Priority 1: Team Name / Participant Name
         for i, h in enumerate(h_lower):
-            if any(k in h for k in ['team name', 'team_name', 'team', 'participant', 'player name', 'player_name', 'challonge name', 'ign', 'in-game name']):
+            if 'discord name' in h or 'participant' in h:
                 key_col = i
-                if any(k in h for k in ['player', 'participant', 'ign', 'in-game']):
-                    is_1v1 = True
+                is_1v1 = True
                 break
-
-        if key_col == -1:
-            for i, h in enumerate(h_lower):
-                if any(k in h for k in ['discord name', 'name', 'username']):
-                    key_col = i
-                    is_1v1 = True
-                    break
-
-        # Value column: Discord ID / Mention / User
+            elif 'team' in h:
+                key_col = i
+                is_1v1 = False
+                break
+                
         val_col = -1
         for i, h in enumerate(h_lower):
             if i != key_col:
-                if any(x in h for x in ['developer id', 'developers id', 'developers i\'d', 'discord id', 'discord_id', 'discord uid', 'uid', 'user id', 'captain id', 'captain discord id', 'mention']) and not any(x in h for x in ['username', 'user name', 'display name']):
+                if any(x in h for x in ['developer id', 'developers id', 'developers i\'d', 'discord id', 'discord_id', 'mention', 'uid', 'id']) and not any(x in h for x in ['username', 'user name', 'display name']):
                     val_col = i
                     break
-
         if val_col == -1:
             for i, h in enumerate(h_lower):
                 if i != key_col:
-                    if any(x in h for x in ['discord', 'captain', 'leader', 'tag']):
+                    if 'discord' in h:
                         val_col = i
                         break
                 
@@ -1516,17 +1508,12 @@ def _sync_fetch_google_sheet_captains(sheet_link: str):
                 k = row[key_col].strip()
                 v = row[val_col].strip()
                 if k:
-                    # Clean up value: check if numeric Discord ID
-                    id_match = re.search(r'\b(\d{17,20})\b', v)
-                    if id_match:
-                        v = f"<@{id_match.group(1)}>"
-                    elif v.startswith('@'):
-                        v = v.lstrip('@').strip()
+                    if v.isdigit():
+                        v = f"<@{v}>"
                     captains[k] = v
         return captains, is_1v1, None
     except Exception as e:
         return None, False, str(e)
-
 
 async def fetch_google_sheet_captains(sheet_link: str):
     return await asyncio.to_thread(_sync_fetch_google_sheet_captains, sheet_link)

@@ -1,6 +1,8 @@
 import io
 import re
 import html
+import base64
+import requests
 import datetime
 from typing import List, Tuple, Dict, Any, Optional
 
@@ -11,6 +13,29 @@ def escape_html(text: Any) -> str:
     if text is None:
         return ""
     return html.escape(str(text))
+
+
+def get_image_data_uri(url: str, filename: str) -> str:
+    """Download image and convert to Base64 data URI so images never expire in transcripts."""
+    if not url:
+        return ""
+    try:
+        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=6)
+        if resp.status_code == 200 and len(resp.content) <= 8 * 1024 * 1024:
+            fn_lower = filename.lower()
+            mime = "image/png"
+            if fn_lower.endswith(".jpg") or fn_lower.endswith(".jpeg"):
+                mime = "image/jpeg"
+            elif fn_lower.endswith(".gif"):
+                mime = "image/gif"
+            elif fn_lower.endswith(".webp"):
+                mime = "image/webp"
+            b64 = base64.b64encode(resp.content).decode("utf-8")
+            return f"data:{mime};base64,{b64}"
+    except Exception:
+        pass
+    return url
+
 
 
 def format_discord_markdown(text: str, guild: Optional[discord.Guild] = None) -> str:
@@ -633,13 +658,15 @@ def generate_html_transcript(
                 size_kb = max(1, att.size // 1024)
 
                 if is_img:
+                    img_src = get_image_data_uri(att.url, att.filename)
                     message_html.append(f'''
                     <div class="attachment-card">
                         <a href="{escape_html(att.url)}" target="_blank" title="Click to view full image ({escape_html(att.filename)})">
-                            <img src="{escape_html(att.url)}" class="attachment-img" alt="{escape_html(att.filename)}">
+                            <img src="{escape_html(img_src)}" class="attachment-img" alt="{escape_html(att.filename)}">
                         </a>
                     </div>
                     ''')
+
                 elif is_vid:
                     message_html.append(f'''
                     <div class="attachment-card">
