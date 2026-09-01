@@ -326,17 +326,23 @@ async def build_tournament_embed(interaction: discord.Interaction, t_data: dict,
         template_path = get_random_template(game_or_mode=game_hint)
         if template_path and os.path.exists(template_path):
             try:
-                with Image.open(template_path) as img:
-                    img.thumbnail((200, 200), Image.Resampling.LANCZOS)
-                    thumb_bytes = io.BytesIO()
-                    fmt = img.format if img.format else "PNG"
-                    img.save(thumb_bytes, format=fmt)
-                    thumb_bytes.seek(0)
-                ext = os.path.splitext(template_path)[1].lower() or ".png"
-                file_name = f"thumbnail{ext}"
-                embed.set_thumbnail(url=f"attachment://{file_name}")
-                file = discord.File(fp=thumb_bytes, filename=file_name)
-                thumb_str = f"Template: {os.path.basename(template_path)} (Channel: {chan_mention('thumbnail')})"
+                def _process_thumbnail(p):
+                    with Image.open(p) as img:
+                        img.thumbnail((200, 200), Image.Resampling.LANCZOS)
+                        tb = io.BytesIO()
+                        fmt = img.format if img.format else "PNG"
+                        img.save(tb, format=fmt)
+                        tb.seek(0)
+                    e = os.path.splitext(p)[1].lower() or ".png"
+                    return tb, f"thumbnail{e}"
+
+                thumb_bytes, file_name = await asyncio.to_thread(_process_thumbnail, template_path)
+                if thumb_bytes:
+                    embed.set_thumbnail(url=f"attachment://{file_name}")
+                    file = discord.File(fp=thumb_bytes, filename=file_name)
+                    thumb_str = f"Template: {os.path.basename(template_path)} (Channel: {chan_mention('thumbnail')})"
+                else:
+                    thumb_str = f"Default (Channel: {chan_mention('thumbnail')})"
             except Exception as e:
                 print(f"Error processing template {template_path}: {e}")
                 thumb_str = f"Default (Channel: {chan_mention('thumbnail')})"
@@ -1659,6 +1665,64 @@ async def deadline_list_cmd(interaction: discord.Interaction, tournament: Option
 # MATCH ROOM EMBED BUILDER & AUTO ROOM CREATION
 # ===========================================================================================
 
+class MatchReadyView(discord.ui.View):
+    def __init__(self, team1_name: str, team2_name: str, captain1_id: Optional[int] = None, captain2_id: Optional[int] = None):
+        super().__init__(timeout=None)
+        self.team1_name = team1_name or "Team 1"
+        self.team2_name = team2_name or "Team 2"
+        self.captain1_id = captain1_id
+        self.captain2_id = captain2_id
+        self.team1_ready = False
+        self.team2_ready = False
+
+    @discord.ui.button(label="⚔️ Team 1 Ready", style=discord.ButtonStyle.primary, custom_id="match_ready_btn_t1")
+    async def team1_ready_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        is_admin = interaction.guild and interaction.user.guild_permissions.administrator
+        is_cap1 = (self.captain1_id and interaction.user.id == self.captain1_id)
+        if not (is_cap1 or is_admin or is_staff(interaction.user)):
+            await interaction.response.send_message(f"❌ Only the captain of **{self.team1_name}** or Staff can mark Team 1 ready.", ephemeral=True)
+            return
+
+        self.team1_ready = not self.team1_ready
+        if self.team1_ready:
+            button.style = discord.ButtonStyle.success
+            button.label = f"✅ {self.team1_name[:15]} Ready"
+            status_text = f"🟢 **{self.team1_name}** ({interaction.user.mention}) is **READY**!"
+        else:
+            button.style = discord.ButtonStyle.primary
+            button.label = f"⚔️ {self.team1_name[:15]} Ready"
+            status_text = f"⚪ **{self.team1_name}** is no longer marked ready."
+
+        await interaction.response.edit_message(view=self)
+        await interaction.followup.send(status_text)
+
+        if self.team1_ready and self.team2_ready:
+            await interaction.channel.send("🎉 **BOTH TEAMS ARE READY!** Good luck with your match! ⚔️")
+
+    @discord.ui.button(label="⚔️ Team 2 Ready", style=discord.ButtonStyle.primary, custom_id="match_ready_btn_t2")
+    async def team2_ready_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        is_admin = interaction.guild and interaction.user.guild_permissions.administrator
+        is_cap2 = (self.captain2_id and interaction.user.id == self.captain2_id)
+        if not (is_cap2 or is_admin or is_staff(interaction.user)):
+            await interaction.response.send_message(f"❌ Only the captain of **{self.team2_name}** or Staff can mark Team 2 ready.", ephemeral=True)
+            return
+
+        self.team2_ready = not self.team2_ready
+        if self.team2_ready:
+            button.style = discord.ButtonStyle.success
+            button.label = f"✅ {self.team2_name[:15]} Ready"
+            status_text = f"🟢 **{self.team2_name}** ({interaction.user.mention}) is **READY**!"
+        else:
+            button.style = discord.ButtonStyle.primary
+            button.label = f"⚔️ {self.team2_name[:15]} Ready"
+            status_text = f"⚪ **{self.team2_name}** is no longer marked ready."
+
+        await interaction.response.edit_message(view=self)
+        await interaction.followup.send(status_text)
+
+        if self.team1_ready and self.team2_ready:
+            await interaction.channel.send("🎉 **BOTH TEAMS ARE READY!** Good luck with your match! ⚔️")
+
 def create_match_room_embed(
     guild: discord.Guild,
     tournament_name: str,
@@ -2028,6 +2092,12 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                     target_category = c
                     break
             if not target_category:
+                # Overflow check: search other match categories in the server
+                for c in guild.categories:
+                    if c not in categories and len(c.channels) < 49 and any(kw in c.name.lower() for kw in ['match', 'ticket', 'open', 'round']):
+                        target_category = c
+                        break
+            if not target_category:
                 break
                 
             try:
@@ -2118,7 +2188,8 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                     org_name=org_name
                 )
                 
-                await new_ch.send(content=ping_content, embed=room_embed)
+                ready_view = MatchReadyView(team1, team2, c1_uid, c2_uid)
+                await new_ch.send(content=ping_content, embed=room_embed, view=ready_view)
                 created_count += 1
             except Exception as e:
                 print(f"Error creating auto-room channel {chan_name}: {e}")
@@ -2734,7 +2805,8 @@ class Tournaments(commands.Cog):
                 org_name=org_name
             )
 
-            await channel.send(content=ping_content, embed=room_embed)
+            ready_view = MatchReadyView(t1_name, t2_name, captain1.id, captain2.id)
+            await channel.send(content=ping_content, embed=room_embed, view=ready_view)
 
         except Exception as e:
             await interaction.response.send_message(f"❌ An error occurred: {str(e)}", ephemeral=False)
@@ -2850,6 +2922,10 @@ class Tournaments(commands.Cog):
             bot_log_embed.add_field(name="Score", value=f"**{winner_score}** – {loser_score}", inline=True)
             bot_log_embed.set_footer(text=f"Uploaded by {interaction.user.display_name}")
             await log_bot_activity(interaction.guild, bot_log_embed)
+
+            # Auto-check next round open match rooms
+            if t_cfg and t_cfg.get('auto_room_creation') and interaction.guild:
+                asyncio.create_task(auto_create_open_tickets_for_tournament(interaction.guild, t_cfg))
         else:
             await interaction.followup.send(f"❌ Challonge rejected the score upload:\n```{error[:500] if error else 'Unknown error'}```", ephemeral=False)
 
@@ -2874,8 +2950,8 @@ class Tournaments(commands.Cog):
 
             guild = interaction.guild
             clean_chan_name = re.sub(r'[^a-zA-Z0-9_\-]', '', message_channel.name).lower() or "ticket"
-            html_content = generate_html_transcript(message_channel, messages_list, guild, closed_by=interaction.user)
-            text_content = generate_text_transcript(message_channel, messages_list, guild, closed_by=interaction.user)
+            html_content = await asyncio.to_thread(generate_html_transcript, message_channel, messages_list, guild, closed_by=interaction.user)
+            text_content = await asyncio.to_thread(generate_text_transcript, message_channel, messages_list, guild, closed_by=interaction.user)
 
             html_filename = f"transcript_{clean_chan_name}.html"
             text_filename = f"transcript_{clean_chan_name}.txt"

@@ -381,14 +381,16 @@ async def schedule_ten_minute_reminder(event_id: str, team1_captain: discord.Mem
                     
                     if not j:
                         try:
-                            j_role = ROLE_IDS.get('judge', '')
-                            await event_channel.send(f"⚠️ <@&{j_role}> **URGENT:** Match starts in 20 mins and NO JUDGE is assigned!")
+                            j_role = ROLE_IDS.get('judge')
+                            j_ping = f"<@&{j_role}>" if j_role else "**@Judge**"
+                            await event_channel.send(f"⚠️ {j_ping} **URGENT:** Match starts in 20 mins and NO JUDGE is assigned!")
                         except Exception as e: pass
                     
                     if not r:
                         try:
-                            r_role = ROLE_IDS.get('recorder', '')
-                            await event_channel.send(f"⚠️ <@&{r_role}> **URGENT:** Match starts in 20 mins and NO RECORDER is assigned!")
+                            r_role = ROLE_IDS.get('recorder')
+                            r_ping = f"<@&{r_role}>" if r_role else "**@Recorder**"
+                            await event_channel.send(f"⚠️ {r_ping} **URGENT:** Match starts in 20 mins and NO RECORDER is assigned!")
                         except Exception as e: pass
                     
                     if j or r:
@@ -652,7 +654,8 @@ class Events(commands.Cog):
                 org_name = cfg.get('organization_name') or (interaction.guild.name if interaction.guild else "Tournament Organizer")
                 server_logo = cfg.get('server_logo_path')
                 
-                poster_image = create_event_poster(
+                poster_image = await asyncio.to_thread(
+                    create_event_poster,
                     template_image, 
                     round_label, 
                     t1_poster, 

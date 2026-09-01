@@ -263,8 +263,8 @@ class Listeners(commands.Cog):
 
                     guild = message.guild
                     clean_chan_name = re.sub(r'[^a-zA-Z0-9_\-]', '', message.channel.name).lower() or "ticket"
-                    html_content = generate_html_transcript(message.channel, messages_list, guild, closed_by=message.author)
-                    text_content = generate_text_transcript(message.channel, messages_list, guild, closed_by=message.author)
+                    html_content = await asyncio.to_thread(generate_html_transcript, message.channel, messages_list, guild, closed_by=message.author)
+                    text_content = await asyncio.to_thread(generate_text_transcript, message.channel, messages_list, guild, closed_by=message.author)
 
                     html_filename = f"transcript_{clean_chan_name}.html"
                     text_filename = f"transcript_{clean_chan_name}.txt"

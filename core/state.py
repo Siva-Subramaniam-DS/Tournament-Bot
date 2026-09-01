@@ -384,7 +384,7 @@ def get_player_info_format(context=None) -> str:
 def get_sheetdb_api_url(context=None) -> str:
     from core.database import get_guild_config
     url = get_guild_config(context).get("sheetdb_api_url", "")
-    return url if url else "https://sheetdb.io/api/v1/vlbn6vbc8vdbb"
+    return url if url else os.getenv("SHEETDB_API_URL", "")
 
 def get_link_bracket(context=None) -> str:
     from core.database import get_guild_config, get_active_tournament_config

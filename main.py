@@ -18,6 +18,7 @@ from core.database import (
     load_guild_configs_from_supabase,
     load_all_tournaments_from_supabase,
     load_all_staff_stats_from_supabase,
+    load_all_deadlines_from_supabase,
     load_scheduled_deadlines
 )
 
@@ -60,10 +61,11 @@ class TournamentBot(commands.Bot):
         """Called automatically before the bot connects to Discord."""
         logger.info("⏳ Initializing database cache from Supabase...")
         try:
+            load_scheduled_deadlines()
             await load_guild_configs_from_supabase()
             await load_all_tournaments_from_supabase()
             await load_all_staff_stats_from_supabase()
-            load_scheduled_deadlines()
+            await load_all_deadlines_from_supabase()
             logger.info("✅ Database caches loaded successfully.")
         except Exception as e:
             logger.warning(f"⚠️ Could not load remote cache from Supabase: {e}")

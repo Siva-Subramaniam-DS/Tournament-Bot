@@ -1152,39 +1152,59 @@ def load_scheduled_deadlines():
                 print(f"Loaded {len(scheduled_deadlines)} scheduled deadlines from local fallback")
     except Exception as e:
         print(f"Error loading scheduled_deadlines.json fallback: {e}")
+def load_scheduled_deadlines():
+    global scheduled_deadlines
+    try:
+        if os.path.exists(DEADLINES_FILE_PATH):
+            with open(DEADLINES_FILE_PATH, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                for dl_id, dl_data in data.items():
+                    if isinstance(dl_data, dict) and 'deadline_dt' in dl_data:
+                        try:
+                            dl_data['deadline_dt'] = datetime.datetime.fromisoformat(dl_data['deadline_dt'])
+                        except Exception:
+                            pass
+                scheduled_deadlines.clear()
+                scheduled_deadlines.update(data)
+                print(f"Loaded {len(scheduled_deadlines)} scheduled deadlines from local fallback")
+    except Exception as e:
+        print(f"Error loading scheduled_deadlines.json fallback: {e}")
         scheduled_deadlines.clear()
 
-    if supabase_client:
-        try:
-            resp = supabase_client.table("Deadlines").select("*").execute()
-            if resp.data:
-                for row in resp.data:
-                    try:
-                        t_id = str(row.get("Tournament_ID", ""))
-                        rnd_int = row.get("Round", 1)
-                        rnd_name = f"Round {rnd_int}" if rnd_int < 90 else ("Final" if rnd_int == 99 else "Semi-Final")
-                        dl_id = f"dl_{t_id}_{rnd_int}"
-                        g_id = None
-                        for g_k, t_dict in TOURNAMENTS_CACHE.items():
-                            if isinstance(t_dict, dict):
-                                for t_k, t_cfg in t_dict.items():
-                                    if isinstance(t_cfg, dict) and (t_cfg.get('id') == t_id or t_cfg.get('Tournament_ID') == t_id or t_k == t_id):
-                                        g_id = int(g_k) if str(g_k).isdigit() else g_k
-                                        break
-                            if g_id:
-                                break
-                        if dl_id not in scheduled_deadlines:
-                            scheduled_deadlines[dl_id] = {
-                                'guild_id': g_id,
-                                'tournament': t_id,
-                                'round': rnd_name,
-                                'deadline_dt': datetime.datetime.fromisoformat(row["Deadline_Time"])
-                            }
-                    except Exception as parse_err:
-                        print(f"Error parsing Supabase deadline row {row}: {parse_err}")
-                print(f"Merged config with {len(resp.data)} deadlines from Supabase.")
-        except Exception as e:
-            print(f"Error loading deadlines from Supabase: {e}")
+async def load_all_deadlines_from_supabase():
+    global scheduled_deadlines
+    if not supabase_client:
+        return
+    try:
+        resp = await asyncio.to_thread(lambda: supabase_client.table("Deadlines").select("*").execute())
+        if resp and resp.data:
+            for row in resp.data:
+                try:
+                    t_id = str(row.get("Tournament_ID", ""))
+                    rnd_int = row.get("Round", 1)
+                    rnd_name = f"Round {rnd_int}" if rnd_int < 90 else ("Final" if rnd_int == 99 else "Semi-Final")
+                    dl_id = f"dl_{t_id}_{rnd_int}"
+                    g_id = None
+                    for g_k, t_dict in TOURNAMENTS_CACHE.items():
+                        if isinstance(t_dict, dict):
+                            for t_k, t_cfg in t_dict.items():
+                                if isinstance(t_cfg, dict) and (t_cfg.get('id') == t_id or t_cfg.get('Tournament_ID') == t_id or t_k == t_id):
+                                    g_id = int(g_k) if str(g_k).isdigit() else g_k
+                                    break
+                        if g_id:
+                            break
+                    if dl_id not in scheduled_deadlines:
+                        scheduled_deadlines[dl_id] = {
+                            'guild_id': g_id,
+                            'tournament': t_id,
+                            'round': rnd_name,
+                            'deadline_dt': datetime.datetime.fromisoformat(row["Deadline_Time"])
+                        }
+                except Exception as parse_err:
+                    print(f"Error parsing Supabase deadline row {row}: {parse_err}")
+            print(f"Merged config with {len(resp.data)} deadlines from Supabase.")
+    except Exception as e:
+        print(f"Error loading deadlines from Supabase: {e}")
 
 def save_scheduled_deadline(dl_id: str, dl_data: dict):
     scheduled_deadlines[dl_id] = dl_data

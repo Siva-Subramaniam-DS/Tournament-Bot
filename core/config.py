@@ -5,10 +5,8 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Set Windows event loop policy for asyncio
+# Configure output encoding on Windows if needed
 if sys.platform == "win32":
-    import asyncio
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding='utf-8')
     if hasattr(sys.stderr, "reconfigure"):

@@ -289,7 +289,7 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
         except Exception as purge_err:
             print(f"Failed to purge participant channel: {purge_err}")
 
-        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        resp = await asyncio.to_thread(requests.get, url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
         resp.raise_for_status()
         resp.encoding = 'utf-8'
         rows = list(csv.reader(io.StringIO(resp.text)))
@@ -890,7 +890,7 @@ class Settings(commands.Cog):
             url += f"&gid={gid}"
 
         try:
-            resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+            resp = await asyncio.to_thread(requests.get, url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
             resp.raise_for_status()
             resp.encoding = 'utf-8'
             rows = list(csv.reader(io.StringIO(resp.text)))
@@ -1112,9 +1112,15 @@ class Settings(commands.Cog):
             clean_val = new_value.strip()
 
             if field_type == "team_name":
+                # Update title if it has Team name
+                if new_embed.title:
+                    old_val_display = new_embed.title.replace("🏆", "").strip()
+                    new_embed.title = f"🏆 {clean_val}"
+                    updated_embed = True
                 if new_embed.description and "**Team Name:**" in new_embed.description:
                     old_matches = re.findall(r'\*\*Team Name:\*\*\s*`?([^`\n]+)`?', new_embed.description)
-                    old_val_display = old_matches[0] if old_matches else "—"
+                    if old_matches:
+                        old_val_display = old_matches[0]
                     new_embed.description = re.sub(
                         r'(\*\*Team Name:\*\*\s*)`?[^`\n]+`?',
                         f"\\1`{clean_val}`",
@@ -1128,6 +1134,20 @@ class Settings(commands.Cog):
                         updated_embed = True
 
             elif field_type == "game_name":
+                if new_embed.description:
+                    old_m = re.findall(r'\*\*Game Name:\*\*\s*`?([^`\n]+)`?', new_embed.description, flags=re.IGNORECASE)
+                    if old_m:
+                        old_val_display = old_m[0]
+                    new_embed.description = re.sub(
+                        r'(\*\*Game Name:\*\*\s*)`?[^`\n]+`?',
+                        f"\\1`{clean_val}`",
+                        new_embed.description,
+                        flags=re.IGNORECASE
+                    )
+                    updated_embed = True
+                if new_embed.title and not any(kw in new_embed.title.lower() for kw in ["team", "information"]):
+                    new_embed.title = f"🏆 {clean_val}"
+                    updated_embed = True
                 for idx, f in enumerate(new_embed.fields):
                     if "game name" in f.value.lower() or "ign" in f.value.lower() or "game name" in f.name.lower():
                         old_m = re.findall(r'(\*\*Game Name:\*\*\s*)`?([^`\n]+)`?', f.value, flags=re.IGNORECASE)
@@ -1139,6 +1159,17 @@ class Settings(commands.Cog):
                         break
 
             elif field_type == "game_id":
+                if new_embed.description:
+                    old_m = re.findall(r'\*\*Game ID:\*\*\s*`?([^`\n]+)`?', new_embed.description, flags=re.IGNORECASE)
+                    if old_m:
+                        old_val_display = old_m[0]
+                    new_embed.description = re.sub(
+                        r'(\*\*Game ID:\*\*\s*)`?[^`\n]+`?',
+                        f"\\1`{clean_val}`",
+                        new_embed.description,
+                        flags=re.IGNORECASE
+                    )
+                    updated_embed = True
                 for idx, f in enumerate(new_embed.fields):
                     if "game id" in f.value.lower() or "uid" in f.value.lower():
                         old_m = re.findall(r'(\*\*Game ID:\*\*\s*)`?([^`\n]+)`?', f.value, flags=re.IGNORECASE)
@@ -1150,6 +1181,17 @@ class Settings(commands.Cog):
                         break
 
             elif field_type == "title":
+                if new_embed.description:
+                    old_m = re.findall(r'\*\*Title:\*\*\s*`?([^`\n]+)`?', new_embed.description, flags=re.IGNORECASE)
+                    if old_m:
+                        old_val_display = old_m[0]
+                    new_embed.description = re.sub(
+                        r'(\*\*Title:\*\*\s*)`?[^`\n]+`?',
+                        f"\\1`{clean_val}`",
+                        new_embed.description,
+                        flags=re.IGNORECASE
+                    )
+                    updated_embed = True
                 for idx, f in enumerate(new_embed.fields):
                     if "title" in f.value.lower() or "rank" in f.value.lower():
                         old_m = re.findall(r'(\*\*Title:\*\*\s*)`?([^`\n]+)`?', f.value, flags=re.IGNORECASE)
@@ -1161,7 +1203,24 @@ class Settings(commands.Cog):
                         break
 
             elif field_type == "discord_id":
-                mention_clean = clean_val if clean_val.startswith("<@") else f"<@{re.sub(r'[^0-9]', '', clean_val)}>"
+                clean_digits = re.sub(r'[^0-9]', '', clean_val)
+                mention_clean = f"<@{clean_digits}>" if clean_digits else clean_val
+                if new_embed.description:
+                    old_m = re.findall(r'\*\*Discord ID:\*\*\s*`?([^`\n]+)`?', new_embed.description, flags=re.IGNORECASE)
+                    if old_m:
+                        old_val_display = old_m[0]
+                    new_embed.description = re.sub(
+                        r'(\*\*Discord ID:\*\*\s*)`?[^`\n]+`?',
+                        f"\\1`{clean_digits or clean_val}`",
+                        new_embed.description,
+                        flags=re.IGNORECASE
+                    )
+                    new_embed.description = re.sub(
+                        r'💂\s*<@!?\d+>',
+                        f"💂 {mention_clean}",
+                        new_embed.description
+                    )
+                    updated_embed = True
                 for idx, f in enumerate(new_embed.fields):
                     if "discord id" in f.value.lower() or "discord id" in f.name.lower():
                         old_val_display = f.value
