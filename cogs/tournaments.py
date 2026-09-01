@@ -1575,23 +1575,41 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
             loop_percent = 35 + int(((idx + 1) / total_matches) * 60)
             await report(loop_percent, f"Processing match {idx+1}/{total_matches}: {team1} vs {team2}...")
             
-            c1_raw = captains_dict.get(team1, "") or captains_dict.get(team1.strip(), "")
-            c2_raw = captains_dict.get(team2, "") or captains_dict.get(team2.strip(), "")
+            def get_captain_raw(t_name: str) -> str:
+                if not t_name:
+                    return ""
+                if t_name in captains_dict:
+                    return captains_dict[t_name]
+                if t_name.strip() in captains_dict:
+                    return captains_dict[t_name.strip()]
+                clean = t_name.strip().lower()
+                for k, v in captains_dict.items():
+                    if k.strip().lower() == clean:
+                        return v
+                alpha_clean = re.sub(r'[^a-zA-Z0-9]', '', clean)
+                if alpha_clean:
+                    for k, v in captains_dict.items():
+                        if re.sub(r'[^a-zA-Z0-9]', '', k).lower() == alpha_clean:
+                            return v
+                for k, v in captains_dict.items():
+                    k_alpha = re.sub(r'[^a-zA-Z0-9]', '', k).lower()
+                    if len(k_alpha) >= 3 and (k_alpha in alpha_clean or alpha_clean in k_alpha):
+                        return v
+                return ""
+
+            c1_raw = get_captain_raw(team1)
+            c2_raw = get_captain_raw(team2)
             
-            async def resolve_member(raw: str) -> Optional[discord.Member]:
+            async def resolve_member_and_mention(raw: str, fallback_name: str) -> tuple[Optional[Union[discord.Member, discord.Object]], str]:
                 if not raw or not raw.strip():
-                    return None
-                clean_raw = raw.strip()
+                    raw = fallback_name
+                clean_raw = raw.strip() if raw else ""
                 if clean_raw.startswith('@'):
                     clean_raw = clean_raw[1:].strip()
-                    
-                m = re.search(r'<@!?(\d+)>', clean_raw)
-                uid = None
-                if m:
-                    uid = int(m.group(1))
-                elif clean_raw.isdigit():
-                    uid = int(clean_raw)
-                    
+
+                m = re.search(r'\b(\d{17,20})\b', clean_raw)
+                uid = int(m.group(1)) if m else None
+
                 if uid:
                     member = guild.get_member(uid)
                     if not member:
@@ -1599,23 +1617,40 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                             member = await guild.fetch_member(uid)
                         except Exception:
                             pass
-                    return member
-                
+                    if member:
+                        return member, member.mention
+                    return discord.Object(id=uid), f"<@{uid}>"
+
                 for member in guild.members:
-                    if member.name.lower() == clean_raw.lower() or member.display_name.lower() == clean_raw.lower():
-                        return member
-                
+                    m_names = [member.name.lower(), member.display_name.lower()]
+                    if hasattr(member, 'global_name') and member.global_name:
+                        m_names.append(member.global_name.lower())
+                    if clean_raw.lower() in m_names:
+                        return member, member.mention
+
                 try:
-                    found_members = await guild.query_members(query=clean_raw, limit=5)
+                    found_members = await guild.query_members(query=clean_raw, limit=10)
                     for member in found_members:
-                        if member.name.lower() == clean_raw.lower() or member.display_name.lower() == clean_raw.lower():
-                            return member
+                        m_names = [member.name.lower(), member.display_name.lower()]
+                        if hasattr(member, 'global_name') and member.global_name:
+                            m_names.append(member.global_name.lower())
+                        if clean_raw.lower() in m_names:
+                            return member, member.mention
+                    if found_members:
+                        return found_members[0], found_members[0].mention
                 except Exception:
                     pass
-                return None
+
+                if clean_raw.startswith("<@") and clean_raw.endswith(">"):
+                    return None, clean_raw
+
+                return None, clean_raw
                 
-            captain1 = await resolve_member(c1_raw)
-            captain2 = await resolve_member(c2_raw)
+            cap1_obj, cap1_mention = await resolve_member_and_mention(c1_raw, team1)
+            cap2_obj, cap2_mention = await resolve_member_and_mention(c2_raw, team2)
+
+            captain1 = cap1_obj if isinstance(cap1_obj, discord.Member) else None
+            captain2 = cap2_obj if isinstance(cap2_obj, discord.Member) else None
             
             round_lbl = str(mod_round)
             r_name_lower = round_name.lower()
@@ -1696,10 +1731,10 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                         if staff_r := discord.utils.get(guild.roles, id=r_id):
                             overwrites[staff_r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
 
-                if captain1:
-                    overwrites[captain1] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-                if captain2:
-                    overwrites[captain2] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+                if cap1_obj:
+                    overwrites[cap1_obj] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+                if cap2_obj:
+                    overwrites[cap2_obj] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
                     
                 new_ch = await guild.create_text_channel(
                     name=chan_name,
@@ -1723,8 +1758,8 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                     'judge': None,
                     'recorder': None,
                     'channel_id': new_ch.id,
-                    'team1_captain': captain1.id if captain1 else None,
-                    'team2_captain': captain2.id if captain2 else None,
+                    'team1_captain': getattr(cap1_obj, 'id', None),
+                    'team2_captain': getattr(cap2_obj, 'id', None),
                     'team1_name': team1,
                     'team2_name': team2
                 }
@@ -1754,9 +1789,9 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                 
                 round_display = round_name
                 if is_1v1:
-                    pval = f"**Round:** {round_display}\n**Captain 1:** {captain1.mention if captain1 else c1_raw or team1}\n**Captain 2:** {captain2.mention if captain2 else c2_raw or team2}"
+                    pval = f"**Round:** {round_display}\n**Captain 1:** {cap1_mention}\n**Captain 2:** {cap2_mention}"
                 else:
-                    pval = f"**Round:** {round_display}\n**Team 1:** {team1} — Captain: {captain1.mention if captain1 else c1_raw or 'Not Found'}\n**Team 2:** {team2} — Captain: {captain2.mention if captain2 else c2_raw or 'Not Found'}"
+                    pval = f"**Round:** {round_display}\n**Team 1:** {team1} — Captain: {cap1_mention}\n**Team 2:** {team2} — Captain: {cap2_mention}"
                     
                 rules_embed.add_field(name="👥 Match Participants", value=pval, inline=False)
                 rules_embed.add_field(
@@ -1766,13 +1801,16 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                 )
                 rules_embed.set_footer(text=f"{org_name} • Auto-Ticket")
                 
-                ping_content = " ".join(filter(None, [
-                    captain1.mention if captain1 else (c1_raw or None),
-                    captain2.mention if captain2 else (c2_raw or None),
-                ])) or f"{team1} vs {team2}"
+                ping_parts = []
+                if cap1_mention:
+                    ping_parts.append(cap1_mention)
+                if cap2_mention:
+                    ping_parts.append(cap2_mention)
+                ping_content = " ".join(ping_parts) if ping_parts else f"⚔️ {team1} vs {team2}"
                 
                 await new_ch.send(content=ping_content, embed=rules_embed)
                 created_count += 1
+
             except Exception as e:
                 print(f"Error creating auto-room channel {chan_name}: {e}")
                 
