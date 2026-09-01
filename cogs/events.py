@@ -722,8 +722,8 @@ class Events(commands.Cog):
         embed.add_field(name="\u200b", value="\u200b", inline=False)
         
         captains_text = f"**Captains**\n"
-        captains_text += f"- Team1 Captain: {team_1_captain.mention} @{team_1_captain.name}" + (f" (Team: **{team_1_name}**)\n" if team_1_name else "\n")
-        captains_text += f"- Team2 Captain: {team_2_captain.mention} @{team_2_captain.name}" + (f" (Team: **{team_2_name}**)" if team_2_name else "")
+        captains_text += f"- Team1 Captain: {team_1_captain.mention} ({team_1_captain.name})" + (f" (Team: **{team_1_name}**)\n" if team_1_name else "\n")
+        captains_text += f"- Team2 Captain: {team_2_captain.mention} ({team_2_captain.name})" + (f" (Team: **{team_2_name}**)" if team_2_name else "")
         embed.add_field(name="👑 Team Captains", value=captains_text, inline=False)
         embed.add_field(name="\u200b", value="\u200b", inline=False)
         embed.add_field(name="👤 Created By", value=interaction.user.mention, inline=False)
@@ -877,6 +877,7 @@ class Events(commands.Cog):
         embed_description += f"**Tournament:** {t_display_name}\n"
         embed_description += f"**Round:** {format_round_heading(round)}"
         if group_label: embed_description += f"\n**Group:** {group_label}"
+        embed_description += f"\n\n**Channel:** {interaction.channel.mention}"
         
         embed = discord.Embed(
             title=f"🏆 {w_display_name} 🆚 {l_display_name}",
@@ -886,14 +887,14 @@ class Events(commands.Cog):
         )
         await resolve_embed_thumbnail(interaction.guild.id, embed)
 
-        captains_text = f"**Captains**\n- Team1 Captain: {w_display_mention}\n- Team2 Captain: {l_display_mention}"
+        captains_text = f"**Captains**\n- Team1 Captain: {w_display_mention}" + (f" ({winner.name})" if winner else "") + f"\n- Team2 Captain: {l_display_mention}" + (f" ({loser.name})" if loser else "")
         embed.add_field(name="", value=captains_text, inline=False)
         
         results_text = f"**Results**\n🏆 {w_name} ({winner_score}) Vs ({loser_score}) {l_name} 💀"
         embed.add_field(name="", value=results_text, inline=False)
         
-        staff_text = f"👨‍⚖️ **Staffs**\n▪ Judge: {interaction.user.mention}"
-        if recorder: staff_text += f"\n▪ Recorder: {recorder.mention}"
+        staff_text = f"👨‍⚖️ **Staffs**\n▪ Judge: {interaction.user.mention}" + (f" ({interaction.user.name})" if interaction.user else "")
+        if recorder: staff_text += f"\n▪ Recorder: {recorder.mention}" + (f" ({recorder.name})" if recorder else "")
         embed.add_field(name="", value=staff_text, inline=False)
         embed.add_field(name="📝 Remarks", value=remarks, inline=False)
         
@@ -917,7 +918,7 @@ class Events(commands.Cog):
         if screenshot_names:
             embed.add_field(name="", value=f"**Screenshots of Result ({len(screenshot_names)} images)**\n📷 {' • '.join(screenshot_names)}", inline=False)
 
-        embed.set_footer(text=f"Powered by • {ORGANIZATION_NAME}")
+        embed.set_footer(text=f"Result uploaded by {interaction.user.name} · {now_utc.strftime('%d-%m-%Y %H:%M')}")
 
         # Locate or register event in scheduled_events
         matched_ev_id = None

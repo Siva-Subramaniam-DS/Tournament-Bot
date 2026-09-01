@@ -1709,11 +1709,7 @@ async def resolve_embed_thumbnail(
     return None, False
 
 def extract_challonge_tournament_id(bracket_link: str) -> str:
-    link = str(bracket_link).strip()
-    if "/" in link:
-        parts = [p for p in link.split("/") if p]
-        return parts[-1]
-    return link
+    return extract_challonge_id(str(bracket_link))
 
 async def update_challonge_match(bracket_link: str, api_key: str, match_id: str, winner_id: str, scores_csv: str) -> tuple[bool, Optional[str]]:
     import aiohttp

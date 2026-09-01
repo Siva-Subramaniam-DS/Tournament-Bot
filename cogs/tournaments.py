@@ -1,10 +1,12 @@
 import os
 import io
 import re
+import csv
 import json
 import asyncio
 import datetime
 from typing import Optional, List, Union
+import requests
 
 import discord
 from discord import app_commands
@@ -25,7 +27,7 @@ from core.state import (
     ROLE_IDS, CHANNEL_IDS, scheduled_events, save_scheduled_events,
     scheduled_deadlines, reminder_tasks, deadline_tasks,
     auto_room_loops, auto_room_locks, get_default_tournament_data,
-    category_monitors
+    category_monitors, CHALLONGE_MATCHES_CACHE
 )
 
 from core.database import (
@@ -123,6 +125,121 @@ async def match_autocomplete(
         return choices[:25]
     except Exception as e:
         print(f"Error in match_autocomplete: {e}")
+        return []
+
+async def upload_score_winner_autocomplete(
+    interaction: discord.Interaction,
+    current: str
+) -> list[app_commands.Choice[str]]:
+    if not interaction.guild:
+        return []
+    
+    try:
+        current_guild_id.set(interaction.guild.id)
+        guild_id = interaction.guild.id
+        
+        t_cfg = get_active_tournament_config(guild_id)
+        if not t_cfg:
+            tournaments = load_guild_tournaments(guild_id)
+            if len(tournaments) == 1:
+                t_cfg = next(iter(tournaments.values()))
+            else:
+                for tid, cfg in tournaments.items():
+                    if (cfg.get('challonge_bracket_link') or cfg.get('id')) and cfg.get('key'):
+                        t_cfg = cfg
+                        break
+
+        bracket_link = (t_cfg.get('challonge_bracket_link') or t_cfg.get('id')) if t_cfg else get_bracket_link(interaction)
+        api_key = t_cfg.get('key') if t_cfg else get_bracket_api_key(interaction)
+        
+        if not bracket_link or not api_key:
+            return []
+            
+        now = datetime.datetime.now()
+        matches = []
+        cached = CHALLONGE_MATCHES_CACHE.get(guild_id)
+        if cached and (now - cached[0]).total_seconds() < 20:
+            matches = cached[1]
+        else:
+            matches_info, err = await fetch_challonge_open_matches(bracket_link, api_key)
+            if matches_info:
+                matches = matches_info
+                CHALLONGE_MATCHES_CACHE[guild_id] = (now, matches)
+            else:
+                print(f"[Challonge Autocomplete] Error: {err}")
+                
+        if not matches:
+            return []
+            
+        choices = []
+        current_lower = current.lower() if current else ""
+        
+        # Check if we are inside a ticket channel and can extract the match ID
+        channel_match_id = None
+        if interaction.channel and hasattr(interaction.channel, 'topic') and interaction.channel.topic:
+            topic = interaction.channel.topic
+            m_match = re.search(r'MatchID:([a-zA-Z0-9-_]+)', topic)
+            if m_match:
+                channel_match_id = m_match.group(1)
+
+        added_match_ids = set()
+
+        if channel_match_id:
+            target_match = None
+            for m in matches:
+                if str(m.get('id')) == str(channel_match_id):
+                    target_match = m
+                    break
+            if target_match:
+                team1 = target_match.get('team1') or "TBD"
+                team2 = target_match.get('team2') or "TBD"
+                match_id = target_match.get('id')
+                p1_id = target_match.get('player1_id')
+                p2_id = target_match.get('player2_id')
+                round_name = target_match.get('round_name', f"Round {target_match.get('round')}")
+                
+                # Show simple team/player names
+                # Value format: match_id:winner_participant_id:team_name:player1_id
+                opt1_name = f"{team1} ({round_name})"
+                opt1_val = f"{match_id}:{p1_id}:{team1}:{p1_id}"
+                if not current_lower or current_lower in opt1_name.lower() or current_lower in team1.lower():
+                    choices.append(app_commands.Choice(name=opt1_name[:100], value=opt1_val[:100]))
+                    
+                opt2_name = f"{team2} ({round_name})"
+                opt2_val = f"{match_id}:{p2_id}:{team2}:{p1_id}"
+                if not current_lower or current_lower in opt2_name.lower() or current_lower in team2.lower():
+                    choices.append(app_commands.Choice(name=opt2_name[:100], value=opt2_val[:100]))
+                
+                added_match_ids.add(str(match_id))
+
+        # Fallback/General search: show teams with opponents and round
+        for m in matches:
+            match_id = m.get('id')
+            if str(match_id) in added_match_ids:
+                continue
+                
+            team1 = m.get('team1') or "TBD"
+            team2 = m.get('team2') or "TBD"
+            p1_id = m.get('player1_id')
+            p2_id = m.get('player2_id')
+            round_name = m.get('round_name', f"Round {m.get('round')}")
+            
+            opt1_name = f"{team1} (vs {team2}) - {round_name}"
+            opt1_val = f"{match_id}:{p1_id}:{team1}:{p1_id}"
+            if not current_lower or current_lower in opt1_name.lower() or current_lower in team1.lower():
+                choices.append(app_commands.Choice(name=opt1_name[:100], value=opt1_val[:100]))
+                
+            opt2_name = f"{team2} (vs {team1}) - {round_name}"
+            opt2_val = f"{match_id}:{p2_id}:{team2}:{p1_id}"
+            if not current_lower or current_lower in opt2_name.lower() or current_lower in team2.lower():
+                choices.append(app_commands.Choice(name=opt2_name[:100], value=opt2_val[:100]))
+                
+            if len(choices) >= 25:
+                break
+                
+        return choices[:25]
+    except Exception as e:
+        print(f"Error in upload_score_winner_autocomplete: {e}")
         return []
 
 def find_event_by_name_or_id(guild_id: int, match_query: str) -> tuple[Optional[str], Optional[dict]]:
@@ -2628,6 +2745,7 @@ class Tournaments(commands.Cog):
         winner_score="Score of the winning team (e.g. 2)",
         loser_score="Score of the losing team (e.g. 1)"
     )
+    @app_commands.autocomplete(winner=upload_score_winner_autocomplete)
     @with_guild_context
     async def upload_score_cmd(
         self,
@@ -2639,8 +2757,8 @@ class Tournaments(commands.Cog):
         await interaction.response.defer(ephemeral=False)
 
         permission_level = get_user_permission_level(interaction.user.roles, interaction.user.id)
-        if permission_level not in ["organizer", "owner"]:
-            await interaction.followup.send("❌ You need **Head Organizer** role to upload scores.", ephemeral=False)
+        if permission_level not in ["organizer", "owner", "judge"] and not is_authorized_to_configure(interaction) and not is_staff(interaction.user):
+            await interaction.followup.send("❌ You need **Head Organizer** or **Judge/Staff** role to upload scores.", ephemeral=False)
             return
 
         try:
@@ -2650,17 +2768,31 @@ class Tournaments(commands.Cog):
                 return
             match_id = parts[0]
             winner_participant_id = parts[1]
-            winner_name = parts[2]
-            player1_id = str(parts[3]) if len(parts) >= 4 else None
+            if len(parts) >= 4:
+                winner_name = ":".join(parts[2:-1])
+                player1_id = str(parts[-1])
+            else:
+                winner_name = parts[2]
+                player1_id = None
         except Exception:
             await interaction.followup.send("❌ Error parsing the selection. Please use the autocomplete list.", ephemeral=False)
             return
 
         t_cfg = get_active_tournament_config(interaction.guild.id) if interaction.guild else None
-        bracket_link = t_cfg.get('challonge_bracket_link') or t_cfg.get('id') if t_cfg else get_bracket_link(interaction)
+        if not t_cfg and interaction.guild:
+            tournaments = load_guild_tournaments(interaction.guild.id)
+            if len(tournaments) == 1:
+                t_cfg = next(iter(tournaments.values()))
+            else:
+                for tid, cfg in tournaments.items():
+                    if (cfg.get('challonge_bracket_link') or cfg.get('id')) and cfg.get('key'):
+                        t_cfg = cfg
+                        break
+
+        bracket_link = (t_cfg.get('challonge_bracket_link') or t_cfg.get('id')) if t_cfg else get_bracket_link(interaction)
         api_key = t_cfg.get('key') if t_cfg else get_bracket_api_key(interaction)
 
-        if not bracket_link or not str(bracket_link).startswith("http"):
+        if not bracket_link:
             await interaction.followup.send("❌ No bracket link configured. Set one in tournament configuration.", ephemeral=False)
             return
         if not api_key:

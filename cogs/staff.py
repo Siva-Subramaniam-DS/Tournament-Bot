@@ -903,21 +903,26 @@ async def render_staff_work_count(
                 if hasattr(r_val, 'name'):
                     recorders[r_uid]['name'] = r_val.name
 
+    known_user_ids = set(judges.keys()) | set(recorders.keys()) | set(judge_and_recorders.keys())
     guild_stats = get_guild_staff_stats(guild.id)
     for u_id, s_data in guild_stats.items():
+        if u_id in known_user_ids:
+            continue
+            
         j_cnt = s_data.get('judge_count', 0)
         r_cnt = s_data.get('recorder_count', 0)
         s_name = s_data.get('name', f"User_{u_id}")
         
-        if j_cnt > 0 and u_id not in judges and not target_t_id:
-            fake_matches = {f"stat_j_{i}" for i in range(j_cnt)}
-            fake_rounds = {f"rnd_{i//2}" for i in range(j_cnt)}
-            judges[u_id] = {'matches': fake_matches, 'rounds': fake_rounds, 'name': s_name}
-            
-        if r_cnt > 0 and u_id not in recorders and not target_t_id:
-            fake_matches = {f"stat_r_{i}" for i in range(r_cnt)}
-            fake_rounds = {f"rnd_{i//2}" for i in range(r_cnt)}
-            recorders[u_id] = {'matches': fake_matches, 'rounds': fake_rounds, 'name': s_name}
+        if not target_t_id:
+            if j_cnt > 0 and u_id not in judges and u_id not in judge_and_recorders:
+                fake_matches = {f"stat_j_{i}" for i in range(j_cnt)}
+                fake_rounds = {f"rnd_{i//2}" for i in range(j_cnt)}
+                judges[u_id] = {'matches': fake_matches, 'rounds': fake_rounds, 'name': s_name}
+                
+            if r_cnt > 0 and u_id not in recorders and u_id not in judge_and_recorders:
+                fake_matches = {f"stat_r_{i}" for i in range(r_cnt)}
+                fake_rounds = {f"rnd_{i//2}" for i in range(r_cnt)}
+                recorders[u_id] = {'matches': fake_matches, 'rounds': fake_rounds, 'name': s_name}
 
     if member:
         target_uid = str(member.id)
