@@ -1126,14 +1126,16 @@ def parse_round_to_int(round_val) -> int:
         return 95
     return 1
 
+DEADLINES_FILE_PATH = os.path.join(BASE_DIR, 'scheduled_deadlines.json')
+
 def load_scheduled_deadlines():
     global scheduled_deadlines
     try:
-        if os.path.exists('scheduled_deadlines.json'):
-            with open('scheduled_deadlines.json', 'r', encoding='utf-8') as f:
+        if os.path.exists(DEADLINES_FILE_PATH):
+            with open(DEADLINES_FILE_PATH, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 for dl_id, dl_data in data.items():
-                    if 'deadline_dt' in dl_data:
+                    if isinstance(dl_data, dict) and 'deadline_dt' in dl_data:
                         try:
                             dl_data['deadline_dt'] = datetime.datetime.fromisoformat(dl_data['deadline_dt'])
                         except Exception:
@@ -1144,7 +1146,6 @@ def load_scheduled_deadlines():
     except Exception as e:
         print(f"Error loading scheduled_deadlines.json fallback: {e}")
         scheduled_deadlines.clear()
-
 
     if supabase_client:
         try:
@@ -1157,9 +1158,13 @@ def load_scheduled_deadlines():
                         rnd_name = f"Round {rnd_int}" if rnd_int < 90 else ("Final" if rnd_int == 99 else "Semi-Final")
                         dl_id = f"dl_{t_id}_{rnd_int}"
                         g_id = None
-                        for t_cfg in TOURNAMENTS_CACHE.values():
-                            if t_cfg.get('id') == t_id or t_cfg.get('Tournament_ID') == t_id:
-                                g_id = t_cfg.get('guild_id')
+                        for g_k, t_dict in TOURNAMENTS_CACHE.items():
+                            if isinstance(t_dict, dict):
+                                for t_k, t_cfg in t_dict.items():
+                                    if isinstance(t_cfg, dict) and (t_cfg.get('id') == t_id or t_cfg.get('Tournament_ID') == t_id or t_k == t_id):
+                                        g_id = int(g_k) if str(g_k).isdigit() else g_k
+                                        break
+                            if g_id:
                                 break
                         if dl_id not in scheduled_deadlines:
                             scheduled_deadlines[dl_id] = {
@@ -1179,11 +1184,12 @@ def save_scheduled_deadline(dl_id: str, dl_data: dict):
     try:
         data_to_save = {}
         for d_id, d_data in scheduled_deadlines.items():
-            copy_data = d_data.copy()
-            if 'deadline_dt' in copy_data and isinstance(copy_data['deadline_dt'], datetime.datetime):
-                copy_data['deadline_dt'] = copy_data['deadline_dt'].isoformat()
-            data_to_save[d_id] = copy_data
-        with open('scheduled_deadlines.json', 'w', encoding='utf-8') as f:
+            if isinstance(d_data, dict):
+                copy_data = d_data.copy()
+                if 'deadline_dt' in copy_data and isinstance(copy_data['deadline_dt'], datetime.datetime):
+                    copy_data['deadline_dt'] = copy_data['deadline_dt'].isoformat()
+                data_to_save[d_id] = copy_data
+        with open(DEADLINES_FILE_PATH, 'w', encoding='utf-8') as f:
             json.dump(data_to_save, f, indent=4)
     except Exception as e:
         print(f"Error saving scheduled_deadlines.json: {e}")
@@ -1235,16 +1241,17 @@ def delete_scheduled_deadline(dl_id: str) -> bool:
     try:
         data_to_save = {}
         for d_id, d_data in scheduled_deadlines.items():
-            copy_data = d_data.copy()
-            if 'deadline_dt' in copy_data and isinstance(copy_data['deadline_dt'], datetime.datetime):
-                copy_data['deadline_dt'] = copy_data['deadline_dt'].isoformat()
-            data_to_save[d_id] = copy_data
-        with open('scheduled_deadlines.json', 'w', encoding='utf-8') as f:
+            if isinstance(d_data, dict):
+                copy_data = d_data.copy()
+                if 'deadline_dt' in copy_data and isinstance(copy_data['deadline_dt'], datetime.datetime):
+                    copy_data['deadline_dt'] = copy_data['deadline_dt'].isoformat()
+                data_to_save[d_id] = copy_data
+        with open(DEADLINES_FILE_PATH, 'w', encoding='utf-8') as f:
             json.dump(data_to_save, f, indent=4)
     except Exception as e:
         print(f"Error saving scheduled_deadlines.json on delete: {e}")
 
-    if supabase_client:
+    if supabase_client and isinstance(dl_data, dict):
         try:
             g_id = dl_data.get('guild_id')
             t_name = dl_data.get('tournament', '')

@@ -952,28 +952,46 @@ def parse_deadline_datetime(date_str: str, time_str: str = "23:59") -> Optional[
     return dt
 
 async def deadline_autocomplete(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
-    g_id = interaction.guild_id
-    choices = []
-    current_lower = (current or "").strip().lower()
-    for dl_id, dl_data in list(scheduled_deadlines.items()):
-        dl_gid = dl_data.get('guild_id')
-        if dl_gid is None or str(dl_gid) == str(g_id):
-            rnd = str(dl_data.get('round', 'Unknown'))
-            t_name = str(dl_data.get('tournament', ''))
-            dt = dl_data.get('deadline_dt')
-            dt_str = ""
-            if isinstance(dt, datetime.datetime):
-                dt_str = dt.strftime("%d/%m/%Y %H:%M UTC")
-            elif isinstance(dt, str):
-                try:
-                    parsed = datetime.datetime.fromisoformat(dt)
-                    dt_str = parsed.strftime("%d/%m/%Y %H:%M UTC")
-                except Exception:
-                    dt_str = dt
-            label = f"{t_name + ' - ' if t_name else ''}{rnd} ({dt_str})".strip()
-            if not current_lower or current_lower in label.lower() or current_lower in dl_id.lower() or current_lower in rnd.lower():
-                choices.append(app_commands.Choice(name=label[:100], value=dl_id))
-    return choices[:25]
+    try:
+        g_id = interaction.guild_id
+        choices = []
+        current_lower = (current or "").strip().lower()
+        for dl_id, dl_data in list(scheduled_deadlines.items()):
+            if not isinstance(dl_data, dict):
+                continue
+            dl_gid = dl_data.get('guild_id')
+            if dl_gid is None or str(dl_gid) == str(g_id):
+                rnd = str(dl_data.get('round', 'Unknown'))
+                t_name = str(dl_data.get('tournament', ''))
+                dt = dl_data.get('deadline_dt')
+                dt_str = ""
+                if isinstance(dt, datetime.datetime):
+                    dt_str = dt.strftime("%d/%m/%Y %H:%M UTC")
+                elif isinstance(dt, str):
+                    try:
+                        parsed = datetime.datetime.fromisoformat(dt)
+                        dt_str = parsed.strftime("%d/%m/%Y %H:%M UTC")
+                    except Exception:
+                        dt_str = dt
+                note_str = str(dl_data.get('note', ''))
+                
+                parts = []
+                if t_name:
+                    parts.append(t_name)
+                parts.append(rnd)
+                if dt_str:
+                    parts.append(f"({dt_str})")
+                label = " - ".join(parts).strip() if parts else str(dl_id)
+                if not label:
+                    label = str(dl_id)
+                
+                search_target = f"{label} {dl_id} {rnd} {t_name} {note_str}".lower()
+                if not current_lower or current_lower in search_target:
+                    choices.append(app_commands.Choice(name=label[:100], value=dl_id[:100]))
+        return choices[:25]
+    except Exception as e:
+        print(f"Error in deadline_autocomplete: {e}")
+        return []
 
 
 def cancel_deadline_tasks(dl_id: str):
@@ -1303,21 +1321,28 @@ async def deadline_edit_cmd(
         await interaction.response.send_message("❌ You do not have permission to manage deadlines.", ephemeral=True)
         return
 
-    target_dl_id = deadline
+    target_dl_id = deadline.strip()
     dl_data = scheduled_deadlines.get(target_dl_id)
     if not dl_data:
         g_id = str(interaction.guild.id)
+        dl_term = deadline.strip().lower()
         for d_id, d_data in scheduled_deadlines.items():
+            if not isinstance(d_data, dict):
+                continue
             if not d_data.get('guild_id') or str(d_data.get('guild_id')) == g_id:
-                if (deadline.lower() in d_id.lower() or
-                    deadline.lower() == str(d_data.get('round', '')).lower() or
-                    deadline.lower() in str(d_data.get('round', '')).lower()):
+                r_name = str(d_data.get('round', '')).strip().lower()
+                t_name = str(d_data.get('tournament', '')).strip().lower()
+                if (dl_term in d_id.lower() or
+                    dl_term == r_name or
+                    dl_term in r_name or
+                    r_name in dl_term or
+                    (t_name and dl_term in t_name)):
                     target_dl_id = d_id
                     dl_data = d_data
                     break
 
     if not dl_data:
-        await interaction.response.send_message("❌ Deadline not found. Please select from the autocomplete list or check `/deadline list`.", ephemeral=True)
+        await interaction.response.send_message("❌ Deadline not found. Please check `/deadline list` or type the round name (e.g. `1` or `Round 1`).", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=False)
@@ -1420,21 +1445,28 @@ async def deadline_delete_cmd(interaction: discord.Interaction, deadline: str):
         await interaction.response.send_message("❌ You do not have permission to manage deadlines.", ephemeral=True)
         return
 
-    target_dl_id = deadline
+    target_dl_id = deadline.strip()
     dl_data = scheduled_deadlines.get(target_dl_id)
     if not dl_data:
         g_id = str(interaction.guild.id)
+        dl_term = deadline.strip().lower()
         for d_id, d_data in scheduled_deadlines.items():
+            if not isinstance(d_data, dict):
+                continue
             if not d_data.get('guild_id') or str(d_data.get('guild_id')) == g_id:
-                if (deadline.lower() in d_id.lower() or
-                    deadline.lower() == str(d_data.get('round', '')).lower() or
-                    deadline.lower() in str(d_data.get('round', '')).lower()):
+                r_name = str(d_data.get('round', '')).strip().lower()
+                t_name = str(d_data.get('tournament', '')).strip().lower()
+                if (dl_term in d_id.lower() or
+                    dl_term == r_name or
+                    dl_term in r_name or
+                    r_name in dl_term or
+                    (t_name and dl_term in t_name)):
                     target_dl_id = d_id
                     dl_data = d_data
                     break
 
     if not dl_data:
-        await interaction.response.send_message("❌ Deadline not found. Please select from the autocomplete list or check `/deadline list`.", ephemeral=True)
+        await interaction.response.send_message("❌ Deadline not found. Please check `/deadline list` or type the round name (e.g. `1` or `Round 1`).", ephemeral=True)
         return
 
     round_name = dl_data.get('round', 'Unknown')
