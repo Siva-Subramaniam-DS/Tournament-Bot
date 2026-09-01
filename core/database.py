@@ -733,6 +733,7 @@ def update_staff_stats(user: discord.Member, role_type: str):
             "name": user.display_name,
             "judge_count": 0,
             "recorder_count": 0,
+            "judge_and_recorder_count": 0,
             "total_count": 0
         }
     
@@ -740,8 +741,14 @@ def update_staff_stats(user: discord.Member, role_type: str):
         stats[user_id]["judge_count"] = stats[user_id].get("judge_count", 0) + 1
     elif role_type == "recorder":
         stats[user_id]["recorder_count"] = stats[user_id].get("recorder_count", 0) + 1
+    elif role_type in ("judge_and_recorder", "judge_and_recorder_count", "both"):
+        stats[user_id]["judge_and_recorder_count"] = stats[user_id].get("judge_and_recorder_count", 0) + 1
         
-    stats[user_id]["total_count"] = stats[user_id].get("judge_count", 0) + stats[user_id].get("recorder_count", 0)
+    stats[user_id]["total_count"] = (
+        stats[user_id].get("judge_count", 0) + 
+        stats[user_id].get("recorder_count", 0) + 
+        stats[user_id].get("judge_and_recorder_count", 0)
+    )
     stats[user_id]["name"] = user.display_name
     stats[user_id]["last_active"] = datetime.datetime.utcnow().isoformat()
     

@@ -911,9 +911,15 @@ async def render_staff_work_count(
             
         j_cnt = s_data.get('judge_count', 0)
         r_cnt = s_data.get('recorder_count', 0)
+        jr_cnt = s_data.get('judge_and_recorder_count', 0)
         s_name = s_data.get('name', f"User_{u_id}")
         
         if not target_t_id:
+            if jr_cnt > 0 and u_id not in judge_and_recorders:
+                fake_matches = {f"stat_jr_{i}" for i in range(jr_cnt)}
+                fake_rounds = {f"rnd_{i//2}" for i in range(jr_cnt)}
+                judge_and_recorders[u_id] = {'matches': fake_matches, 'rounds': fake_rounds, 'name': s_name}
+
             if j_cnt > 0 and u_id not in judges and u_id not in judge_and_recorders:
                 fake_matches = {f"stat_j_{i}" for i in range(j_cnt)}
                 fake_rounds = {f"rnd_{i//2}" for i in range(j_cnt)}
@@ -1017,14 +1023,15 @@ class Staff(commands.Cog):
     @app_commands.command(name="staff-update", description="Update a staff member's match count in the leaderboard")
     @app_commands.describe(
         staff_member="The staff member to update",
-        role="Role to update (judge or recorder)",
+        role="Role to update (Judge, Recorder, or Judge & Recorder)",
         action="Add, Subtract, or Set the count",
         amount="The number of matches to add, subtract, or set to"
     )
     @app_commands.choices(
         role=[
             app_commands.Choice(name="Judge", value="judge"),
-            app_commands.Choice(name="Recorder", value="recorder")
+            app_commands.Choice(name="Recorder", value="recorder"),
+            app_commands.Choice(name="Judge & Recorder", value="judge_and_recorder")
         ],
         action=[
             app_commands.Choice(name="Add (+)", value="add"),
@@ -1049,14 +1056,16 @@ class Staff(commands.Cog):
             await interaction.response.send_message("❌ Amount cannot be negative.", ephemeral=False)
             return
 
+        guild_id = interaction.guild.id
+        stats = get_guild_staff_stats(guild_id)
         uid = str(staff_member.id)
-        if uid not in staff_stats:
-            staff_stats[uid] = {'name': staff_member.display_name, 'judge_count': 0, 'recorder_count': 0, 'last_activity': None}
+        if uid not in stats:
+            stats[uid] = {'name': staff_member.display_name, 'judge_count': 0, 'recorder_count': 0, 'judge_and_recorder_count': 0, 'last_activity': None}
         else:
-            staff_stats[uid]['name'] = staff_member.display_name
+            stats[uid]['name'] = staff_member.display_name
 
         role_key = f"{role.value}_count"
-        current_count = staff_stats[uid].get(role_key, 0)
+        current_count = stats[uid].get(role_key, 0)
         
         if action.value == "add":
             new_count = current_count + amount
@@ -1065,9 +1074,14 @@ class Staff(commands.Cog):
         else:
             new_count = max(0, amount)
 
-        staff_stats[uid][role_key] = new_count
-        staff_stats[uid]['last_activity'] = datetime.datetime.utcnow().isoformat()
-        save_staff_stats()
+        stats[uid][role_key] = new_count
+        stats[uid]['total_count'] = (
+            stats[uid].get('judge_count', 0) + 
+            stats[uid].get('recorder_count', 0) + 
+            stats[uid].get('judge_and_recorder_count', 0)
+        )
+        stats[uid]['last_activity'] = datetime.datetime.utcnow().isoformat()
+        save_guild_staff_stats(guild_id, stats)
 
         await interaction.response.send_message(f"✅ Successfully updated **{staff_member.display_name}**'s {role.name} count from {current_count} to **{new_count}**.", ephemeral=False)
         
@@ -1084,9 +1098,10 @@ class Staff(commands.Cog):
             su_log_embed.add_field(
                 name="📊 New Totals",
                 value=(
-                    f"⚖️ Judge: **{staff_stats[uid].get('judge_count', 0)}**\n"
-                    f"🎥 Recorder: **{staff_stats[uid].get('recorder_count', 0)}**\n"
-                    f"✅ Total: **{staff_stats[uid].get('judge_count', 0) + staff_stats[uid].get('recorder_count', 0)}**"
+                    f"⚖️ Judge: **{stats[uid].get('judge_count', 0)}**\n"
+                    f"🎥 Recorder: **{stats[uid].get('recorder_count', 0)}**\n"
+                    f"🎥🧑‍⚖️ Judge & Recorder: **{stats[uid].get('judge_and_recorder_count', 0)}**\n"
+                    f"✅ Total: **{stats[uid].get('total_count', 0)}**"
                 ),
                 inline=False
             )
