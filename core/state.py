@@ -1,8 +1,10 @@
+import os
+import json
 import contextvars
 import functools
 from typing import Optional, Union, Any
 import discord
-from core.config import DEFAULT_CHANNEL_IDS, DEFAULT_ROLE_IDS, BOT_OWNER_ID
+from core.config import BASE_DIR, DEFAULT_CHANNEL_IDS, DEFAULT_ROLE_IDS, BOT_OWNER_ID
 
 # ContextVar to hold current guild ID for async execution contexts
 current_guild_id = contextvars.ContextVar("current_guild_id", default=None)
@@ -42,6 +44,30 @@ judge_assignments = {}
 deadline_tasks = {}
 auto_room_loops = {}
 auto_room_locks = {}
+category_monitors = {}
+
+def load_category_monitors():
+    global category_monitors
+    path = os.path.join(BASE_DIR, "category_monitors.json")
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                category_monitors.clear()
+                category_monitors.update(json.load(f))
+        except Exception:
+            pass
+    return category_monitors
+
+def save_category_monitors():
+    path = os.path.join(BASE_DIR, "category_monitors.json")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(category_monitors, f, indent=2)
+    except Exception as e:
+        print(f"Error saving category monitors: {e}")
+
+load_category_monitors()
+
 
 
 def get_default_config() -> dict:
