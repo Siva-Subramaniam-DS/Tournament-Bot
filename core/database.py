@@ -1481,45 +1481,61 @@ def _sync_fetch_google_sheet_captains(sheet_link: str):
         reader = csv.reader(io.StringIO(resp.text))
         
         h_row = next(reader, [])
-        h_lower = [h.lower() for h in h_row]
+        h_lower = [h.lower().strip() for h in h_row]
         
         key_col = -1
         is_1v1 = False
         for i, h in enumerate(h_lower):
-            if 'discord name' in h or 'participant' in h:
-                key_col = i
-                is_1v1 = True
-                break
-            elif 'team' in h:
+            if any(x in h for x in ['team name', 'team_name', 'team']):
                 key_col = i
                 is_1v1 = False
                 break
-                
+            elif any(x in h for x in ['discord name', 'participant', 'player name', 'player']):
+                key_col = i
+                is_1v1 = True
+                break
+
         val_col = -1
         for i, h in enumerate(h_lower):
             if i != key_col:
-                if any(x in h for x in ['developer id', 'developers id', 'developers i\'d', 'discord id', 'discord_id', 'mention', 'uid', 'id']) and not any(x in h for x in ['username', 'user name', 'display name']):
+                if any(x in h for x in ['developer id', 'developers id', 'developers i\'d', 'discord id', 'discord_id', 'mention', 'discord tag', 'discord uid', 'uid']) and not any(x in h for x in ['game id', 'ign', 'in-game']):
                     val_col = i
                     break
         if val_col == -1:
             for i, h in enumerate(h_lower):
-                if i != key_col:
-                    if 'discord' in h:
-                        val_col = i
-                        break
+                if i != key_col and 'discord' in h:
+                    val_col = i
+                    break
+
+        ign_col = -1
+        for i, h in enumerate(h_lower):
+            if i != key_col and i != val_col:
+                if any(x in h for x in ['ign', 'in game id', 'in-game id', 'game id', 'in game name', 'in-game name', 'captain id', 'player id']):
+                    ign_col = i
+                    break
                 
         if key_col == -1: key_col = 0
         if val_col == -1: val_col = 1
         
         captains = {}
         for row in reader:
-            if len(row) > max(key_col, val_col):
+            if len(row) > key_col:
                 k = row[key_col].strip()
-                v = row[val_col].strip()
-                if k:
-                    if v.isdigit():
-                        v = f"<@{v}>"
-                    captains[k] = v
+                if not k:
+                    continue
+                v = row[val_col].strip() if len(row) > val_col else ""
+                ign = row[ign_col].strip() if (ign_col != -1 and len(row) > ign_col) else ""
+                
+                # If numeric Discord ID
+                discord_str = v
+                if discord_str.isdigit() and len(discord_str) >= 15:
+                    discord_str = f"<@{discord_str}>"
+                    
+                captains[k] = {
+                    "discord": discord_str,
+                    "ign": ign or v,
+                    "raw": v
+                }
         return captains, is_1v1, None
     except Exception as e:
         return None, False, str(e)

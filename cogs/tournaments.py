@@ -1539,8 +1539,106 @@ async def deadline_list_cmd(interaction: discord.Interaction, tournament: Option
 
 
 # ===========================================================================================
-# AUTO ROOM CREATION LOGIC & BACKGROUND SWEEPER
+# MATCH ROOM EMBED BUILDER & AUTO ROOM CREATION
 # ===========================================================================================
+
+def create_match_room_embed(
+    guild: discord.Guild,
+    tournament_name: str,
+    team1_name: str,
+    team2_name: str,
+    round_name: str,
+    captain1_mention: str,
+    captain2_mention: str,
+    captain1_ign_or_id: Optional[str] = None,
+    captain2_ign_or_id: Optional[str] = None,
+    group_name: Optional[str] = None,
+    match_id: Optional[Union[str, int]] = None,
+    rules_channel_id: Optional[Union[int, str]] = None,
+    deadline_channel_id: Optional[Union[int, str]] = None,
+    rules_link: Optional[str] = None,
+    deadline_link: Optional[str] = None,
+    helper_role: Optional[discord.Role] = None,
+    org_name: Optional[str] = None,
+) -> tuple[str, discord.Embed]:
+    """
+    Constructs the notification ping content and the rich green 'Match Room Created' embed matching the reference design.
+    """
+    # 1. Build notification ping content (triggers push notifications & unread badges)
+    pings = []
+    if captain1_mention and "<@" in str(captain1_mention):
+        pings.append(str(captain1_mention).strip())
+    if captain2_mention and "<@" in str(captain2_mention):
+        pings.append(str(captain2_mention).strip())
+    
+    ping_content = " ".join(pings) if pings else f"**Match:** {team1_name} vs {team2_name}"
+
+    # 2. Match Room Created Embed (Vibrant green border matching screenshot: #2ECC71)
+    embed = discord.Embed(
+        title="🐸 Match Room Created",
+        color=discord.Color(0x2ECC71)
+    )
+
+    t_name = tournament_name or "Tournament"
+    grp_str = str(group_name).strip() if (group_name and str(group_name).strip() and str(group_name).lower() != "none") else "N/A"
+    c_mentions_line = f"{captain1_mention} {captain2_mention}".strip()
+
+    desc_lines = [
+        f"**{team1_name} 🆚 {team2_name}**\n",
+        f"🏆 **Tournament:** {t_name}",
+        f"**Group:** {grp_str} | **Round:** {round_name}"
+    ]
+    if c_mentions_line:
+        desc_lines.append(c_mentions_line)
+
+    embed.description = "\n".join(desc_lines)
+
+    # Team 1 Field
+    c1_display = captain1_mention if (captain1_mention and "<@" in str(captain1_mention)) else team1_name
+    c1_id_val = captain1_ign_or_id or captain1_mention or team1_name
+    clean_c1_id = re.sub(r'<@!?\d+>', '', str(c1_id_val)).strip() or str(c1_id_val).strip()
+    embed.add_field(
+        name=f"🦅 **Team 1:** {c1_display}",
+        value=f"Captain: `{clean_c1_id}`",
+        inline=False
+    )
+
+    # Team 2 Field
+    c2_display = captain2_mention if (captain2_mention and "<@" in str(captain2_mention)) else team2_name
+    c2_id_val = captain2_ign_or_id or captain2_mention or team2_name
+    clean_c2_id = re.sub(r'<@!?\d+>', '', str(c2_id_val)).strip() or str(c2_id_val).strip()
+    embed.add_field(
+        name=f"🦅 **Team 2:** {c2_display}",
+        value=f"Captain: `{clean_c2_id}`",
+        inline=False
+    )
+
+    # Rules / Deadline / Action Notice
+    rules_val = f"<#{rules_channel_id}>" if rules_channel_id else (f"[Rules Channel]({rules_link})" if rules_link else "Not Set")
+    deadline_val = f"<#{deadline_channel_id}>" if deadline_channel_id else (f"[Deadline Channel]({deadline_link})" if deadline_link else "Not Set")
+    helper_mention = helper_role.mention if helper_role else "@Helper Team"
+
+    info_lines = [
+        f"📖 **Rules:** {rules_val}",
+        f"📅 **Deadline:** {deadline_val}",
+        f"☎️ Please decide on a schedule and ping {helper_mention}."
+    ]
+    embed.add_field(
+        name="\u200b",
+        value="\n".join(info_lines),
+        inline=False
+    )
+
+    # Footer
+    m_id_str = str(match_id) if match_id else "N/A"
+    organization = org_name or (get_org_name(guild.id) if guild else "Fanplay Esports")
+    embed.set_footer(text=f"Match ID: {m_id_str} | {organization}")
+
+    if guild and guild.icon:
+        embed.set_thumbnail(url=guild.icon.url)
+
+    return ping_content, embed
+
 
 async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: dict, on_progress=None) -> tuple[int, str]:
     guild_id = guild.id
@@ -1637,21 +1735,39 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
             loop_percent = 35 + int(((idx + 1) / total_matches) * 60)
             await report(loop_percent, f"Processing match {idx+1}/{total_matches}: {team1} vs {team2}...")
             
-            c1_raw = captains_dict.get(team1, "") or captains_dict.get(team1.strip(), "")
-            c2_raw = captains_dict.get(team2, "") or captains_dict.get(team2.strip(), "")
-            
-            async def resolve_member(raw: str) -> Optional[discord.Member]:
-                if not raw or not raw.strip():
+            # Lookup captain in dictionary flexibly (exact or case-insensitive)
+            def get_captain_entry(tname: str):
+                if not tname or not captains_dict:
                     return None
-                clean_raw = raw.strip()
-                if clean_raw.startswith('@'):
-                    clean_raw = clean_raw[1:].strip()
-                    
+                if tname in captains_dict:
+                    return captains_dict[tname]
+                if tname.strip() in captains_dict:
+                    return captains_dict[tname.strip()]
+                t_lower = tname.strip().lower()
+                for k, v in captains_dict.items():
+                    if str(k).strip().lower() == t_lower:
+                        return v
+                return None
+
+            c1_entry = get_captain_entry(team1)
+            c2_entry = get_captain_entry(team2)
+
+            c1_raw = c1_entry.get('discord') if isinstance(c1_entry, dict) else (c1_entry or "")
+            c2_raw = c2_entry.get('discord') if isinstance(c2_entry, dict) else (c2_entry or "")
+            c1_ign = c1_entry.get('ign') if isinstance(c1_entry, dict) else ""
+            c2_ign = c2_entry.get('ign') if isinstance(c2_entry, dict) else ""
+
+            async def resolve_member_and_mention(raw: str) -> tuple[Optional[discord.Member], str, Optional[int]]:
+                if not raw or not str(raw).strip():
+                    return None, "", None
+                clean_raw = str(raw).strip()
+                
+                # Check for <@id> or numeric ID
                 m = re.search(r'<@!?(\d+)>', clean_raw)
                 uid = None
                 if m:
                     uid = int(m.group(1))
-                elif clean_raw.isdigit():
+                elif clean_raw.isdigit() and len(clean_raw) >= 15:
                     uid = int(clean_raw)
                     
                 if uid:
@@ -1660,24 +1776,50 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                         try:
                             member = await guild.fetch_member(uid)
                         except Exception:
-                            pass
-                    return member
-                
+                            member = None
+                    mention_str = member.mention if member else f"<@{uid}>"
+                    return member, mention_str, uid
+
+                name_to_search = clean_raw
+                if name_to_search.startswith('@'):
+                    name_to_search = name_to_search[1:].strip()
+                if '#' in name_to_search:
+                    parts = name_to_search.split('#', 1)
+                    name_to_search = parts[0].strip()
+
+                name_lower = name_to_search.lower()
+
+                # Local guild member cache search
                 for member in guild.members:
-                    if member.name.lower() == clean_raw.lower() or member.display_name.lower() == clean_raw.lower():
-                        return member
-                
+                    if (member.name.lower() == name_lower or
+                        (member.global_name and member.global_name.lower() == name_lower) or
+                        member.display_name.lower() == name_lower):
+                        return member, member.mention, member.id
+
+                # Query Discord gateway for uncached members
                 try:
-                    found_members = await guild.query_members(query=clean_raw, limit=5)
+                    found_members = await guild.query_members(query=name_to_search, limit=5)
                     for member in found_members:
-                        if member.name.lower() == clean_raw.lower() or member.display_name.lower() == clean_raw.lower():
-                            return member
+                        if (member.name.lower() == name_lower or
+                            (member.global_name and member.global_name.lower() == name_lower) or
+                            member.display_name.lower() == name_lower):
+                            return member, member.mention, member.id
+                    if found_members:
+                        member = found_members[0]
+                        return member, member.mention, member.id
                 except Exception:
                     pass
-                return None
-                
-            captain1 = await resolve_member(c1_raw)
-            captain2 = await resolve_member(c2_raw)
+
+                return None, clean_raw, None
+
+            captain1, c1_mention, c1_uid = await resolve_member_and_mention(c1_raw)
+            captain2, c2_mention, c2_uid = await resolve_member_and_mention(c2_raw)
+
+            # Fallback IGN / ID values
+            if not c1_ign:
+                c1_ign = captain1.name if captain1 else (c1_raw or team1)
+            if not c2_ign:
+                c2_ign = captain2.name if captain2 else (c2_raw or team2)
             
             round_lbl = str(mod_round)
             r_name_lower = round_name.lower()
@@ -1785,8 +1927,8 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                     'judge': None,
                     'recorder': None,
                     'channel_id': new_ch.id,
-                    'team1_captain': captain1.id if captain1 else None,
-                    'team2_captain': captain2.id if captain2 else None,
+                    'team1_captain': captain1.id if captain1 else (c1_uid if c1_uid else None),
+                    'team2_captain': captain2.id if captain2 else (c2_uid if c2_uid else None),
                     'team1_name': team1,
                     'team2_name': team2
                 }
@@ -1796,44 +1938,31 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                 except Exception as db_err:
                     print(f"Error syncing auto-room event to Supabase: {db_err}")
                 
-                org_name = cfg.get('organization_name', 'Tournament Organizer')
-                rules_embed = discord.Embed(
-                    title=f"⚓ {get_system_name(guild)} | {t_cfg.get('name')} — Match Setup",
-                    description="Welcome to your match channel. Use this channel for all tournament discussions and match scheduling.",
-                    color=discord.Color(BRAND_COLOR)
-                )
-                if guild.icon:
-                    rules_embed.set_thumbnail(url=guild.icon.url)
-                rules_embed.add_field(
-                    name="📋 Tournament Information",
-                    value=(
-                        f"• 🏆 [Live Bracket]({bracket_display_link})\n"
-                        f"• ⏰ [Deadlines]({deadline_link})\n"
-                        f"• 📜 [Rules]({rules_link})"
-                    ),
-                    inline=False
+                rules_ch_id = t_cfg.get('rules')
+                deadline_ch_id = t_cfg.get('deadline')
+                org_name = cfg.get('organization_name') or get_org_name(guild.id)
+
+                ping_content, room_embed = create_match_room_embed(
+                    guild=guild,
+                    tournament_name=t_cfg.get('name', 'Tournament'),
+                    team1_name=team1,
+                    team2_name=team2,
+                    round_name=round_name,
+                    captain1_mention=c1_mention,
+                    captain2_mention=c2_mention,
+                    captain1_ign_or_id=c1_ign,
+                    captain2_ign_or_id=c2_ign,
+                    group_name=None,
+                    match_id=match_id,
+                    rules_channel_id=rules_ch_id,
+                    deadline_channel_id=deadline_ch_id,
+                    rules_link=rules_link,
+                    deadline_link=deadline_link,
+                    helper_role=helper_team_role,
+                    org_name=org_name
                 )
                 
-                round_display = round_name
-                if is_1v1:
-                    pval = f"**Round:** {round_display}\n**Captain 1:** {captain1.mention if captain1 else c1_raw or team1}\n**Captain 2:** {captain2.mention if captain2 else c2_raw or team2}"
-                else:
-                    pval = f"**Round:** {round_display}\n**Team 1:** {team1} — Captain: {captain1.mention if captain1 else c1_raw or 'Not Found'}\n**Team 2:** {team2} — Captain: {captain2.mention if captain2 else c2_raw or 'Not Found'}"
-                    
-                rules_embed.add_field(name="👥 Match Participants", value=pval, inline=False)
-                rules_embed.add_field(
-                    name="🆘 Need Help?",
-                    value=f"Ping {helper_team_role.mention if helper_team_role else '@Helper Team'} for assistance. ⚓",
-                    inline=False
-                )
-                rules_embed.set_footer(text=f"{org_name} • Auto-Ticket")
-                
-                ping_content = " ".join(filter(None, [
-                    captain1.mention if captain1 else (c1_raw or None),
-                    captain2.mention if captain2 else (c2_raw or None),
-                ])) or f"{team1} vs {team2}"
-                
-                await new_ch.send(content=ping_content, embed=rules_embed)
+                await new_ch.send(content=ping_content, embed=room_embed)
                 created_count += 1
             except Exception as e:
                 print(f"Error creating auto-room channel {chan_name}: {e}")
@@ -2410,43 +2539,46 @@ class Tournaments(commands.Cog):
             except Exception as e:
                 print(f"Error setting captain permissions: {e}")
             
-            rules_embed = discord.Embed(
-                title=f"⚓ {get_system_name(interaction)} | {get_tournament_name(interaction)} — Match Setup",
-                description="Welcome to your match channel. Use this channel for all tournament discussions.",
-                color=discord.Color(BRAND_COLOR)
-            )
-            if interaction.guild and interaction.guild.icon:
-                rules_embed.set_thumbnail(url=interaction.guild.icon.url)
-            rules_embed.add_field(
-                name="📋 Tournament Information",
-                value=(
-                    f"• 🏆 [Live Bracket]({get_link_bracket(interaction)}) — View current standings\n"
-                    f"• ⏰ [Match Deadlines]({get_link_deadline(interaction)}) — Schedule & timings\n"
-                    f"• 📜 [Tournament Rules]({get_link_rules(interaction)}) — Read before playing"
-                ),
-                inline=False
-            )
+            t_cfg = get_active_tournament_config(interaction.guild_id) if interaction.guild_id else None
+            tourney_name = t_cfg.get('name') if t_cfg else get_tournament_name(interaction)
+            rules_ch_id = t_cfg.get('rules') if t_cfg else None
+            deadline_ch_id = t_cfg.get('deadline') if t_cfg else None
             
-            t1_display = f"**{team_1}** ({captain1.mention})" if team_1 else captain1.mention
-            t2_display = f"**{team_2}** ({captain2.mention})" if team_2 else captain2.mention
-            
-            rules_embed.add_field(
-                name="👥 Match Participants",
-                value=f"**Round:** {round}\n**Captain 1:** {t1_display}\n**Captain 2:** {t2_display}",
-                inline=False
+            helper_team_role = None
+            if t_cfg and t_cfg.get('helper_role_id'):
+                try: helper_team_role = discord.utils.get(interaction.guild.roles, id=int(t_cfg['helper_role_id']))
+                except Exception: pass
+            if not helper_team_role:
+                helper_id = ROLE_IDS.get('helper_team')
+                if helper_id:
+                    try: helper_team_role = discord.utils.get(interaction.guild.roles, id=int(helper_id))
+                    except Exception: pass
+
+            c1_ign = team_1 if team_1 else captain1.name
+            c2_ign = team_2 if team_2 else captain2.name
+            org_name = get_org_name(interaction.guild_id) if interaction.guild_id else None
+
+            ping_content, room_embed = create_match_room_embed(
+                guild=interaction.guild,
+                tournament_name=tourney_name,
+                team1_name=t1_name,
+                team2_name=t2_name,
+                round_name=round,
+                captain1_mention=captain1.mention,
+                captain2_mention=captain2.mention,
+                captain1_ign_or_id=c1_ign,
+                captain2_ign_or_id=c2_ign,
+                group_name=bracket,
+                match_id="N/A",
+                rules_channel_id=rules_ch_id,
+                deadline_channel_id=deadline_ch_id,
+                rules_link=get_link_rules(interaction),
+                deadline_link=get_link_deadline(interaction),
+                helper_role=helper_team_role,
+                org_name=org_name
             )
-            rules_embed.add_field(
-                name="🆘 Need Help?",
-                value=f"Ping <@&{ROLE_IDS['helper_team']}> and a staff member will assist you.",
-                inline=False
-            )
-            rules_embed.add_field(
-                name="🤝 Fair Play",
-                value="We appreciate your cooperation. Good luck and have fun! ⚓",
-                inline=False
-            )
-            rules_embed.set_footer(text=f"{ORGANIZATION_NAME} | Setup by {interaction.user.name} • {datetime.datetime.now().strftime('%d-%m-%Y %H:%M')}")
-            await channel.send(embed=rules_embed)
+
+            await channel.send(content=ping_content, embed=room_embed)
 
         except Exception as e:
             await interaction.response.send_message(f"❌ An error occurred: {str(e)}", ephemeral=False)
