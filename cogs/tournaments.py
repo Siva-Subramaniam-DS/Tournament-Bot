@@ -35,7 +35,7 @@ from core.database import (
     update_challonge_match, get_challonge_matches, get_challonge_participants,
     get_guild_staff_stats, save_guild_staff_stats, update_staff_stats,
     update_results_embed_with_links, save_scheduled_deadline, delete_scheduled_deadline,
-    fetch_challonge_open_matches, fetch_google_sheet_captains
+    fetch_challonge_open_matches, fetch_google_sheet_captains, extract_discord_id_from_text
 )
 
 
@@ -1735,7 +1735,7 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
             loop_percent = 35 + int(((idx + 1) / total_matches) * 60)
             await report(loop_percent, f"Processing match {idx+1}/{total_matches}: {team1} vs {team2}...")
             
-            # Lookup captain in dictionary flexibly (exact or case-insensitive)
+            # Lookup captain in dictionary flexibly (exact, stripped, lowercase, or alphanumeric)
             def get_captain_entry(tname: str):
                 if not tname or not captains_dict:
                     return None
@@ -1744,8 +1744,17 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                 if tname.strip() in captains_dict:
                     return captains_dict[tname.strip()]
                 t_lower = tname.strip().lower()
+                if t_lower in captains_dict:
+                    return captains_dict[t_lower]
+                clean_t = re.sub(r'[^a-zA-Z0-9]', '', tname).lower()
+                if clean_t in captains_dict:
+                    return captains_dict[clean_t]
                 for k, v in captains_dict.items():
-                    if str(k).strip().lower() == t_lower:
+                    k_str = str(k).strip().lower()
+                    if k_str == t_lower:
+                        return v
+                    clean_k = re.sub(r'[^a-zA-Z0-9]', '', str(k)).lower()
+                    if clean_k and clean_t and (clean_k == clean_t or clean_k in clean_t or clean_t in clean_k):
                         return v
                 return None
 
@@ -1754,21 +1763,22 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
 
             c1_raw = c1_entry.get('discord') if isinstance(c1_entry, dict) else (c1_entry or "")
             c2_raw = c2_entry.get('discord') if isinstance(c2_entry, dict) else (c2_entry or "")
+            c1_uid = c1_entry.get('discord_id') if isinstance(c1_entry, dict) else None
+            c2_uid = c2_entry.get('discord_id') if isinstance(c2_entry, dict) else None
             c1_ign = c1_entry.get('ign') if isinstance(c1_entry, dict) else ""
             c2_ign = c2_entry.get('ign') if isinstance(c2_entry, dict) else ""
 
-            async def resolve_member_and_mention(raw: str) -> tuple[Optional[discord.Member], str, Optional[int]]:
-                if not raw or not str(raw).strip():
-                    return None, "", None
-                clean_raw = str(raw).strip()
+            if not c1_uid and c1_raw:
+                c1_uid = extract_discord_id_from_text(c1_raw)
+            if not c2_uid and c2_raw:
+                c2_uid = extract_discord_id_from_text(c2_raw)
+
+            async def resolve_member_and_mention(raw: str, uid_hint: Optional[int] = None) -> tuple[Optional[discord.Member], str, Optional[int]]:
+                uid = uid_hint
+                clean_raw = str(raw).strip() if raw else ""
                 
-                # Check for <@id> or numeric ID
-                m = re.search(r'<@!?(\d+)>', clean_raw)
-                uid = None
-                if m:
-                    uid = int(m.group(1))
-                elif clean_raw.isdigit() and len(clean_raw) >= 15:
-                    uid = int(clean_raw)
+                if not uid and clean_raw:
+                    uid = extract_discord_id_from_text(clean_raw)
                     
                 if uid:
                     member = guild.get_member(uid)
@@ -1779,6 +1789,9 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                             member = None
                     mention_str = member.mention if member else f"<@{uid}>"
                     return member, mention_str, uid
+
+                if not clean_raw:
+                    return None, "", None
 
                 name_to_search = clean_raw
                 if name_to_search.startswith('@'):
@@ -1812,8 +1825,27 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
 
                 return None, clean_raw, None
 
-            captain1, c1_mention, c1_uid = await resolve_member_and_mention(c1_raw)
-            captain2, c2_mention, c2_uid = await resolve_member_and_mention(c2_raw)
+            captain1, c1_mention, c1_uid = await resolve_member_and_mention(c1_raw, uid_hint=c1_uid)
+            captain2, c2_mention, c2_uid = await resolve_member_and_mention(c2_raw, uid_hint=c2_uid)
+
+            # Fallback mention if ID exists
+            if not c1_mention or "<@" not in c1_mention:
+                if c1_uid:
+                    c1_mention = f"<@{c1_uid}>"
+                else:
+                    found_id = extract_discord_id_from_text(team1) or extract_discord_id_from_text(c1_ign)
+                    if found_id:
+                        c1_uid = found_id
+                        c1_mention = f"<@{found_id}>"
+
+            if not c2_mention or "<@" not in c2_mention:
+                if c2_uid:
+                    c2_mention = f"<@{c2_uid}>"
+                else:
+                    found_id = extract_discord_id_from_text(team2) or extract_discord_id_from_text(c2_ign)
+                    if found_id:
+                        c2_uid = found_id
+                        c2_mention = f"<@{found_id}>"
 
             # Fallback IGN / ID values
             if not c1_ign:

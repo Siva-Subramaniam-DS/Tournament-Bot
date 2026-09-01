@@ -1468,12 +1468,72 @@ def _sync_update_challonge_match(bracket_link: str, api_key: str, match_id: str,
 async def update_challonge_match(bracket_link: str, api_key: str, match_id: str, winner_id: str, scores_csv: str):
     return await asyncio.to_thread(_sync_update_challonge_match, bracket_link, api_key, match_id, winner_id, scores_csv)
 
+def extract_discord_id_from_text(text: Union[str, int, float, None]) -> Optional[int]:
+    """
+    Extracts a 17-20 digit Discord User ID from any format:
+    - Pure integer or numeric string
+    - Discord mention (<@123456789012345678> or <@!123456789012345678>)
+    - Discord URL (https://discord.com/users/123456789012345678)
+    - Formatted numbers (1,084,589,736,917,737,522)
+    - Scientific notation / float string (1.08458973691774E+18 or 1084589736917737522.0)
+    """
+    if text is None:
+        return None
+    if isinstance(text, int):
+        if 10**16 <= text <= 10**20:
+            return text
+        return None
+
+    s = str(text).strip()
+    if not s:
+        return None
+
+    # 1. Mention format <@!123456789012345678>
+    m = re.search(r'<@!?(\d{17,20})>', s)
+    if m:
+        try: return int(m.group(1))
+        except Exception: pass
+
+    # 2. Discord user URL
+    m = re.search(r'discord\.com/users/(\d{17,20})', s)
+    if m:
+        try: return int(m.group(1))
+        except Exception: pass
+
+    # 3. 17-20 digit number inside string
+    m = re.search(r'\b(\d{17,20})\b', s)
+    if m:
+        try: return int(m.group(1))
+        except Exception: pass
+
+    # 4. Clean out commas / spaces and check if 17-20 digits
+    clean_digits = re.sub(r'[^\d]', '', s)
+    if 17 <= len(clean_digits) <= 20:
+        try: return int(clean_digits)
+        except Exception: pass
+
+    # 5. Scientific notation / float string like 1.08458973691774E+18 or 1084589736917737522.0
+    try:
+        f_val = float(s)
+        i_val = int(f_val)
+        if 10**16 <= i_val <= 10**20:
+            return i_val
+    except Exception:
+        pass
+
+    return None
+
 def _sync_fetch_google_sheet_captains(sheet_link: str):
     match = re.search(r'/d/([a-zA-Z0-9-_]+)', sheet_link)
     if not match:
         return None, "Invalid Google Sheet link — could not extract sheet ID"
     sheet_id = match.group(1)
-    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+    
+    # Extract tab GID if specified in sheet URL
+    gid_match = re.search(r'[#&?]gid=([0-9]+)', sheet_link)
+    gid_param = f"&gid={gid_match.group(1)}" if gid_match else ""
+    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv{gid_param}"
+    
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(url, headers=headers, timeout=15)
@@ -1490,7 +1550,7 @@ def _sync_fetch_google_sheet_captains(sheet_link: str):
                 key_col = i
                 is_1v1 = False
                 break
-            elif any(x in h for x in ['discord name', 'participant', 'player name', 'player']):
+            elif any(x in h for x in ['discord name', 'participant', 'player name', 'player', 'name']):
                 key_col = i
                 is_1v1 = True
                 break
@@ -1498,7 +1558,7 @@ def _sync_fetch_google_sheet_captains(sheet_link: str):
         val_col = -1
         for i, h in enumerate(h_lower):
             if i != key_col:
-                if any(x in h for x in ['developer id', 'developers id', 'developers i\'d', 'discord id', 'discord_id', 'mention', 'discord tag', 'discord uid', 'uid']) and not any(x in h for x in ['game id', 'ign', 'in-game']):
+                if any(x in h for x in ['developer id', 'developers id', 'developers i\'d', 'discord id', 'discord_id', 'mention', 'discord tag', 'discord uid', 'uid', 'user id', 'discord']) and not any(x in h for x in ['game id', 'ign', 'in-game']):
                     val_col = i
                     break
         if val_col == -1:
@@ -1519,6 +1579,8 @@ def _sync_fetch_google_sheet_captains(sheet_link: str):
         
         captains = {}
         for row in reader:
+            if not row or not any(str(c).strip() for c in row):
+                continue
             if len(row) > key_col:
                 k = row[key_col].strip()
                 if not k:
@@ -1526,16 +1588,41 @@ def _sync_fetch_google_sheet_captains(sheet_link: str):
                 v = row[val_col].strip() if len(row) > val_col else ""
                 ign = row[ign_col].strip() if (ign_col != -1 and len(row) > ign_col) else ""
                 
-                # If numeric Discord ID
-                discord_str = v
-                if discord_str.isdigit() and len(discord_str) >= 15:
-                    discord_str = f"<@{discord_str}>"
-                    
-                captains[k] = {
+                # Check for Discord UID in target column first, then check all cells in row
+                discord_uid = extract_discord_id_from_text(v)
+                if not discord_uid:
+                    for c_idx, cell in enumerate(row):
+                        if c_idx != key_col:
+                            found_id = extract_discord_id_from_text(cell)
+                            if found_id:
+                                discord_uid = found_id
+                                break
+
+                # Construct discord mention string if UID found
+                discord_str = f"<@{discord_uid}>" if discord_uid else v
+                
+                entry = {
+                    "team": k,
                     "discord": discord_str,
-                    "ign": ign or v,
+                    "discord_id": discord_uid,
+                    "ign": ign or v or k,
                     "raw": v
                 }
+
+                # Thorough multi-key indexing so Challonge matches can easily find their team
+                captains[k] = entry
+                captains[k.strip()] = entry
+                captains[k.strip().lower()] = entry
+                clean_k = re.sub(r'[^a-zA-Z0-9]', '', k).lower()
+                if clean_k:
+                    captains[clean_k] = entry
+
+                if ign and ign.strip():
+                    captains[ign.strip().lower()] = entry
+                    clean_ign = re.sub(r'[^a-zA-Z0-9]', '', ign).lower()
+                    if clean_ign:
+                        captains[clean_ign] = entry
+
         return captains, is_1v1, None
     except Exception as e:
         return None, False, str(e)
