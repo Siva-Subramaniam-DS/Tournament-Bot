@@ -954,10 +954,12 @@ def parse_deadline_datetime(date_str: str, time_str: str = "23:59") -> Optional[
 async def deadline_autocomplete(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
     g_id = interaction.guild_id
     choices = []
-    for dl_id, dl_data in scheduled_deadlines.items():
-        if dl_data.get('guild_id') == g_id:
-            rnd = dl_data.get('round', 'Unknown')
-            t_name = dl_data.get('tournament', '')
+    current_lower = (current or "").strip().lower()
+    for dl_id, dl_data in list(scheduled_deadlines.items()):
+        dl_gid = dl_data.get('guild_id')
+        if dl_gid is None or str(dl_gid) == str(g_id):
+            rnd = str(dl_data.get('round', 'Unknown'))
+            t_name = str(dl_data.get('tournament', ''))
             dt = dl_data.get('deadline_dt')
             dt_str = ""
             if isinstance(dt, datetime.datetime):
@@ -969,9 +971,10 @@ async def deadline_autocomplete(interaction: discord.Interaction, current: str) 
                 except Exception:
                     dt_str = dt
             label = f"{t_name + ' - ' if t_name else ''}{rnd} ({dt_str})".strip()
-            if current.lower() in label.lower() or current.lower() in dl_id.lower():
+            if not current_lower or current_lower in label.lower() or current_lower in dl_id.lower() or current_lower in rnd.lower():
                 choices.append(app_commands.Choice(name=label[:100], value=dl_id))
     return choices[:25]
+
 
 def cancel_deadline_tasks(dl_id: str):
     if dl_id in deadline_tasks:
@@ -1300,9 +1303,21 @@ async def deadline_edit_cmd(
         await interaction.response.send_message("❌ You do not have permission to manage deadlines.", ephemeral=True)
         return
 
-    dl_data = scheduled_deadlines.get(deadline)
+    target_dl_id = deadline
+    dl_data = scheduled_deadlines.get(target_dl_id)
     if not dl_data:
-        await interaction.response.send_message("❌ Deadline not found. Please select from the autocomplete list.", ephemeral=True)
+        g_id = str(interaction.guild.id)
+        for d_id, d_data in scheduled_deadlines.items():
+            if not d_data.get('guild_id') or str(d_data.get('guild_id')) == g_id:
+                if (deadline.lower() in d_id.lower() or
+                    deadline.lower() == str(d_data.get('round', '')).lower() or
+                    deadline.lower() in str(d_data.get('round', '')).lower()):
+                    target_dl_id = d_id
+                    dl_data = d_data
+                    break
+
+    if not dl_data:
+        await interaction.response.send_message("❌ Deadline not found. Please select from the autocomplete list or check `/deadline list`.", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=False)
@@ -1330,8 +1345,8 @@ async def deadline_edit_cmd(
     if note is not None:
         dl_data['note'] = note
 
-    save_scheduled_deadline(deadline, dl_data)
-    schedule_deadline_tasks(interaction.client, deadline)
+    save_scheduled_deadline(target_dl_id, dl_data)
+    schedule_deadline_tasks(interaction.client, target_dl_id)
 
     unix_ts = int(dt.timestamp())
     channel_id = dl_data.get('channel_id')
@@ -1405,14 +1420,26 @@ async def deadline_delete_cmd(interaction: discord.Interaction, deadline: str):
         await interaction.response.send_message("❌ You do not have permission to manage deadlines.", ephemeral=True)
         return
 
-    dl_data = scheduled_deadlines.get(deadline)
+    target_dl_id = deadline
+    dl_data = scheduled_deadlines.get(target_dl_id)
     if not dl_data:
-        await interaction.response.send_message("❌ Deadline not found. Please select from the autocomplete list.", ephemeral=True)
+        g_id = str(interaction.guild.id)
+        for d_id, d_data in scheduled_deadlines.items():
+            if not d_data.get('guild_id') or str(d_data.get('guild_id')) == g_id:
+                if (deadline.lower() in d_id.lower() or
+                    deadline.lower() == str(d_data.get('round', '')).lower() or
+                    deadline.lower() in str(d_data.get('round', '')).lower()):
+                    target_dl_id = d_id
+                    dl_data = d_data
+                    break
+
+    if not dl_data:
+        await interaction.response.send_message("❌ Deadline not found. Please select from the autocomplete list or check `/deadline list`.", ephemeral=True)
         return
 
     round_name = dl_data.get('round', 'Unknown')
-    cancel_deadline_tasks(deadline)
-    delete_scheduled_deadline(deadline)
+    cancel_deadline_tasks(target_dl_id)
+    delete_scheduled_deadline(target_dl_id)
 
     log_embed = discord.Embed(
         title="🗑️ Match Deadline Deleted",
@@ -1420,6 +1447,7 @@ async def deadline_delete_cmd(interaction: discord.Interaction, deadline: str):
         color=discord.Color.red(),
         timestamp=discord.utils.utcnow()
     )
+
     await log_bot_activity(interaction.guild, log_embed)
 
     await interaction.response.send_message(f"🗑️ Successfully deleted deadline for **{round_name}** and cancelled automated reminders.")

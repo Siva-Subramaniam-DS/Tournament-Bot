@@ -1138,11 +1138,13 @@ def load_scheduled_deadlines():
                             dl_data['deadline_dt'] = datetime.datetime.fromisoformat(dl_data['deadline_dt'])
                         except Exception:
                             pass
-                scheduled_deadlines = data
+                scheduled_deadlines.clear()
+                scheduled_deadlines.update(data)
                 print(f"Loaded {len(scheduled_deadlines)} scheduled deadlines from local fallback")
     except Exception as e:
         print(f"Error loading scheduled_deadlines.json fallback: {e}")
-        scheduled_deadlines = {}
+        scheduled_deadlines.clear()
+
 
     if supabase_client:
         try:
