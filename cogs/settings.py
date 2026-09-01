@@ -218,16 +218,35 @@ def extract_player_fields(header: list, row: list, is_captain: bool = False, pla
     raw_title = _find_val(title_aliases)
     raw_tag = _find_val(tag_aliases)
 
+    from core.database import extract_discord_id_from_text
+
     clean_id = ""
     member = None
     if raw_id:
-        m = re.search(r'\d+', raw_id)
-        if m:
-            clean_id = m.group(0)
+        found_uid = extract_discord_id_from_text(raw_id)
+        if found_uid:
+            clean_id = str(found_uid)
             if guild:
-                member = guild.get_member(int(clean_id))
+                member = guild.get_member(found_uid)
         else:
             clean_id = raw_id
+
+    # If member not yet found by ID, search guild members by tag or name
+    if guild and not member:
+        tag_to_check = (raw_tag or raw_id or "").strip()
+        if tag_to_check.startswith('@'):
+            tag_to_check = tag_to_check[1:].strip()
+        if '#' in tag_to_check:
+            tag_to_check = tag_to_check.split('#')[0].strip()
+        if tag_to_check:
+            tag_lower = tag_to_check.lower()
+            for m in guild.members:
+                if (m.name.lower() == tag_lower or 
+                    (m.global_name and m.global_name.lower() == tag_lower) or 
+                    m.display_name.lower() == tag_lower):
+                    member = m
+                    clean_id = str(m.id)
+                    break
 
     if not raw_tag and member:
         raw_tag = member.name

@@ -1932,9 +1932,16 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                         if staff_r := discord.utils.get(guild.roles, id=r_id):
                             overwrites[staff_r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
 
-                if captain1:
+                if c1_uid:
+                    c1_target = captain1 or discord.Object(id=c1_uid)
+                    overwrites[c1_target] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+                elif captain1:
                     overwrites[captain1] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-                if captain2:
+
+                if c2_uid:
+                    c2_target = captain2 or discord.Object(id=c2_uid)
+                    overwrites[c2_target] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+                elif captain2:
                     overwrites[captain2] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
                     
                 new_ch = await guild.create_text_channel(
