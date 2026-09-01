@@ -166,8 +166,8 @@ class Listeners(commands.Cog):
                     await msg.edit(content=f"❌ Sync failed: {e}")
                 return
 
-        # Ticket status prefix commands (?sh, ?dq, ?dd, ?ho, $close, $delete)
-        if command in ['?sh', '?dq', '?dd', '?ho', '$close', '$delete']:
+        # Ticket status prefix commands (?sh, ?dq, ?dd, ?ho, $close, $delete, $reopen)
+        if command in ['?sh', '?dq', '?dd', '?ho', '$close', '$delete', '$reopen']:
 
             is_owner = message.author.id == BOT_OWNER_ID
             is_admin = message.author.guild_permissions.administrator if hasattr(message.author, 'guild_permissions') else False
@@ -190,6 +190,68 @@ class Listeners(commands.Cog):
                 try: await message.delete()
                 except Exception: pass
                 return
+
+            if command == '$reopen':
+                try:
+                    guild = message.guild
+                    channel = message.channel
+                    t_cfg = get_active_tournament_config(guild.id)
+                    open_category = None
+                    if t_cfg:
+                        for i in range(1, 5):
+                            cat_id = t_cfg.get(f'ticket_open_category_{i}') or t_cfg.get(f'Open_Category_{i}_ID')
+                            if cat_id:
+                                try:
+                                    cat = guild.get_channel(int(cat_id))
+                                    if cat and len(cat.channels) < 49:
+                                        open_category = cat
+                                        break
+                                except Exception: pass
+
+                    if not open_category:
+                        tournaments = load_guild_tournaments(guild.id)
+                        for _, tdata in tournaments.items():
+                            for i in range(1, 5):
+                                cat_id = tdata.get(f'ticket_open_category_{i}') or tdata.get(f'Open_Category_{i}_ID')
+                                if cat_id:
+                                    try:
+                                        cat = guild.get_channel(int(cat_id))
+                                        if cat and len(cat.channels) < 49:
+                                            open_category = cat
+                                            break
+                                    except Exception: pass
+                            if open_category: break
+
+                    clean_name = channel.name
+                    for pfx in ["closed-", "done-", "🔴-", "✅-"]:
+                        if clean_name.startswith(pfx):
+                            clean_name = clean_name[len(pfx):]
+                            break
+
+                    if open_category:
+                        await channel.edit(
+                            name=clean_name,
+                            category=open_category,
+                            sync_permissions=True,
+                            reason=f"Ticket reopened by {message.author.name}"
+                        )
+                    else:
+                        await channel.edit(name=clean_name, reason=f"Ticket reopened by {message.author.name}")
+
+                    embed = discord.Embed(
+                        title="🔓 Ticket Reopened",
+                        description=f"This ticket has been reopened by {message.author.mention} and moved back to active match channels.",
+                        color=discord.Color.green(),
+                        timestamp=discord.utils.utcnow()
+                    )
+                    embed.set_footer(text=f"{ORGANIZATION_NAME} • Ticket Manager")
+                    await channel.send(embed=embed)
+                    try: await message.delete()
+                    except Exception: pass
+                except Exception as e:
+                    print(f"Error in $reopen: {e}")
+                return
+
 
             if command == '$close':
                 try:

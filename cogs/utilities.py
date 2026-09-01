@@ -1,20 +1,24 @@
 import os
+import io
+import re
 import json
 import random
 import asyncio
 import datetime
-from typing import Optional, List
+from typing import Optional, List, Union, Any
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-from core.config import BASE_DIR, BRAND_COLOR, ORGANIZATION_NAME
+from core.config import BASE_DIR, BRAND_COLOR, ORGANIZATION_NAME, BOT_OWNER_ID
 from core.state import (
     current_guild_id, with_guild_context, get_user_permission_level,
-    get_org_name
+    get_org_name, is_authorized_to_configure, is_staff,
+    category_monitors, save_category_monitors
 )
 from core.database import log_bot_activity
+
 
 NOTION_HELP_URL = "https://elated-chartreuse-9a7.notion.site/Tournament-Bot-Help-Guide-37c8a2e4cbdf80af8e87d6a03b7db8e5"
 RECURRING_EMBEDS_FILE = os.path.join(BASE_DIR, "recurring_embeds.json")
@@ -615,8 +619,6 @@ async def recurring_embed_delete(interaction: discord.Interaction, embed_id: str
     if guild_key not in recurring_embeds_store:
         await interaction.response.send_message(f"❌ No recurring embed found with ID `{embed_id_clean}`.", ephemeral=True)
         return
-    del recurring_embeds_store[guild_key]
-    save_recurring_embeds(recurring_embeds_store)
     reply = discord.Embed(
         title=f"🗑️ Recurring Embed Deleted — `{embed_id_clean}`",
         description="Removed and will no longer auto-post.",
@@ -627,10 +629,591 @@ async def recurring_embed_delete(interaction: discord.Interaction, embed_id: str
 
 
 # ===========================================================================
+# ROLE MANAGEMENT GROUP (/role remove all)
+# ===========================================================================
+
+role_group = app_commands.Group(name="role", description="Manage guild member roles")
+role_remove_subgroup = app_commands.Group(name="remove", description="Remove roles from members", parent=role_group)
+
+@role_remove_subgroup.command(name="all", description="Remove a specified role from all members in the server")
+@app_commands.describe(role="The role to remove from all members")
+@with_guild_context
+async def role_remove_all_cmd(interaction: discord.Interaction, role: discord.Role):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ Server only.", ephemeral=True)
+        return
+    if not (interaction.user.guild_permissions.manage_roles or interaction.user.guild_permissions.administrator or interaction.user.id == BOT_OWNER_ID):
+        await interaction.response.send_message("❌ You need **Manage Roles** permission to use this command.", ephemeral=True)
+        return
+    if interaction.guild.me.top_role <= role:
+        await interaction.response.send_message(f"❌ Cannot manage {role.mention} because it is higher than or equal to my highest role ({interaction.guild.me.top_role.mention}).", ephemeral=True)
+        return
+
+    members_with_role = [m for m in interaction.guild.members if role in m.roles]
+    if not members_with_role:
+        await interaction.response.send_message(f"ℹ️ No members currently have the role {role.mention}.", ephemeral=True)
+        return
+
+    class ConfirmRoleRemoveView(discord.ui.View):
+        def __init__(self, author_id: int):
+            super().__init__(timeout=60.0)
+            self.author_id = author_id
+            self.confirmed = False
+
+        async def interaction_check(self, inter: discord.Interaction) -> bool:
+            if inter.user.id != self.author_id:
+                await inter.response.send_message("❌ Only the command author can confirm.", ephemeral=True)
+                return False
+            return True
+
+        @discord.ui.button(label=f"Confirm & Remove from {len(members_with_role)} members", style=discord.ButtonStyle.danger, emoji="⚠️")
+        async def confirm(self, inter: discord.Interaction, btn: discord.ui.Button):
+            self.confirmed = True
+            self.stop()
+            for c in self.children: c.disabled = True
+            await inter.response.edit_message(view=self)
+
+        @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="✖️")
+        async def cancel(self, inter: discord.Interaction, btn: discord.ui.Button):
+            self.confirmed = False
+            self.stop()
+            for c in self.children: c.disabled = True
+            await inter.response.edit_message(content="❌ Role removal cancelled.", embed=None, view=self)
+
+    confirm_embed = discord.Embed(
+        title="⚠️ Bulk Role Removal Confirmation",
+        description=f"Are you sure you want to remove {role.mention} from **{len(members_with_role)} member(s)**?",
+        color=discord.Color.red(),
+        timestamp=discord.utils.utcnow()
+    )
+    confirm_embed.set_footer(text=f"Requested by {interaction.user.display_name}")
+    view = ConfirmRoleRemoveView(interaction.user.id)
+    await interaction.response.send_message(embed=confirm_embed, view=view, ephemeral=False)
+
+    await view.wait()
+    if not view.confirmed:
+        return
+
+    status_msg = await interaction.followup.send(f"⏳ Removing {role.mention} from {len(members_with_role)} member(s)...")
+
+    removed_count = 0
+    failed_count = 0
+    for idx, m in enumerate(members_with_role):
+        try:
+            await m.remove_roles(role, reason=f"Bulk role removal by {interaction.user.name}")
+            removed_count += 1
+            if (idx + 1) % 10 == 0 or (idx + 1) == len(members_with_role):
+                try:
+                    await status_msg.edit(content=f"⏳ Removed from **{removed_count}/{len(members_with_role)}** members...")
+                except Exception:
+                    pass
+            await asyncio.sleep(0.35)
+        except Exception as e:
+            print(f"Error removing role from {m.display_name}: {e}")
+            failed_count += 1
+
+    res_embed = discord.Embed(
+        title="✅ Role Removal Complete",
+        description=f"Successfully removed {role.mention} from **{removed_count}** member(s).",
+        color=discord.Color.green(),
+        timestamp=discord.utils.utcnow()
+    )
+    if failed_count > 0:
+        res_embed.add_field(name="Failed", value=f"{failed_count} members", inline=True)
+    res_embed.set_footer(text=f"{interaction.guild.name} • Role Manager")
+    await status_msg.edit(content=None, embed=res_embed)
+
+
+# ===========================================================================
+# NICKNAME MANAGEMENT GROUP (/nickname reset)
+# ===========================================================================
+
+nickname_group = app_commands.Group(name="nickname", description="Manage member nicknames")
+
+@nickname_group.command(name="reset", description="Reset a user's server display name to their username")
+@app_commands.describe(member="Member whose nickname to reset (defaults to yourself)")
+@with_guild_context
+async def nickname_reset_cmd(interaction: discord.Interaction, member: Optional[discord.Member] = None):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ Server only.", ephemeral=True)
+        return
+
+    target = member or interaction.user
+    if target != interaction.user and not (interaction.user.guild_permissions.manage_nicknames or interaction.user.guild_permissions.administrator or interaction.user.id == BOT_OWNER_ID):
+        await interaction.response.send_message("❌ You need **Manage Nicknames** permission to reset other members' nicknames.", ephemeral=True)
+        return
+
+    if target != interaction.guild.owner and interaction.guild.me.top_role <= target.top_role and target != interaction.user:
+        await interaction.response.send_message(f"❌ Cannot change nickname for {target.mention} because their role is higher than or equal to my highest role.", ephemeral=True)
+        return
+
+    try:
+        old_nick = target.display_name
+        await target.edit(nick=None, reason=f"Nickname reset by {interaction.user.name}")
+        embed = discord.Embed(
+            title="🏷️ Nickname Reset",
+            description=f"Reset server display name for {target.mention} (`{old_nick}` ➔ `{target.name}`).",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow()
+        )
+        embed.set_footer(text=f"Reset by {interaction.user.display_name}")
+        await interaction.response.send_message(embed=embed)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Failed to reset nickname: {e}", ephemeral=True)
+
+
+# ===========================================================================
+# CHANNEL MANAGEMENT GROUP (/channel lock, /channel unlock, /channel add)
+# ===========================================================================
+
+channel_group = app_commands.Group(name="channel", description="Manage channel access and moderation")
+
+@channel_group.command(name="lock", description="Prevent regular members from sending messages in a channel")
+@app_commands.describe(channel="Channel to lock (defaults to current channel)")
+@with_guild_context
+async def channel_lock_cmd(interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ Server only.", ephemeral=True)
+        return
+    if not (interaction.user.guild_permissions.manage_channels or interaction.user.guild_permissions.administrator or interaction.user.id == BOT_OWNER_ID):
+        await interaction.response.send_message("❌ You need **Manage Channels** permission to use this command.", ephemeral=True)
+        return
+
+    target_ch = channel or interaction.channel
+    try:
+        overwrites = target_ch.overwrites_for(interaction.guild.default_role)
+        overwrites.send_messages = False
+        overwrites.send_messages_in_threads = False
+        await target_ch.set_permissions(interaction.guild.default_role, overwrite=overwrites, reason=f"Channel locked by {interaction.user.name}")
+
+        embed = discord.Embed(
+            title="🔒 Channel Locked",
+            description="This channel has been locked. Regular members can no longer send messages.",
+            color=discord.Color.red(),
+            timestamp=discord.utils.utcnow()
+        )
+        embed.set_footer(text=f"Locked by {interaction.user.display_name}")
+        await target_ch.send(embed=embed)
+        if target_ch != interaction.channel:
+            await interaction.response.send_message(f"🔒 Locked {target_ch.mention} successfully.", ephemeral=True)
+        else:
+            await interaction.response.send_message("🔒 Channel locked.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Failed to lock channel: {e}", ephemeral=True)
+
+@channel_group.command(name="unlock", description="Allow regular members to send messages again")
+@app_commands.describe(channel="Channel to unlock (defaults to current channel)")
+@with_guild_context
+async def channel_unlock_cmd(interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ Server only.", ephemeral=True)
+        return
+    if not (interaction.user.guild_permissions.manage_channels or interaction.user.guild_permissions.administrator or interaction.user.id == BOT_OWNER_ID):
+        await interaction.response.send_message("❌ You need **Manage Channels** permission to use this command.", ephemeral=True)
+        return
+
+    target_ch = channel or interaction.channel
+    try:
+        overwrites = target_ch.overwrites_for(interaction.guild.default_role)
+        overwrites.send_messages = None
+        overwrites.send_messages_in_threads = None
+        await target_ch.set_permissions(interaction.guild.default_role, overwrite=overwrites, reason=f"Channel unlocked by {interaction.user.name}")
+
+        embed = discord.Embed(
+            title="🔓 Channel Unlocked",
+            description="This channel has been unlocked. Members can send messages again.",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow()
+        )
+        embed.set_footer(text=f"Unlocked by {interaction.user.display_name}")
+        await target_ch.send(embed=embed)
+        if target_ch != interaction.channel:
+            await interaction.response.send_message(f"🔓 Unlocked {target_ch.mention} successfully.", ephemeral=True)
+        else:
+            await interaction.response.send_message("🔓 Channel unlocked.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Failed to unlock channel: {e}", ephemeral=True)
+
+@channel_group.command(name="add", description="Add a user or role to the channel")
+@app_commands.describe(
+    user="The user to add to this channel (optional)",
+    role="The role to add to this channel (optional)",
+    channel="The channel to add to (defaults to current channel)"
+)
+@with_guild_context
+async def channel_add_cmd(
+    interaction: discord.Interaction,
+    user: Optional[discord.Member] = None,
+    role: Optional[discord.Role] = None,
+    channel: Optional[discord.TextChannel] = None
+):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ Server only.", ephemeral=True)
+        return
+    if not (interaction.user.guild_permissions.manage_channels or interaction.user.guild_permissions.administrator or interaction.user.id == BOT_OWNER_ID):
+        await interaction.response.send_message("❌ You need **Manage Channels** permission to use this command.", ephemeral=True)
+        return
+
+    target = user or role
+    if not target:
+        await interaction.response.send_message("❌ Please specify either a `user` or a `role` to add.", ephemeral=True)
+        return
+
+    target_ch = channel or interaction.channel
+    try:
+        overwrites = target_ch.overwrites_for(target)
+        overwrites.view_channel = True
+        overwrites.send_messages = True
+        overwrites.read_message_history = True
+        await target_ch.set_permissions(target, overwrite=overwrites, reason=f"Added by {interaction.user.name}")
+
+        embed = discord.Embed(
+            title="✅ Channel Access Granted",
+            description=f"Added {target.mention} to {target_ch.mention} with view and send permissions.",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow()
+        )
+        embed.set_footer(text=f"Added by {interaction.user.display_name}")
+        await interaction.response.send_message(embed=embed)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Failed to add to channel: {e}", ephemeral=True)
+
+
+# ===========================================================================
+# TIMEOUT MODERATION GROUP (/timeout add, /timeout remove)
+# ===========================================================================
+
+def parse_duration(duration_str: str) -> Optional[datetime.timedelta]:
+    m = re.match(r'^(\d+)\s*([smhdw])$', duration_str.strip().lower())
+    if not m:
+        return None
+    val = int(m.group(1))
+    unit = m.group(2)
+    if unit == 's': return datetime.timedelta(seconds=val)
+    elif unit == 'm': return datetime.timedelta(minutes=val)
+    elif unit == 'h': return datetime.timedelta(hours=val)
+    elif unit == 'd': return datetime.timedelta(days=val)
+    elif unit == 'w': return datetime.timedelta(weeks=val)
+    return None
+
+timeout_group = app_commands.Group(name="timeout", description="Manage user timeouts and moderation")
+
+@timeout_group.command(name="add", description="Timeout a user")
+@app_commands.describe(
+    user="The user to timeout",
+    duration="Timeout duration (e.g. 5m, 1h, 1d, 7d, max 28d)",
+    reason="Reason for the timeout"
+)
+@with_guild_context
+async def timeout_add_cmd(
+    interaction: discord.Interaction,
+    user: discord.Member,
+    duration: str,
+    reason: Optional[str] = "No reason provided"
+):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ Server only.", ephemeral=True)
+        return
+    if not (interaction.user.guild_permissions.moderate_members or interaction.user.guild_permissions.administrator or interaction.user.id == BOT_OWNER_ID):
+        await interaction.response.send_message("❌ You need **Timeout Members** permission to use this command.", ephemeral=True)
+        return
+
+    td = parse_duration(duration)
+    if not td or td.total_seconds() < 10 or td.total_seconds() > 28 * 86400:
+        await interaction.response.send_message("❌ Invalid duration. Please provide a duration between `10s` and `28d` (e.g. `10m`, `2h`, `1d`, `7d`).", ephemeral=True)
+        return
+
+    if user == interaction.guild.owner or (interaction.guild.me.top_role <= user.top_role and user != interaction.user):
+        await interaction.response.send_message(f"❌ Cannot timeout {user.mention} due to role hierarchy.", ephemeral=True)
+        return
+
+    try:
+        until_dt = discord.utils.utcnow() + td
+        await user.timeout(until_dt, reason=f"{reason} (by {interaction.user.name})")
+
+        embed = discord.Embed(
+            title="⏳ User Timed Out",
+            description=f"{user.mention} has been timed out until <t:{int(until_dt.timestamp())}:F> (<t:{int(until_dt.timestamp())}:R>).",
+            color=discord.Color.orange(),
+            timestamp=discord.utils.utcnow()
+        )
+        embed.add_field(name="👤 User", value=f"{user.display_name} (`{user.id}`)", inline=True)
+        embed.add_field(name="⏱️ Duration", value=duration, inline=True)
+        embed.add_field(name="📌 Reason", value=reason, inline=False)
+        embed.set_footer(text=f"Moderator: {interaction.user.display_name}")
+        await interaction.response.send_message(embed=embed)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Failed to timeout user: {e}", ephemeral=True)
+
+@timeout_group.command(name="remove", description="Remove timeout from a user")
+@app_commands.describe(user="The user to remove timeout from", reason="Reason for removing timeout")
+@with_guild_context
+async def timeout_remove_cmd(interaction: discord.Interaction, user: discord.Member, reason: Optional[str] = "Timeout removed by staff"):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ Server only.", ephemeral=True)
+        return
+    if not (interaction.user.guild_permissions.moderate_members or interaction.user.guild_permissions.administrator or interaction.user.id == BOT_OWNER_ID):
+        await interaction.response.send_message("❌ You need **Timeout Members** permission to use this command.", ephemeral=True)
+        return
+
+    try:
+        await user.timeout(None, reason=f"{reason} (by {interaction.user.name})")
+        embed = discord.Embed(
+            title="✅ Timeout Removed",
+            description=f"Timeout has been removed for {user.mention}.",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow()
+        )
+        embed.add_field(name="👤 User", value=f"{user.display_name} (`{user.id}`)", inline=True)
+        embed.add_field(name="📌 Reason", value=reason, inline=False)
+        embed.set_footer(text=f"Moderator: {interaction.user.display_name}")
+        await interaction.response.send_message(embed=embed)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Failed to remove timeout: {e}", ephemeral=True)
+
+
+# ===========================================================================
+# CATEGORY MONITOR GROUP (/categorymonitor set, view, remove)
+# ===========================================================================
+
+categorymonitor_group = app_commands.Group(name="categorymonitor", description="Monitor category channel counts and thresholds")
+
+@categorymonitor_group.command(name="set", description="Set up or update category monitoring")
+@app_commands.describe(
+    category="The category to monitor",
+    pingtarget="Role or user to alert when threshold is reached",
+    threshold="Channel count threshold to alert (default: 45)",
+    alert_channel="Channel to post warning alert (defaults to current channel)"
+)
+@with_guild_context
+async def categorymonitor_set_cmd(
+    interaction: discord.Interaction,
+    category: discord.CategoryChannel,
+    pingtarget: Union[discord.Role, discord.Member],
+    threshold: Optional[int] = 45,
+    alert_channel: Optional[discord.TextChannel] = None
+):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ Server only.", ephemeral=True)
+        return
+    if not is_authorized_to_configure(interaction) and not is_staff(interaction.user):
+        await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+        return
+
+    if threshold < 1 or threshold > 50:
+        await interaction.response.send_message("❌ Threshold must be between 1 and 50 channels (Discord max limit is 50).", ephemeral=True)
+        return
+
+    target_alert_ch = alert_channel or interaction.channel
+    guild_id = str(interaction.guild.id)
+    cat_key = f"{guild_id}:{category.id}"
+
+    category_monitors[cat_key] = {
+        "guild_id": guild_id,
+        "category_id": category.id,
+        "category_name": category.name,
+        "ping_target_id": pingtarget.id,
+        "is_role": isinstance(pingtarget, discord.Role),
+        "threshold": threshold,
+        "alert_channel_id": target_alert_ch.id,
+        "set_by": interaction.user.id
+    }
+    save_category_monitors()
+
+    embed = discord.Embed(
+        title="📊 Category Monitor Configured",
+        description=f"Now monitoring category **{category.name}**.",
+        color=discord.Color.green(),
+        timestamp=discord.utils.utcnow()
+    )
+    embed.add_field(name="📁 Category", value=f"{category.name} (`{category.id}`)", inline=True)
+    embed.add_field(name="📈 Current Channels", value=f"**{len(category.channels)} / 50**", inline=True)
+    embed.add_field(name="⚠️ Alert Threshold", value=f"**{threshold}** channels", inline=True)
+    embed.add_field(name="🔔 Ping Target", value=pingtarget.mention, inline=True)
+    embed.add_field(name="📢 Alert Channel", value=target_alert_ch.mention, inline=True)
+    embed.set_footer(text=f"Configured by {interaction.user.display_name}")
+    await interaction.response.send_message(embed=embed)
+
+@categorymonitor_group.command(name="view", description="View current category monitoring settings")
+@with_guild_context
+async def categorymonitor_view_cmd(interaction: discord.Interaction):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ Server only.", ephemeral=True)
+        return
+
+    guild_id = str(interaction.guild.id)
+    active = [v for k, v in category_monitors.items() if v.get("guild_id") == guild_id]
+
+    if not active:
+        await interaction.response.send_message("ℹ️ No active category monitors configured for this server. Use `/categorymonitor set`.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="📊 Active Category Monitors",
+        description=f"Server: **{interaction.guild.name}**\nTotal Monitored Categories: **{len(active)}**",
+        color=discord.Color.blue(),
+        timestamp=discord.utils.utcnow()
+    )
+    for mon in active:
+        cat_id = mon.get("category_id")
+        cat = interaction.guild.get_channel(cat_id)
+        c_count = len(cat.channels) if cat else "N/A"
+        thresh = mon.get("threshold", 45)
+        p_id = mon.get("ping_target_id")
+        is_r = mon.get("is_role", False)
+        p_mention = f"<@&{p_id}>" if is_r else f"<@{p_id}>"
+        ch_id = mon.get("alert_channel_id")
+        val = (
+            f"• **Channel Count:** `{c_count} / 50`\n"
+            f"• **Threshold:** `{thresh}` channels\n"
+            f"• **Alert Target:** {p_mention}\n"
+            f"• **Alert Channel:** <#{ch_id}>"
+        )
+        embed.add_field(name=f"📁 {cat.name if cat else mon.get('category_name')}", value=val, inline=False)
+
+    embed.set_footer(text=f"{interaction.guild.name} • Category Monitor")
+    await interaction.response.send_message(embed=embed)
+
+@categorymonitor_group.command(name="remove", description="Remove category monitoring")
+@app_commands.describe(category="The category to remove monitoring for")
+@with_guild_context
+async def categorymonitor_remove_cmd(interaction: discord.Interaction, category: discord.CategoryChannel):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ Server only.", ephemeral=True)
+        return
+    if not is_authorized_to_configure(interaction) and not is_staff(interaction.user):
+        await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+        return
+
+    guild_id = str(interaction.guild.id)
+    cat_key = f"{guild_id}:{category.id}"
+    if cat_key in category_monitors:
+        del category_monitors[cat_key]
+        save_category_monitors()
+        await interaction.response.send_message(f"✅ Removed monitoring for category **{category.name}**.")
+    else:
+        await interaction.response.send_message(f"❌ Category **{category.name}** is not currently monitored.", ephemeral=True)
+
+
+# ===========================================================================
+# AVATAR & SERVER INFO/BANLIST COMMANDS
+# ===========================================================================
+
+@app_commands.command(name="avatar", description="Get the avatar of a user")
+@app_commands.describe(user="The user to get the avatar of (defaults to yourself)")
+@with_guild_context
+async def avatar_cmd(interaction: discord.Interaction, user: Optional[discord.User] = None):
+    target = user or interaction.user
+    avatar_url = target.display_avatar.url
+
+    embed = discord.Embed(
+        title=f"🖼️ Avatar — {target.display_name}",
+        color=discord.Color(BRAND_COLOR),
+        timestamp=discord.utils.utcnow()
+    )
+    embed.set_image(url=avatar_url)
+    
+    links = [
+        f"[PNG]({target.display_avatar.with_format('png').url})",
+        f"[JPG]({target.display_avatar.with_format('jpeg').url})",
+        f"[WEBP]({target.display_avatar.with_format('webp').url})"
+    ]
+    if target.display_avatar.is_animated():
+        links.append(f"[GIF]({target.display_avatar.with_format('gif').url})")
+
+    embed.description = " • ".join(links)
+    embed.set_footer(text=f"Requested by {interaction.user.display_name}")
+    await interaction.response.send_message(embed=embed)
+
+
+server_group = app_commands.Group(name="server", description="Server utilities and information")
+
+@server_group.command(name="info", description="Get information about the server")
+@with_guild_context
+async def server_info_cmd(interaction: discord.Interaction):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ Server only.", ephemeral=True)
+        return
+
+    g = interaction.guild
+    created_ts = int(g.created_at.timestamp())
+    members = g.members
+    humans = sum(1 for m in members if not m.bot)
+    bots = sum(1 for m in members if m.bot)
+
+    embed = discord.Embed(
+        title=f"🏛️ Server Info — {g.name}",
+        color=discord.Color(BRAND_COLOR),
+        timestamp=discord.utils.utcnow()
+    )
+    if g.icon:
+        embed.set_thumbnail(url=g.icon.url)
+    if g.banner:
+        embed.set_image(url=g.banner.url)
+
+    embed.add_field(name="👑 Owner", value=f"{g.owner.mention if g.owner else 'Unknown'}", inline=True)
+    embed.add_field(name="🆔 Server ID", value=f"`{g.id}`", inline=True)
+    embed.add_field(name="📅 Created", value=f"<t:{created_ts}:F> (<t:{created_ts}:R>)", inline=True)
+    embed.add_field(name="👥 Members", value=f"**{g.member_count}** ({humans} Humans, {bots} Bots)", inline=True)
+    embed.add_field(name="🛡️ Roles", value=f"`{len(g.roles)}` roles", inline=True)
+    embed.add_field(name="💬 Channels", value=f"`{len(g.text_channels)}` Text, `{len(g.voice_channels)}` Voice, `{len(g.categories)}` Categories", inline=True)
+    embed.add_field(name="🚀 Boost Status", value=f"Level **{g.premium_tier}** ({g.premium_subscription_count} Boosts)", inline=True)
+    embed.add_field(name="🔒 Verification", value=f"{str(g.verification_level).title()}", inline=True)
+
+    embed.set_footer(text=f"Requested by {interaction.user.display_name}")
+    await interaction.response.send_message(embed=embed)
+
+@server_group.command(name="banlist", description="Generate a list of all banned users")
+@app_commands.describe(format="Output format (embed or file, default: embed)")
+@with_guild_context
+async def server_banlist_cmd(interaction: discord.Interaction, format: Optional[str] = "embed"):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ Server only.", ephemeral=True)
+        return
+    if not (interaction.user.guild_permissions.ban_members or interaction.user.guild_permissions.administrator or interaction.user.id == BOT_OWNER_ID):
+        await interaction.response.send_message("❌ You need **Ban Members** permission to view the banlist.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=False)
+
+    try:
+        bans = [ban async for ban in interaction.guild.bans(limit=1000)]
+    except Exception as e:
+        await interaction.followup.send(f"❌ Failed to fetch bans: {e}")
+        return
+
+    if not bans:
+        await interaction.followup.send("🕊️ There are no banned users in this server.")
+        return
+
+    if format == "file" or len(bans) > 20:
+        lines = ["ID,Username,Reason"]
+        for b in bans:
+            u = b.user
+            r = b.reason or "No reason provided"
+            lines.append(f'"{u.id}","{u.name}","{r.replace(chr(34), chr(39))}"')
+        csv_data = "\n".join(lines)
+        file = discord.File(io.BytesIO(csv_data.encode('utf-8')), filename=f"banlist_{interaction.guild.id}.csv")
+        await interaction.followup.send(f"📋 Banned users list for **{interaction.guild.name}** ({len(bans)} users):", file=file)
+    else:
+        embed = discord.Embed(
+            title=f"🔨 Banned Users ({len(bans)})",
+            color=discord.Color.red(),
+            timestamp=discord.utils.utcnow()
+        )
+        for b in bans[:20]:
+            r = b.reason or "No reason provided"
+            embed.add_field(name=f"{b.user.name} (`{b.user.id}`)", value=f"Reason: {r}", inline=False)
+        embed.set_footer(text=f"{interaction.guild.name} • Banlist")
+        await interaction.followup.send(embed=embed)
+
+
+# ===========================================================================
 # UTILITIES COG
 # ===========================================================================
 
 class Utilities(commands.Cog):
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.recurring_task = asyncio.create_task(self.recurring_embed_loop())
@@ -910,5 +1493,15 @@ class Utilities(commands.Cog):
 
 
 async def setup(bot: commands.Bot):
+    bot.tree.add_command(purge_group)
+    bot.tree.add_command(recurring_group)
+    bot.tree.add_command(role_group)
+    bot.tree.add_command(nickname_group)
+    bot.tree.add_command(channel_group)
+    bot.tree.add_command(timeout_group)
+    bot.tree.add_command(categorymonitor_group)
+    bot.tree.add_command(avatar_cmd)
+    bot.tree.add_command(server_group)
     await bot.add_cog(Utilities(bot))
+
 
