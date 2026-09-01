@@ -122,9 +122,16 @@ class Listeners(commands.Cog):
 
         # Command sync
         try:
-            print("🔄 Syncing slash commands...")
+            print("🔄 Syncing slash commands globally...")
             synced = await asyncio.wait_for(self.bot.tree.sync(), timeout=30.0)
-            print(f"✅ Synced {len(synced)} command(s)")
+            print(f"✅ Synced {len(synced)} global command(s)")
+            for g in self.bot.guilds:
+                try:
+                    self.bot.tree.copy_global_to(guild=g)
+                    await self.bot.tree.sync(guild=g)
+                    print(f"  └─ Synced commands instantly to guild: {g.name} ({g.id})")
+                except Exception as g_err:
+                    print(f"  └─ Guild sync error for {g.name}: {g_err}")
         except asyncio.TimeoutError:
             print("⚠️ Command sync timed out, but bot will continue running")
         except Exception as e:
@@ -144,8 +151,24 @@ class Listeners(commands.Cog):
         content = message.content.strip()
         command = content.lower()
 
+        # Admin command to immediately sync slash commands to the current server
+        if command in ['!sync', '$sync', '.sync']:
+            is_owner = message.author.id == BOT_OWNER_ID
+            is_admin = message.author.guild_permissions.administrator if hasattr(message.author, 'guild_permissions') else False
+            if is_owner or is_admin:
+                msg = await message.channel.send("⏳ Syncing slash commands for this server and globally...")
+                try:
+                    self.bot.tree.copy_global_to(guild=message.guild)
+                    synced_guild = await self.bot.tree.sync(guild=message.guild)
+                    synced_global = await self.bot.tree.sync()
+                    await msg.edit(content=f"✅ Successfully synced **{len(synced_guild)}** commands instantly to **{message.guild.name}** (and **{len(synced_global)}** globally)!\n💡 *Tip: If commands don't show up immediately, press `Ctrl + R` (or restart Discord) to refresh your client cache.*")
+                except Exception as e:
+                    await msg.edit(content=f"❌ Sync failed: {e}")
+                return
+
         # Ticket status prefix commands (?sh, ?dq, ?dd, ?ho, $close, $delete)
         if command in ['?sh', '?dq', '?dd', '?ho', '$close', '$delete']:
+
             is_owner = message.author.id == BOT_OWNER_ID
             is_admin = message.author.guild_permissions.administrator if hasattr(message.author, 'guild_permissions') else False
             has_role = False

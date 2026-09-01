@@ -23,7 +23,6 @@ from core.state import (
     get_system_name, get_bracket_link, get_bracket_api_key,
     get_link_bracket, get_link_deadline, get_link_rules,
     ROLE_IDS, CHANNEL_IDS, scheduled_events, save_scheduled_events,
-    scheduled_deadlines, reminder_tasks, deadline_tasks, get_default_tournament_data
     scheduled_deadlines, reminder_tasks, deadline_tasks,
     auto_room_loops, auto_room_locks, get_default_tournament_data
 )
@@ -33,7 +32,6 @@ from core.database import (
     save_event_to_supabase, log_bot_activity, sheetdb_post,
     update_challonge_match, get_challonge_matches, get_challonge_participants,
     get_guild_staff_stats, save_guild_staff_stats, update_staff_stats,
-    update_results_embed_with_links, save_scheduled_deadline, delete_scheduled_deadline
     update_results_embed_with_links, save_scheduled_deadline, delete_scheduled_deadline,
     fetch_challonge_open_matches, fetch_google_sheet_captains
 )
@@ -2069,22 +2067,28 @@ class Tournaments(commands.Cog):
         asyncio.create_task(self._init_auto_room_loops())
 
     async def _init_deadline_tasks(self):
-        await self.bot.wait_until_ready()
-        for dl_id, dl_data in list(scheduled_deadlines.items()):
-            try:
-                schedule_deadline_tasks(self.bot, dl_id)
-            except Exception as e:
-                print(f"Error initializing deadline task {dl_id}: {e}")
+        try:
+            await self.bot.wait_until_ready()
+            for dl_id, dl_data in list(scheduled_deadlines.items()):
+                try:
+                    schedule_deadline_tasks(self.bot, dl_id)
+                except Exception as e:
+                    print(f"Error initializing deadline task {dl_id}: {e}")
+        except Exception:
+            pass
 
     async def _init_auto_room_loops(self):
-        await self.bot.wait_until_ready()
-        for guild in self.bot.guilds:
-            try:
-                tourns = load_guild_tournaments(guild.id)
-                if any(t.get('auto_room_creation') for t in tourns.values()):
-                    start_auto_room_loop(self.bot, guild.id)
-            except Exception as e:
-                print(f"Error initializing auto_room loop for guild {guild.id}: {e}")
+        try:
+            await self.bot.wait_until_ready()
+            for guild in self.bot.guilds:
+                try:
+                    tourns = load_guild_tournaments(guild.id)
+                    if any(t.get('auto_room_creation') for t in tourns.values()):
+                        start_auto_room_loop(self.bot, guild.id)
+                except Exception as e:
+                    print(f"Error initializing auto_room loop for guild {guild.id}: {e}")
+        except Exception:
+            pass
 
 
 

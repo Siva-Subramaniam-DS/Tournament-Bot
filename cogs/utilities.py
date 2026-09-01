@@ -633,15 +633,20 @@ async def recurring_embed_delete(interaction: discord.Interaction, embed_id: str
 class Utilities(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.recurring_task = self.bot.loop.create_task(self.recurring_embed_loop())
+        self.recurring_task = asyncio.create_task(self.recurring_embed_loop())
+
 
     def cog_unload(self):
         if self.recurring_task and not self.recurring_task.done():
             self.recurring_task.cancel()
 
     async def recurring_embed_loop(self):
-        await self.bot.wait_until_ready()
+        try:
+            await self.bot.wait_until_ready()
+        except Exception:
+            return
         print("[RecurringEmbeds] Background loop started.")
+
         while not self.bot.is_closed():
             now = datetime.datetime.utcnow()
             to_update = {}
