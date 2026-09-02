@@ -19,7 +19,7 @@ from core.state import (
     current_guild_id, with_guild_context, is_authorized_to_configure,
     is_staff, has_organizer_permission, GUILD_CONFIG_CACHE,
     get_default_config, PLAYER_INFO_LINK, PLAYER_INFO_FORMAT,
-    CHANNEL_IDS
+    CHANNEL_IDS, get_org_name
 )
 from core.database import (
     supabase_client, get_guild_config, save_guild_config,
@@ -397,8 +397,10 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
                 desc_lines = []
                 if member:
                     desc_lines.append(f"💂 {member.mention}\n")
-                elif p_data['discord_id'] != 'None' and p_data['discord_id'].isdigit():
+                elif p_data.get('discord_id') and p_data['discord_id'] != 'None' and p_data['discord_id'].isdigit():
                     desc_lines.append(f"💂 <@{p_data['discord_id']}>\n")
+                elif p_data.get('discord_tag') and p_data['discord_tag'] != 'None':
+                    desc_lines.append(f"💂 **@{p_data['discord_tag']}**\n")
 
                 desc_lines.extend(format_player_block_quote("Captain details" if is_1v1 else "Player details", p_data, emoji="💂", is_captain=True))
 
@@ -451,8 +453,10 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
                 desc_lines = []
                 if member:
                     desc_lines.append(f"💂 {member.mention}\n")
-                elif cap_data['discord_id'] != 'None' and cap_data['discord_id'].isdigit():
+                elif cap_data.get('discord_id') and cap_data['discord_id'] != 'None' and cap_data['discord_id'].isdigit():
                     desc_lines.append(f"💂 <@{cap_data['discord_id']}>\n")
+                elif cap_data.get('discord_tag') and cap_data['discord_tag'] != 'None':
+                    desc_lines.append(f"💂 **@{cap_data['discord_tag']}**\n")
 
                 desc_lines.extend(format_player_block_quote("Captain details", cap_data, emoji="💂", is_captain=True))
 
