@@ -203,6 +203,9 @@ def extract_player_fields(header: list, row: list, is_captain: bool = False, pla
             "player title", "title", "rank", "role", "player in-game title", "in-game title", "in game title"
         ]
 
+    sl_aliases = ["sl", "sl.", "sl no", "s.no", "sno", "serial", "sr no", "sr. no", "sr.no", "#", "no"]
+    group_aliases = ["group choice", "group", "group preference", "bracket", "grp choice", "grp"]
+
     def _find_val(aliases_list):
         for alias in aliases_list:
             col = _col_index(header, alias)
@@ -217,6 +220,8 @@ def extract_player_fields(header: list, row: list, is_captain: bool = False, pla
     raw_game_id = _find_val(game_id_aliases)
     raw_title = _find_val(title_aliases)
     raw_tag = _find_val(tag_aliases)
+    raw_sl = _find_val(sl_aliases)
+    raw_group = _find_val(group_aliases)
 
     from core.database import extract_discord_id_from_text
 
@@ -252,22 +257,67 @@ def extract_player_fields(header: list, row: list, is_captain: bool = False, pla
         raw_tag = member.name
 
     return {
+        "sl": raw_sl or "None",
         "discord_tag": raw_tag or "None",
         "discord_id": clean_id or raw_id or "None",
         "game_name": raw_name or "None",
         "game_id": raw_game_id or "None",
         "title": raw_title or "None",
+        "group_choice": raw_group or "None",
         "member": member,
         "raw_id": raw_id
     }
 
-def format_player_block_quote(section_header: str, data: dict, emoji: str = "💂") -> list:
+def format_player_block_quote(section_header: str, data: dict, emoji: str = "💂", is_captain: bool = True) -> list:
     lines = [f"{emoji} **{section_header}**"]
-    lines.append(f"> **Discord Tag:** `{data['discord_tag']}`")
-    lines.append(f"> **Discord ID:** `{data['discord_id']}`")
-    lines.append(f"> **Game Name:** `{data['game_name']}`")
-    lines.append(f"> **Game ID:** `{data['game_id']}`")
-    lines.append(f"> **Title:** `{data['title']}`")
+    
+    # SL Number
+    sl_val = data.get('sl')
+    if sl_val and sl_val != "None":
+        lines.append(f"> **SL.:** `{sl_val}`")
+
+    # Discord Username
+    d_tag = data.get('discord_tag')
+    if d_tag and d_tag != "None":
+        lines.append(f"> **Discord Username:** `{d_tag}`")
+    elif data.get('member'):
+        lines.append(f"> **Discord Username:** `{data['member'].name}`")
+
+    # Discord ID
+    d_id = data.get('discord_id')
+    if d_id and d_id != "None":
+        lines.append(f"> **Discord ID:** `{d_id}`")
+
+    # Verification
+    member = data.get('member')
+    role_label = "Captain" if is_captain else "Player"
+    if member:
+        lines.append(f"> **Verification ({role_label}):** 🟢 In server")
+    elif d_id and d_id != "None" and d_id.isdigit():
+        lines.append(f"> **Verification ({role_label}):** 🔴 Not in server")
+    else:
+        lines.append(f"> **Verification ({role_label}):** ⚪ Pending")
+
+    # Game Name
+    g_name = data.get('game_name')
+    if g_name and g_name != "None":
+        lines.append(f"> **Game Name:** `{g_name}`")
+
+    # Game ID
+    g_id = data.get('game_id')
+    if g_id and g_id != "None":
+        lines.append(f"> **Game ID:** `{g_id}`")
+
+    # Title
+    title_val = data.get('title')
+    if title_val and title_val != "None":
+        lines.append(f"> **Title:** `{title_val}`")
+
+    # Group Choice
+    grp_val = data.get('group_choice')
+    if grp_val and grp_val != "None":
+        lines.append(f"> **Group Choice:** `{grp_val}`")
+
     return lines
 
 
@@ -308,8 +358,12 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
             except:
                 pass
 
+        org_name = get_org_name(guild.id) if guild else "Fanplay APAC"
+        t_cfg = get_active_tournament_config(guild.id) if guild else None
+        tourney_title = (t_cfg.get('name') if t_cfg else None) or "Tournament"
+
         posted_count = 0
-        for row in rows[1:]:
+        for idx, row in enumerate(rows[1:], start=1):
             if not row or all(not cell.strip() for cell in row):
                 continue
 
@@ -325,6 +379,9 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
 
             if is_1v1:
                 p_data = extract_player_fields(header, row, is_captain=False, guild=guild)
+                if p_data.get('sl') == "None":
+                    p_data['sl'] = str(idx)
+
                 member = p_data['member']
                 if not member and p_data['discord_id'] != "None" and p_data['discord_id'].isdigit():
                     try:
@@ -343,7 +400,7 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
                 elif p_data['discord_id'] != 'None' and p_data['discord_id'].isdigit():
                     desc_lines.append(f"💂 <@{p_data['discord_id']}>\n")
 
-                desc_lines.extend(format_player_block_quote("Captain details" if is_1v1 else "Player details", p_data, emoji="💂"))
+                desc_lines.extend(format_player_block_quote("Captain details" if is_1v1 else "Player details", p_data, emoji="💂", is_captain=True))
 
                 embed = discord.Embed(
                     title=f"🏆 {title_name}",
@@ -358,7 +415,7 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
                 elif guild and guild.icon:
                     embed.set_thumbnail(url=guild.icon.url)
 
-                footer_parts = [guild.name, "Player Info"]
+                footer_parts = [org_name, tourney_title]
                 if seed_val:
                     footer_parts.append(f"Seed #{seed_val}")
                 embed.set_footer(text=" • ".join(footer_parts))
@@ -376,6 +433,9 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
                     tn_val = row[tn_col].strip()
 
                 cap_data = extract_player_fields(header, row, is_captain=True, guild=guild)
+                if cap_data.get('sl') == "None":
+                    cap_data['sl'] = str(idx)
+
                 member = cap_data['member']
                 if not member and cap_data['discord_id'] != "None" and cap_data['discord_id'].isdigit():
                     try:
@@ -394,13 +454,13 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
                 elif cap_data['discord_id'] != 'None' and cap_data['discord_id'].isdigit():
                     desc_lines.append(f"💂 <@{cap_data['discord_id']}>\n")
 
-                desc_lines.extend(format_player_block_quote("Captain details", cap_data, emoji="💂"))
+                desc_lines.extend(format_player_block_quote("Captain details", cap_data, emoji="💂", is_captain=True))
 
                 for n in range(2, team_size + 1):
                     pn_data = extract_player_fields(header, row, is_captain=False, player_num=n, guild=guild)
                     if any(pn_data[k] != "None" for k in ["discord_tag", "discord_id", "game_name", "game_id", "title"]):
                         desc_lines.append("")
-                        desc_lines.extend(format_player_block_quote(f"Player {n} details", pn_data, emoji="👥"))
+                        desc_lines.extend(format_player_block_quote(f"Player {n} details", pn_data, emoji="👥", is_captain=False))
 
                 embed = discord.Embed(
                     title=f"🏆 {team_title}",
@@ -415,7 +475,7 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
                 elif guild and guild.icon:
                     embed.set_thumbnail(url=guild.icon.url)
 
-                footer_parts = [guild.name, "Team Info"]
+                footer_parts = [org_name, tourney_title]
                 if seed_val:
                     footer_parts.append(f"Seed #{seed_val}")
                 embed.set_footer(text=" • ".join(footer_parts))
