@@ -994,7 +994,7 @@ async def save_event_to_supabase(event_id: str, event_data: dict):
         raw_tourney = event_data.get('tournament_id') or event_data.get('tournament') or ''
         resolved_t_id = None
         
-        if guild_id:
+        if guild_id and str(raw_tourney).strip():
             try:
                 tournaments = load_guild_tournaments(int(guild_id))
                 t_clean = str(raw_tourney).strip().lower()
@@ -1005,13 +1005,37 @@ async def save_event_to_supabase(event_id: str, event_data: dict):
                         if tcfg.get('name', '').strip().lower() == t_clean:
                             resolved_t_id = tid
                             break
-                if resolved_t_id:
+                if resolved_t_id and resolved_t_id in tournaments:
                     _sync_save_tournament_to_supabase(int(guild_id), resolved_t_id, tournaments[resolved_t_id])
             except Exception as tourney_sync_err:
                 print(f"[Supabase] Note on tournament pre-sync: {tourney_sync_err}")
 
-        if not resolved_t_id:
-            resolved_t_id = str(raw_tourney).strip()
+        # Check if resolved_t_id is valid non-empty string; if not, set to None (NULL in SQL)
+        if resolved_t_id and str(resolved_t_id).strip():
+            resolved_t_id = str(resolved_t_id).strip()
+        elif str(raw_tourney).strip():
+            t_candidate = str(raw_tourney).strip()
+            # Verify if this tournament exists in Supabase Tournaments table
+            try:
+                t_check_res = supabase_client.table("Tournaments").select("Tournament_ID").eq("Tournament_ID", t_candidate).execute()
+                if t_check_res and t_check_res.data and len(t_check_res.data) > 0:
+                    resolved_t_id = t_candidate
+                elif guild_id:
+                    # Upsert placeholder tournament so FK constraint is satisfied
+                    t_payload = {
+                        "Tournament_ID": t_candidate,
+                        "Guild_ID": str(guild_id),
+                        "Tournament_Name": t_candidate,
+                        "Status": "active"
+                    }
+                    supabase_client.table("Tournaments").upsert(t_payload, on_conflict="Tournament_ID").execute()
+                    resolved_t_id = t_candidate
+                else:
+                    resolved_t_id = None
+            except Exception:
+                resolved_t_id = None
+        else:
+            resolved_t_id = None
 
         target_table = "Matches"
         try:
@@ -1043,9 +1067,19 @@ async def save_event_to_supabase(event_id: str, event_data: dict):
                 "match_results_message_id": str(event_data.get('match_results_message_id', '')),
                 "match_results_channel_id": str(event_data.get('match_results_channel_id', ''))
             }
-            await asyncio.to_thread(
-                lambda: supabase_client.table("Matches").upsert(match_row, on_conflict="Match_ID").execute()
-            )
+            try:
+                await asyncio.to_thread(
+                    lambda: supabase_client.table("Matches").upsert(match_row, on_conflict="Match_ID").execute()
+                )
+            except Exception as upsert_err:
+                # If foreign key fails, retry with Tournament_ID = None
+                if "Matches_Tournament_ID_fkey" in str(upsert_err) or "Tournament_ID" in str(upsert_err):
+                    match_row["Tournament_ID"] = None
+                    await asyncio.to_thread(
+                        lambda: supabase_client.table("Matches").upsert(match_row, on_conflict="Match_ID").execute()
+                    )
+                else:
+                    raise upsert_err
         else:
             legacy_row = {
                 "Guild_ID": str(guild_id) if guild_id else "",
