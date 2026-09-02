@@ -1741,6 +1741,7 @@ def create_match_room_embed(
     deadline_link: Optional[str] = None,
     helper_role: Optional[discord.Role] = None,
     org_name: Optional[str] = None,
+    is_1v1: bool = False,
 ) -> tuple[str, discord.Embed]:
     """
     Constructs the notification ping content and the rich green 'Match Room Created' embed matching the reference design.
@@ -1751,10 +1752,44 @@ def create_match_room_embed(
         pings.append(str(captain1_mention).strip())
     if captain2_mention and "<@" in str(captain2_mention):
         pings.append(str(captain2_mention).strip())
-    
-    ping_content = " ".join(pings) if pings else f"**Match:** {team1_name} vs {team2_name}"
 
-    # 2. Match Room Created Embed (Vibrant green border matching screenshot: #2ECC71)
+    # 2. Resolve clean display titles (Game Name / IGN for 1v1, Team Name for 2v2/3v3/5v5)
+    def clean_name_for_title(raw_name: str, ign_val: Optional[str], default_label: str) -> str:
+        cand = str(raw_name or "").strip()
+        ign_clean = str(ign_val or "").strip() if (ign_val and "<@" not in str(ign_val)) else ""
+
+        # If cand is raw mention <@123...>
+        if cand.startswith("<@") and cand.endswith(">"):
+            uid = extract_discord_id_from_text(cand)
+            if uid and guild:
+                mem = guild.get_member(uid)
+                if mem:
+                    return mem.display_name
+            if ign_clean:
+                return ign_clean
+            return default_label
+
+        if is_1v1:
+            if ign_clean and (not cand or cand.lower() in ("team 1", "team 2", "player 1", "player 2", "n/a", "none") or "<@" in cand):
+                return ign_clean
+            if cand and "<@" not in cand:
+                return cand
+            if ign_clean:
+                return ign_clean
+            return default_label
+        else:
+            if cand and "<@" not in cand:
+                return cand
+            if ign_clean:
+                return ign_clean
+            return default_label
+
+    p1_title = clean_name_for_title(team1_name, captain1_ign_or_id, "Player 1" if is_1v1 else "Team 1")
+    p2_title = clean_name_for_title(team2_name, captain2_ign_or_id, "Player 2" if is_1v1 else "Team 2")
+
+    ping_content = " ".join(pings) if pings else f"**Match:** {p1_title} vs {p2_title}"
+
+    # 3. Match Room Created Embed (Vibrant green border matching screenshot: #2ECC71)
     embed = discord.Embed(
         title="🐸 Match Room Created",
         color=discord.Color(0x2ECC71)
@@ -1765,7 +1800,7 @@ def create_match_room_embed(
     c_mentions_line = f"{captain1_mention} {captain2_mention}".strip()
 
     desc_lines = [
-        f"**{team1_name} 🆚 {team2_name}**\n",
+        f"**{p1_title} 🆚 {p2_title}**\n",
         f"🏆 **Tournament:** {t_name}",
         f"**Group:** {grp_str} | **Round:** {round_name}"
     ]
@@ -1774,25 +1809,53 @@ def create_match_room_embed(
 
     embed.description = "\n".join(desc_lines)
 
-    # Team 1 Field
-    c1_display = captain1_mention if (captain1_mention and "<@" in str(captain1_mention)) else team1_name
-    c1_id_val = captain1_ign_or_id or captain1_mention or team1_name
-    clean_c1_id = re.sub(r'<@!?\d+>', '', str(c1_id_val)).strip() or str(c1_id_val).strip()
-    embed.add_field(
-        name=f"🦅 **Team 1:** {c1_display}",
-        value=f"Captain: `{clean_c1_id}`",
-        inline=False
-    )
+    # Clean IGN / ID values for fields
+    c1_raw_ign = str(captain1_ign_or_id or '').strip()
+    c2_raw_ign = str(captain2_ign_or_id or '').strip()
+    clean_c1_id = re.sub(r'<@!?\d+>', '', c1_raw_ign).strip()
+    clean_c2_id = re.sub(r'<@!?\d+>', '', c2_raw_ign).strip()
 
-    # Team 2 Field
-    c2_display = captain2_mention if (captain2_mention and "<@" in str(captain2_mention)) else team2_name
-    c2_id_val = captain2_ign_or_id or captain2_mention or team2_name
-    clean_c2_id = re.sub(r'<@!?\d+>', '', str(c2_id_val)).strip() or str(c2_id_val).strip()
-    embed.add_field(
-        name=f"🦅 **Team 2:** {c2_display}",
-        value=f"Captain: `{clean_c2_id}`",
-        inline=False
-    )
+    # Team 1 / Player 1 Field
+    p1_label = "Player 1" if is_1v1 else "Team 1"
+    if clean_c1_id:
+        embed.add_field(
+            name=f"🦅 **{p1_label}:** {p1_title}",
+            value=f"Captain: `{clean_c1_id}`",
+            inline=False
+        )
+    elif captain1_mention and "<@" in str(captain1_mention):
+        embed.add_field(
+            name=f"🦅 **{p1_label}:** {p1_title}",
+            value=f"Captain: {captain1_mention}",
+            inline=False
+        )
+    else:
+        embed.add_field(
+            name=f"🦅 **{p1_label}:** {p1_title}",
+            value="Captain: `N/A`",
+            inline=False
+        )
+
+    # Team 2 / Player 2 Field
+    p2_label = "Player 2" if is_1v1 else "Team 2"
+    if clean_c2_id:
+        embed.add_field(
+            name=f"🦅 **{p2_label}:** {p2_title}",
+            value=f"Captain: `{clean_c2_id}`",
+            inline=False
+        )
+    elif captain2_mention and "<@" in str(captain2_mention):
+        embed.add_field(
+            name=f"🦅 **{p2_label}:** {p2_title}",
+            value=f"Captain: {captain2_mention}",
+            inline=False
+        )
+    else:
+        embed.add_field(
+            name=f"🦅 **{p2_label}:** {p2_title}",
+            value="Captain: `N/A`",
+            inline=False
+        )
 
     # Rules / Deadline / Action Notice
     rules_val = f"<#{rules_channel_id}>" if rules_channel_id else (f"[Rules Channel]({rules_link})" if rules_link else "Not Set")
@@ -2185,11 +2248,11 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                     rules_link=rules_link,
                     deadline_link=deadline_link,
                     helper_role=helper_team_role,
-                    org_name=org_name
+                    org_name=org_name,
+                    is_1v1=is_1v1
                 )
                 
-                ready_view = MatchReadyView(team1, team2, c1_uid, c2_uid)
-                await new_ch.send(content=ping_content, embed=room_embed, view=ready_view)
+                await new_ch.send(content=ping_content, embed=room_embed)
                 created_count += 1
             except Exception as e:
                 print(f"Error creating auto-room channel {chan_name}: {e}")
@@ -2785,6 +2848,9 @@ class Tournaments(commands.Cog):
             c2_ign = team_2 if team_2 else captain2.name
             org_name = get_org_name(interaction.guild_id) if interaction.guild_id else None
 
+            player_format = t_cfg.get('player_info_format') if t_cfg else ''
+            is_1v1_cmd = ("1" in str(player_format) and "vs" in str(player_format)) or not (team_1 and team_2)
+
             ping_content, room_embed = create_match_room_embed(
                 guild=interaction.guild,
                 tournament_name=tourney_name,
@@ -2802,11 +2868,11 @@ class Tournaments(commands.Cog):
                 rules_link=get_link_rules(interaction),
                 deadline_link=get_link_deadline(interaction),
                 helper_role=helper_team_role,
-                org_name=org_name
+                org_name=org_name,
+                is_1v1=is_1v1_cmd
             )
 
-            ready_view = MatchReadyView(t1_name, t2_name, captain1.id, captain2.id)
-            await channel.send(content=ping_content, embed=room_embed, view=ready_view)
+            await channel.send(content=ping_content, embed=room_embed)
 
         except Exception as e:
             await interaction.response.send_message(f"❌ An error occurred: {str(e)}", ephemeral=False)
