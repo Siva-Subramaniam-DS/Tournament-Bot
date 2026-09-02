@@ -1013,6 +1013,175 @@ async def staff_work_cmd(
 
 
 # ===========================================================================================
+# AVAILABLE EVENTS INTERACTIVE CLAIM VIEW
+# ===========================================================================================
+
+class AvailableEventsClaimSelect(discord.ui.Select):
+    def __init__(self, unassigned_events: list, guild: discord.Guild):
+        options = []
+        for idx, (ev_id, data) in enumerate(unassigned_events[:25], start=1):
+            team1_name = data.get('team1_name') or "Team 1"
+            team2_name = data.get('team2_name') or "Team 2"
+            round_label = data.get('round', 'Round')
+            time_str = data.get('time_str', 'N/A')
+            date_str = data.get('date_str', 'N/A')
+            
+            lbl = f"{idx}. {team1_name} vs {team2_name}"
+            if len(lbl) > 100:
+                lbl = lbl[:97] + "..."
+            desc = f"{round_label} • {time_str}, {date_str}"
+            if len(desc) > 100:
+                desc = desc[:97] + "..."
+                
+            options.append(discord.SelectOption(
+                label=lbl,
+                description=desc,
+                value=str(ev_id),
+                emoji="⚖️"
+            ))
+        super().__init__(
+            placeholder="👉 Select a match from this list to claim as Judge...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="available_events_claim_select"
+        )
+        self.unassigned_events = unassigned_events
+
+    async def callback(self, interaction: discord.Interaction):
+        ev_id = self.values[0]
+        ev = scheduled_events.get(ev_id)
+        if not ev:
+            await interaction.response.send_message("❌ This match could not be found or has already expired.", ephemeral=True)
+            return
+
+        is_admin = interaction.guild and interaction.user.guild_permissions.administrator
+        is_owner = interaction.user.id == BOT_OWNER_ID
+        head_organizer_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_organizer"]) if interaction.user else None
+        helper_team_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["helper_team"]) if interaction.user else None
+        judge_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["judge"]) if interaction.user else None
+        recorder_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["recorder"]) if interaction.user else None
+        staff_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["staff"]) if interaction.user else None
+        has_allowed_role = any([head_organizer_role, helper_team_role, judge_role, recorder_role, staff_role])
+
+        if not (has_allowed_role or is_owner or is_admin):
+            await interaction.response.send_message("❌ You do not have the required staff/judge role to claim this match.", ephemeral=True)
+            return
+
+        if ev.get('judge'):
+            j_val = ev.get('judge')
+            j_name = getattr(j_val, 'display_name', str(j_val))
+            await interaction.response.send_message(f"❌ This match was already claimed by **{j_name}**.", ephemeral=True)
+            return
+
+        # Check if match already started
+        dt = ev.get('datetime')
+        if dt:
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=pytz.UTC)
+            if datetime.datetime.now(pytz.UTC) >= dt:
+                await interaction.response.send_message("❌ This match has already started and can no longer be claimed.", ephemeral=True)
+                return
+
+        # Assign judge
+        ev['judge'] = interaction.user
+        add_judge_assignment(interaction.user.id, ev_id)
+        save_scheduled_events()
+
+        t1_name = ev.get('team1_name') or "Team 1"
+        t2_name = ev.get('team2_name') or "Team 2"
+
+        # Update original schedule message if accessible
+        try:
+            ch_id = ev.get('schedule_channel_id') or ev.get('channel_id')
+            msg_id = ev.get('schedule_message_id')
+            if ch_id and msg_id and interaction.guild:
+                sched_ch = interaction.guild.get_channel(int(ch_id)) or await interaction.guild.fetch_channel(int(ch_id))
+                if sched_ch:
+                    orig_msg = await sched_ch.fetch_message(int(msg_id))
+                    if orig_msg and orig_msg.embeds:
+                        orig_embed = orig_msg.embeds[0]
+                        orig_embed.color = discord.Color.green()
+                        update_embed_title_with_checkmark(orig_embed)
+                        update_judge_field(orig_embed, interaction.user, ev.get('recorder'))
+                        
+                        t1_cap = ev.get('team1_captain')
+                        t2_cap = ev.get('team2_captain')
+                        new_view = TakeScheduleButton(ev_id, t1_cap, t2_cap, sched_ch)
+                        await orig_msg.edit(embed=orig_embed, view=new_view)
+        except Exception as update_err:
+            print(f"Could not update original schedule message: {update_err}")
+
+        # Send notification to match channel if present
+        try:
+            match_ch_id = ev.get('channel_id')
+            if match_ch_id and interaction.guild:
+                match_ch = interaction.guild.get_channel(int(match_ch_id)) or await interaction.guild.fetch_channel(int(match_ch_id))
+                if match_ch:
+                    emoji = get_staff_emoji(interaction.guild, "judge")
+                    await match_ch.send(f"{interaction.user.mention} assigned as **judge** {emoji}")
+        except Exception as notify_err:
+            print(f"Could not send match channel notification: {notify_err}")
+
+        # Log activity
+        log_embed = discord.Embed(
+            title="⚖️ Schedule Claimed via /available_events",
+            description=f"Judge **{interaction.user.display_name}** claimed match **{t1_name} vs {t2_name}** (Event ID: `{ev_id}`).",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow()
+        )
+        log_embed.set_footer(text=f"Claimed by {interaction.user.display_name}")
+        await log_bot_activity(interaction.guild, log_embed)
+
+        # Refresh the current available events message
+        remaining = [item for item in self.unassigned_events if item[0] != ev_id and not scheduled_events.get(item[0], {}).get('judge')]
+        
+        if not remaining:
+            new_embed = discord.Embed(
+                title="📝 Available Events",
+                description="✅ All events currently have a judge assigned!",
+                color=discord.Color.green(),
+                timestamp=discord.utils.utcnow()
+            )
+            await interaction.response.edit_message(embed=new_embed, view=None)
+        else:
+            new_embed = discord.Embed(
+                title="📝 Available Events",
+                description="Events without a judge. Select a match below to claim it immediately!",
+                color=discord.Color.orange(),
+                timestamp=discord.utils.utcnow()
+            )
+            new_lines = []
+            for idx, (e_id, e_data) in enumerate(remaining[:25], start=1):
+                r_lbl = e_data.get('round', 'Round')
+                d_str = e_data.get('date_str', 'N/A')
+                t_str = e_data.get('time_str', 'N/A')
+                c_id = e_data.get('schedule_channel_id') or e_data.get('channel_id')
+                m_id = e_data.get('schedule_message_id')
+                tm1_name = e_data.get('team1_name') or "Team 1"
+                tm2_name = e_data.get('team2_name') or "Team 2"
+                m_link = f"https://discord.com/channels/{interaction.guild.id}/{c_id}/{m_id}" if (c_id and m_id) else None
+                m_info = f"**{tm1_name}** vs **{tm2_name}**"
+                if m_link:
+                    line = f"{idx}. {m_info} • {r_lbl} • {t_str}, {d_str}\n   [🔗 **Jump to Schedule Message**]({m_link})"
+                else:
+                    line = f"{idx}. {m_info} • {r_lbl} • {t_str}, {d_str}"
+                new_lines.append(line)
+            new_embed.add_field(name=f"Available ({len(remaining)})", value="\n\n".join(new_lines), inline=False)
+            new_embed.set_footer(text="Select an open match from the dropdown below to claim it as Judge.")
+            new_view = AvailableEventsClaimView(remaining, interaction.guild)
+            await interaction.response.edit_message(embed=new_embed, view=new_view)
+
+        await interaction.followup.send(f"✅ You have successfully claimed match **{t1_name} vs {t2_name}** as Judge!", ephemeral=False)
+
+
+class AvailableEventsClaimView(discord.ui.View):
+    def __init__(self, unassigned_events: list, guild: discord.Guild):
+        super().__init__(timeout=300)
+        self.add_item(AvailableEventsClaimSelect(unassigned_events, guild))
+
+
+# ===========================================================================================
 # STAFF COG
 # ===========================================================================================
 
@@ -1110,9 +1279,7 @@ class Staff(commands.Cog):
         except Exception as log_err:
             print(f"Error logging staff-update: {log_err}")
 
-    @app_commands.command(name="available_events", description="List events without a judge assigned (Judges/Organizers)")
-    @with_guild_context
-    async def available_events_cmd(self, interaction: discord.Interaction):
+    async def _handle_available_events(self, interaction: discord.Interaction):
         try:
             is_owner = interaction.user.id == BOT_OWNER_ID if interaction.user else False
             is_admin = interaction.guild and interaction.user.guild_permissions.administrator if (interaction.user and interaction.guild) else False
@@ -1146,7 +1313,7 @@ class Staff(commands.Cog):
 
             embed = discord.Embed(
                 title="📝 Available Events",
-                description="Events without a judge. Use the message link to take the schedule.",
+                description="Events without a judge. Use the direct links or select from the dropdown below to claim immediately!",
                 color=discord.Color.orange(),
                 timestamp=discord.utils.utcnow()
             )
@@ -1172,17 +1339,34 @@ class Staff(commands.Cog):
 
                 match_info = f"**{team1_name}** vs **{team2_name}**"
                 if link:
-                    line = f"{idx}. {match_info} • {round_label} • {time_str}, {date_str}\n   [🔗 **Click here to take schedule**]({link})"
+                    line = f"{idx}. {match_info} • {round_label} • {time_str}, {date_str}\n   [🔗 **Click here to jump to schedule**]({link})"
                 else:
-                    line = f"{idx}. {match_info} • {round_label} • {time_str}, {date_str}\n   ⚠️ *No message link available*"
+                    line = f"{idx}. {match_info} • {round_label} • {time_str}, {date_str}"
                 lines.append(line)
 
             embed.add_field(name=f"Available ({len(unassigned)})", value="\n\n".join(lines), inline=False)
-            embed.set_footer(text="Click the link to jump to the schedule message and press 'Take Schedule' button.")
-            await interaction.response.send_message(embed=embed, ephemeral=False)
+            embed.set_footer(text="Select an open match from the dropdown below to claim it as Judge instantly.")
+            
+            view = AvailableEventsClaimView(unassigned, interaction.guild)
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
         except Exception as e:
             print(f"Error in available_events: {e}")
             await interaction.response.send_message("❌ An error occurred while fetching available events.", ephemeral=False)
+
+    @app_commands.command(name="available_events", description="List events without a judge assigned with interactive claim buttons (Judges/Organizers)")
+    @with_guild_context
+    async def available_events_cmd(self, interaction: discord.Interaction):
+        await self._handle_available_events(interaction)
+
+    @app_commands.command(name="unassigned_schedule", description="List all scheduled matches needing a judge with interactive claim menu")
+    @with_guild_context
+    async def unassigned_schedule_cmd(self, interaction: discord.Interaction):
+        await self._handle_available_events(interaction)
+
+    @app_commands.command(name="unassigned", description="Shortcut to list unassigned tournament matches")
+    @with_guild_context
+    async def unassigned_cmd(self, interaction: discord.Interaction):
+        await self._handle_available_events(interaction)
 
     @app_commands.command(name="reassign", description="Resign from an event as Judge or Recorder and notify other staff to take it")
     @with_guild_context

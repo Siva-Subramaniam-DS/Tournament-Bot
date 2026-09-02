@@ -759,10 +759,34 @@ def update_embed_title_with_checkmark(embed: discord.Embed) -> bool:
         print(f"Error updating embed title with checkmark: {e}")
         return False
 
+def load_scheduled_events() -> dict:
+    """Load scheduled events from local JSON storage into the shared dictionary."""
+    global scheduled_events
+    path = os.path.join(BASE_DIR, 'scheduled_events.json')
+    if os.path.exists(path):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                import datetime
+                for event_id, event_data in data.items():
+                    if isinstance(event_data, dict) and 'datetime' in event_data and isinstance(event_data['datetime'], str):
+                        try:
+                            event_data['datetime'] = datetime.datetime.fromisoformat(event_data['datetime'])
+                        except Exception:
+                            pass
+                scheduled_events.clear()
+                scheduled_events.update(data)
+                print(f"Loaded {len(scheduled_events)} scheduled events from local fallback")
+        except Exception as e:
+            print(f"Error loading scheduled_events.json: {e}")
+    return scheduled_events
+
 def save_scheduled_events():
+    """Save scheduled events to local JSON and trigger background Supabase synchronization."""
     import json
     import os
     import datetime
+    import asyncio
     from core.config import BASE_DIR
     try:
         data_to_save = {}
@@ -781,7 +805,22 @@ def save_scheduled_events():
             data_to_save[event_id] = event_copy
         path = os.path.join(BASE_DIR, 'scheduled_events.json')
         with open(path, 'w', encoding='utf-8') as f:
-            json.dump(data_to_save, f, indent=4)
+            json.dump(data_to_save, f, indent=4, ensure_ascii=False)
+
+        # Trigger Supabase background save if loop is running
+        try:
+            from core.database import save_event_to_supabase, supabase_client
+            if supabase_client:
+                loop = asyncio.get_running_loop()
+                async def _bg_save_all():
+                    for ev_id, ev_data in list(scheduled_events.items()):
+                        try:
+                            await save_event_to_supabase(ev_id, ev_data)
+                        except Exception:
+                            pass
+                loop.create_task(_bg_save_all())
+        except Exception:
+            pass
     except Exception as e:
         print(f"Error saving scheduled events: {e}")
 

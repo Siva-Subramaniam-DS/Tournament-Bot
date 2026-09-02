@@ -120,18 +120,18 @@ class Listeners(commands.Cog):
         except Exception as e:
             print(f"Startup sweep error: {e}")
 
-        # Command sync
+        # Command sync & duplicate cleanup
         try:
-            print("🔄 Syncing slash commands globally...")
-            synced = await asyncio.wait_for(self.bot.tree.sync(), timeout=30.0)
-            print(f"✅ Synced {len(synced)} global command(s)")
+            print("🔄 Purging guild command duplicates and syncing global slash commands...")
             for g in self.bot.guilds:
                 try:
-                    self.bot.tree.copy_global_to(guild=g)
+                    self.bot.tree.clear_commands(guild=g)
                     await self.bot.tree.sync(guild=g)
-                    print(f"  └─ Synced commands instantly to guild: {g.name} ({g.id})")
                 except Exception as g_err:
-                    print(f"  └─ Guild sync error for {g.name}: {g_err}")
+                    print(f"  └─ Guild duplicate clear error for {g.name}: {g_err}")
+
+            synced = await asyncio.wait_for(self.bot.tree.sync(), timeout=30.0)
+            print(f"✅ Synced {len(synced)} global command(s) cleanly without duplicates")
         except asyncio.TimeoutError:
             print("⚠️ Command sync timed out, but bot will continue running")
         except Exception as e:
@@ -151,17 +151,18 @@ class Listeners(commands.Cog):
         content = message.content.strip()
         command = content.lower()
 
-        # Admin command to immediately sync slash commands to the current server
+        # Admin command to immediately sync slash commands and purge duplicates
         if command in ['!sync', '$sync', '.sync']:
             is_owner = message.author.id == BOT_OWNER_ID
             is_admin = message.author.guild_permissions.administrator if hasattr(message.author, 'guild_permissions') else False
             if is_owner or is_admin:
-                msg = await message.channel.send("⏳ Syncing slash commands for this server and globally...")
+                msg = await message.channel.send("⏳ Purging command duplicates and syncing global slash commands...")
                 try:
-                    self.bot.tree.copy_global_to(guild=message.guild)
-                    synced_guild = await self.bot.tree.sync(guild=message.guild)
+                    # Clear guild-specific duplicate commands
+                    self.bot.tree.clear_commands(guild=message.guild)
+                    await self.bot.tree.sync(guild=message.guild)
                     synced_global = await self.bot.tree.sync()
-                    await msg.edit(content=f"✅ Successfully synced **{len(synced_guild)}** commands instantly to **{message.guild.name}** (and **{len(synced_global)}** globally)!\n💡 *Tip: If commands don't show up immediately, press `Ctrl + R` (or restart Discord) to refresh your client cache.*")
+                    await msg.edit(content=f"✅ Successfully synced **{len(synced_global)}** global commands cleanly (duplicates removed)!\n💡 *Tip: If Discord is still caching old duplicate entries in your client, press `Ctrl + R` (or restart Discord) to refresh.*")
                 except Exception as e:
                     await msg.edit(content=f"❌ Sync failed: {e}")
                 return

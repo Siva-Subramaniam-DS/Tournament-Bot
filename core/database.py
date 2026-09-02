@@ -772,18 +772,23 @@ def update_staff_stats(user: discord.Member, role_type: str):
 
 def load_scheduled_events():
     global scheduled_events
+    path = os.path.join(BASE_DIR, 'scheduled_events.json')
     try:
-        if os.path.exists('scheduled_events.json'):
-            with open('scheduled_events.json', 'r') as f:
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 for event_id, event_data in data.items():
-                    if 'datetime' in event_data:
-                        event_data['datetime'] = datetime.datetime.fromisoformat(event_data['datetime'])
-                scheduled_events = data
-                print(f"Loaded {len(scheduled_events)} scheduled events from file")
+                    if isinstance(event_data, dict) and 'datetime' in event_data and isinstance(event_data['datetime'], str):
+                        try:
+                            event_data['datetime'] = datetime.datetime.fromisoformat(event_data['datetime'])
+                        except Exception:
+                            pass
+                scheduled_events.clear()
+                scheduled_events.update(data)
+                print(f"Loaded {len(scheduled_events)} scheduled events from local file")
     except Exception as e:
-        print(f"Error loading scheduled events: {e}")
-        scheduled_events = {}
+        print(f"Error loading scheduled events from local file: {e}")
+    return scheduled_events
 
 async def load_scheduled_events_from_supabase():
     if not supabase_client:
