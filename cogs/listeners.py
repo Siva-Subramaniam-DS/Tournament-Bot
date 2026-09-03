@@ -32,7 +32,10 @@ from cogs.staff import (
     TakeScheduleButton, StaffConfirmationView, StaffReplacementView
 )
 from cogs.events import schedule_ten_minute_reminder
-from core.emojis import init_emojis_from_bot
+try:
+    from core.emojis import init_emojis_from_bot
+except ImportError:
+    init_emojis_from_bot = None
 
 
 class Listeners(commands.Cog):
@@ -45,11 +48,16 @@ class Listeners(commands.Cog):
         print(f"🆔 Bot ID: {self.bot.user.id}")
         print(f"📊 Connected to {len(self.bot.guilds)} guild(s)")
 
-        # Auto-resolve and cache custom emojis by ID from connected servers
-        try:
-            init_emojis_from_bot(self.bot)
-        except Exception as e:
-            print(f"Error resolving emojis: {e}")
+        # Auto-resolve and cache custom emojis by ID from connected servers and application emojis
+        if init_emojis_from_bot:
+            try:
+                import inspect
+                if inspect.iscoroutinefunction(init_emojis_from_bot):
+                    await init_emojis_from_bot(self.bot)
+                else:
+                    init_emojis_from_bot(self.bot)
+            except Exception as e:
+                print(f"Error resolving emojis: {e}")
 
         # Reschedule reminders and register persistent views
         now_utc = datetime.datetime.now(pytz.UTC)

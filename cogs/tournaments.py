@@ -1822,8 +1822,8 @@ def create_match_room_embed(
     c_mentions_line = f"{captain1_mention} {captain2_mention}".strip()
 
     desc_lines = [
-        f"**{p1_title} 🆚 {p2_title}**\n",
-        f"🏆 **Tournament:** {t_name}",
+        f"**{p1_title} {EMOJIS['vs']} {p2_title}**\n",
+        f"{EMOJIS['trophy']} **Tournament:** {t_name}",
         f"**Group:** {grp_str} | **Round:** {round_name}"
     ]
     if c_mentions_line:

@@ -937,7 +937,7 @@ class Events(commands.Cog):
         captains_text = f"**Captains**\n- Team1 Captain: {w_display_mention}" + (f" ({winner.name})" if winner else "") + f"\n- Team2 Captain: {l_display_mention}" + (f" ({loser.name})" if loser else "")
         embed.add_field(name="", value=captains_text, inline=False)
         
-        results_text = f"**Results**\n{EMOJIS['trophy']} {w_name} ({winner_score}) Vs ({loser_score}) {l_name} {EMOJIS['skull']}"
+        results_text = f"**Results**\n{EMOJIS['trophy']} {w_name} ({winner_score}) {EMOJIS['vs']} ({loser_score}) {l_name} {EMOJIS['skull']}"
         embed.add_field(name="", value=results_text, inline=False)
         
         staff_text = f"**Staffs**\n▪ {EMOJIS['judge']} Judge: {interaction.user.mention}" + (f" ({interaction.user.name})" if interaction.user else "")

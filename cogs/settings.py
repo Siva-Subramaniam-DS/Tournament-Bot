@@ -486,13 +486,14 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
 
                 title_name = p_data['game_name'] if p_data['game_name'] != 'None' else (p_data['discord_tag'] if p_data['discord_tag'] != 'None' else "Player Information")
 
+                p_em = get_emoji('details', guild)
                 desc_mention = ""
                 if member:
-                    desc_mention = f"💂 {member.mention}"
+                    desc_mention = f"{p_em} {member.mention}"
                 elif p_data.get('discord_id') and p_data['discord_id'] != 'None' and p_data['discord_id'].isdigit():
-                    desc_mention = f"💂 <@{p_data['discord_id']}>"
+                    desc_mention = f"{p_em} <@{p_data['discord_id']}>"
                 elif p_data.get('discord_tag') and p_data['discord_tag'] != 'None':
-                    desc_mention = f"💂 **@{p_data['discord_tag']}**"
+                    desc_mention = f"{p_em} **@{p_data['discord_tag']}**"
 
                 embed = discord.Embed(
                     title=f"🏆 {title_name}",
@@ -500,10 +501,10 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
                     color=discord.Color.gold(),
                     timestamp=discord.utils.utcnow()
                 )
-                cap_field_title = f"{get_emoji('captain', guild)} Captain details" if is_1v1 else f"{get_emoji('captain', guild)} Player details"
+                cap_field_title = f"{get_emoji('details', guild)} Player details"
                 embed.add_field(
                     name=cap_field_title,
-                    value=format_player_field_value(p_data, is_captain=True, guild=guild),
+                    value=format_player_field_value(p_data, is_captain=False, guild=guild),
                     inline=False
                 )
                 if member and hasattr(member, 'display_avatar'):
@@ -546,13 +547,14 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
 
                 team_title = tn_val or (cap_data['game_name'] if cap_data['game_name'] != 'None' else "Team Information")
 
+                cap_em = get_emoji('captain', guild)
                 desc_mention = ""
                 if member:
-                    desc_mention = f"💂 {member.mention}"
+                    desc_mention = f"{cap_em} {member.mention}"
                 elif cap_data.get('discord_id') and cap_data['discord_id'] != 'None' and cap_data['discord_id'].isdigit():
-                    desc_mention = f"💂 <@{cap_data['discord_id']}>"
+                    desc_mention = f"{cap_em} <@{cap_data['discord_id']}>"
                 elif cap_data.get('discord_tag') and cap_data['discord_tag'] != 'None':
-                    desc_mention = f"💂 **@{cap_data['discord_tag']}**"
+                    desc_mention = f"{cap_em} **@{cap_data['discord_tag']}**"
 
                 embed = discord.Embed(
                     title=f"🏆 {team_title}",
@@ -570,7 +572,7 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
                     pn_data = extract_player_fields(header, row, is_captain=False, player_num=n, guild=guild)
                     if any(pn_data[k] != "None" for k in ["discord_tag", "discord_id", "game_name", "game_id", "title"]):
                         embed.add_field(
-                            name=f"👥 Player {n} details",
+                            name=f"{get_emoji('details', guild)} Player {n} details",
                             value=format_player_field_value(pn_data, is_captain=False, guild=guild),
                             inline=False
                         )
@@ -1110,15 +1112,16 @@ class Settings(commands.Cog):
 
                 title_name = p_data['game_name'] if p_data['game_name'] != 'None' else (p_data['discord_tag'] if p_data['discord_tag'] != 'None' else user.display_name)
 
+                p_em = get_emoji('details', interaction.guild)
                 pi_embed = discord.Embed(
                     title=f"🏆 {title_name}",
-                    description=f"💂 {user.mention}",
+                    description=f"{p_em} {user.mention}",
                     color=discord.Color.gold(),
                     timestamp=discord.utils.utcnow()
                 )
                 pi_embed.add_field(
-                    name=f"{get_emoji('captain', interaction.guild)} Captain details" if is_1v1 else f"{get_emoji('captain', interaction.guild)} Player details",
-                    value=format_player_field_value(p_data, is_captain=True, guild=interaction.guild),
+                    name=f"{p_em} Player details",
+                    value=format_player_field_value(p_data, is_captain=False, guild=interaction.guild),
                     inline=False
                 )
                 if user.display_avatar:
@@ -1162,14 +1165,15 @@ class Settings(commands.Cog):
 
                 team_title = tn_val or (cap_data['game_name'] if cap_data['game_name'] != 'None' else f"Team {user.display_name}")
 
+                cap_em = get_emoji('captain', interaction.guild)
                 ti_embed = discord.Embed(
                     title=f"🏆 {team_title}",
-                    description=f"💂 {user.mention}",
+                    description=f"{cap_em} {user.mention}",
                     color=discord.Color.gold(),
                     timestamp=discord.utils.utcnow()
                 )
                 ti_embed.add_field(
-                    name=f"{get_emoji('captain', interaction.guild)} Captain details",
+                    name=f"{cap_em} Captain details",
                     value=format_player_field_value(cap_data, is_captain=True, guild=interaction.guild),
                     inline=False
                 )
@@ -1178,7 +1182,7 @@ class Settings(commands.Cog):
                     pn_data = extract_player_fields(header, found_row, is_captain=False, player_num=n, guild=interaction.guild)
                     if any(pn_data[k] != "None" for k in ["discord_tag", "discord_id", "game_name", "game_id", "title"]):
                         ti_embed.add_field(
-                            name=f"👥 Player {n} details",
+                            name=f"{get_emoji('details', interaction.guild)} Player {n} details",
                             value=format_player_field_value(pn_data, is_captain=False, guild=interaction.guild),
                             inline=False
                         )
@@ -1387,8 +1391,8 @@ class Settings(commands.Cog):
                         flags=re.IGNORECASE
                     )
                     new_embed.description = re.sub(
-                        r'💂\s*<@!?\d+>',
-                        f"💂 {mention_clean}",
+                        r'(?:💂|<a?:[a-zA-Z0-9_]+:\d+>)\s*<@!?\d+>',
+                        f"{get_emoji('captain', guild)} {mention_clean}",
                         new_embed.description
                     )
                     updated_embed = True
