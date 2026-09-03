@@ -42,7 +42,7 @@ from core.image_generator import (
 )
 from cogs.staff import (
     TakeScheduleButton, StaffConfirmationView, StaffReplacementView,
-    remove_judge_assignment
+    remove_judge_assignment, add_judge_assignment, get_staff_emoji
 )
 from cogs.tournaments import (
     tournament_autocomplete, game_autocomplete, match_autocomplete,
@@ -501,10 +501,12 @@ class Events(commands.Cog):
         round="Round label",
         tournament="Tournament name (e.g. King of the Seas, Summer Cup, etc.)",
         game="Game for poster background (e.g. Modern Warship, BGMI, Valorant, Free Fire)",
-        group="Group assignment (A-J) or Winner/Loser",
-        team_1_name="Optional name of team 1",
+         team_1_name="Optional name of team 1",
         team_2_name="Optional name of team 2",
-        mode="Optional game mode (e.g. 5v5, 1v1, Battle Royale)"
+        mode="Optional game mode (e.g. 5v5, 1v1, Battle Royale)",
+        judge="Optional: Directly assign a Judge",
+        recorder="Optional: Directly assign a Recorder",
+        remarks="Optional: Remarks (e.g. starting soon, spot match)"
     )
     @app_commands.autocomplete(tournament=tournament_autocomplete, game=game_autocomplete)
     @app_commands.choices(
@@ -555,7 +557,10 @@ class Events(commands.Cog):
         group: app_commands.Choice[str] = None,
         team_1_name: str = None,
         team_2_name: str = None,
-        mode: str = None
+        mode: str = None,
+        judge: Optional[discord.Member] = None,
+        recorder: Optional[discord.Member] = None,
+        remarks: Optional[str] = None
     ):
         await interaction.response.defer(ephemeral=False)
         
@@ -583,15 +588,7 @@ class Events(commands.Cog):
         now_utc = datetime.datetime.now(pytz.UTC)
         event_datetime_utc = event_datetime.replace(tzinfo=pytz.UTC)
         time_until_event = (event_datetime_utc - now_utc).total_seconds() / 60
-        
-        if time_until_event < 20:
-            await interaction.followup.send(
-                "❌ **Cannot create event within 20 minutes of start time!**\n\n"
-                "⚠️ Events must be created **at least 20 minutes before** the scheduled time.",
-                ephemeral=False
-            )
-            return
-        
+
         time_info = calculate_time_difference(event_datetime)
         round_label = round.value if isinstance(round, app_commands.Choice) else str(round)
         group_label = group.value if group and isinstance(group, app_commands.Choice) else None
@@ -607,7 +604,9 @@ class Events(commands.Cog):
             'minutes_left': time_info['minutes_remaining'],
             'tournament': tournament,
             'mode': mode,
-            'judge': None,
+            'judge': judge,
+            'recorder': recorder,
+            'remarks': remarks,
             'channel_id': interaction.channel.id,
             'team1_captain': team_1_captain,
             'team2_captain': team_2_captain,
@@ -615,6 +614,31 @@ class Events(commands.Cog):
             'team2_name': team_2_name
         }
         save_scheduled_events()
+
+        if judge:
+            add_judge_assignment(judge.id, event_id)
+            try:
+                await interaction.channel.set_permissions(
+                    judge,
+                    read_messages=True, send_messages=True, view_channel=True,
+                    embed_links=True, attach_files=True, read_message_history=True
+                )
+                j_emoji = get_staff_emoji(interaction.guild, "judge")
+                await interaction.channel.send(content=f"{judge.mention} assigned as **judge** {j_emoji}")
+            except Exception as e:
+                print(f"Error setting judge channel permissions: {e}")
+
+        if recorder:
+            try:
+                await interaction.channel.set_permissions(
+                    recorder,
+                    read_messages=True, send_messages=True, view_channel=True,
+                    embed_links=True, attach_files=True, read_message_history=True
+                )
+                r_emoji = get_staff_emoji(interaction.guild, "recorder")
+                await interaction.channel.send(content=f"{recorder.mention} assigned as **recorder** {r_emoji}")
+            except Exception as e:
+                print(f"Error setting recorder channel permissions: {e}")
 
         asyncio.create_task(sheetdb_post("Events", {
             "Guild_ID":          str(interaction.guild.id) if interaction.guild else "",
@@ -629,6 +653,11 @@ class Events(commands.Cog):
             "Team1_Captain_Name": team_1_name if team_1_name else team_1_captain.name,
             "Team2_Captain_ID":  str(team_2_captain.id),
             "Team2_Captain_Name": team_2_name if team_2_name else team_2_captain.name,
+            "Judge_ID":          str(judge.id) if judge else "",
+            "Judge_Name":        judge.name if judge else "",
+            "Recorder_ID":       str(recorder.id) if recorder else "",
+            "Recorder_Name":     recorder.name if recorder else "",
+            "Remarks":           remarks or "",
             "Channel_ID":        str(interaction.channel.id),
             "Status":            "Scheduled",
             "Created_By_ID":     str(interaction.user.id),
@@ -729,6 +758,20 @@ class Events(commands.Cog):
         captains_text += f"- Team2 Captain: {team_2_captain.mention} ({team_2_captain.name})" + (f" (Team: **{team_2_name}**)" if team_2_name else "")
         embed.add_field(name="👑 Team Captains", value=captains_text, inline=False)
         embed.add_field(name="\u200b", value="\u200b", inline=False)
+
+        if judge or recorder:
+            staff_text = ""
+            if judge:
+                staff_text += f"- **Judge:** {judge.mention}\n"
+            if recorder:
+                staff_text += f"- **Recorder:** {recorder.mention}\n"
+            embed.add_field(name="⚖️ Assigned Staff", value=staff_text.strip(), inline=False)
+            embed.add_field(name="\u200b", value="\u200b", inline=False)
+
+        if remarks:
+            embed.add_field(name="💬 Remarks", value=remarks, inline=False)
+            embed.add_field(name="\u200b", value="\u200b", inline=False)
+
         embed.add_field(name="👤 Created By", value=interaction.user.mention, inline=False)
         
         files_to_send = []

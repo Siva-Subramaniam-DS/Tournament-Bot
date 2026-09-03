@@ -19,7 +19,7 @@ from core.state import (
     current_guild_id, with_guild_context, is_authorized_to_configure,
     is_staff, has_organizer_permission, GUILD_CONFIG_CACHE,
     get_default_config, PLAYER_INFO_LINK, PLAYER_INFO_FORMAT,
-    CHANNEL_IDS, get_org_name
+    CHANNEL_IDS, ROLE_IDS, get_org_name
 )
 from core.database import (
     supabase_client, get_guild_config, save_guild_config,
@@ -268,7 +268,79 @@ def extract_player_fields(header: list, row: list, is_captain: bool = False, pla
         "raw_id": raw_id
     }
 
-def format_player_block_quote(section_header: str, data: dict, emoji: str = "💂", is_captain: bool = True) -> list:
+def format_player_field_value(data: dict, is_captain: bool = True, guild: discord.Guild = None) -> str:
+    lines = []
+    
+    # SL Number
+    sl_val = data.get('sl')
+    if sl_val and sl_val != "None":
+        lines.append(f"**SL.:** `{sl_val}`")
+
+    # Discord Username
+    d_tag = data.get('discord_tag')
+    if d_tag and d_tag != "None":
+        lines.append(f"**Discord Username:** `{d_tag}`")
+    elif data.get('member'):
+        lines.append(f"**Discord Username:** `{data['member'].name}`")
+
+    # Discord ID
+    d_id = data.get('discord_id')
+    if d_id and d_id != "None":
+        lines.append(f"**Discord ID:** `{d_id}`")
+
+    # Verification
+    member = data.get('member')
+    role_label = "Captain" if is_captain else "Player"
+    if member:
+        has_verified_role = False
+        players_r_id = None
+        if guild:
+            try:
+                cfg = get_guild_config(guild.id)
+                players_r_id = cfg.get('role_ids', {}).get('players')
+            except Exception:
+                pass
+        if not players_r_id:
+            players_r_id = ROLE_IDS.get('players')
+
+        for r in getattr(member, 'roles', []):
+            if 'verif' in r.name.lower() or (players_r_id and r.id == players_r_id):
+                has_verified_role = True
+                break
+
+        if has_verified_role:
+            lines.append(f"**Verification ({role_label}):** 🟢 Verified")
+        else:
+            lines.append(f"**Verification ({role_label}):** ⚠️ Not verified")
+    elif d_id and d_id != "None" and d_id.isdigit():
+        lines.append(f"**Verification ({role_label}):** 🔴 Not in server")
+    else:
+        lines.append(f"**Verification ({role_label}):** ⚪ Pending")
+
+    # Game Name
+    g_name = data.get('game_name')
+    if g_name and g_name != "None":
+        lines.append(f"**Game Name:** `{g_name}`")
+
+    # Game ID
+    g_id = data.get('game_id')
+    if g_id and g_id != "None":
+        lines.append(f"**Game ID:** `{g_id}`")
+
+    # Title
+    title_val = data.get('title')
+    if title_val and title_val != "None":
+        lines.append(f"**Title:** `{title_val}`")
+
+    # Group Choice
+    grp_val = data.get('group_choice')
+    if grp_val and grp_val != "None":
+        lines.append(f"**Group Choice:** `{grp_val}`")
+
+    return "\n".join(lines)
+
+
+def format_player_block_quote(section_header: str, data: dict, emoji: str = "💂", is_captain: bool = True, guild: discord.Guild = None) -> list:
     lines = [f"{emoji} **{section_header}**"]
     
     # SL Number
@@ -292,7 +364,26 @@ def format_player_block_quote(section_header: str, data: dict, emoji: str = "�
     member = data.get('member')
     role_label = "Captain" if is_captain else "Player"
     if member:
-        lines.append(f"> **Verification ({role_label}):** 🟢 In server")
+        has_verified_role = False
+        players_r_id = None
+        if guild:
+            try:
+                cfg = get_guild_config(guild.id)
+                players_r_id = cfg.get('role_ids', {}).get('players')
+            except Exception:
+                pass
+        if not players_r_id:
+            players_r_id = ROLE_IDS.get('players')
+
+        for r in getattr(member, 'roles', []):
+            if 'verif' in r.name.lower() or (players_r_id and r.id == players_r_id):
+                has_verified_role = True
+                break
+
+        if has_verified_role:
+            lines.append(f"> **Verification ({role_label}):** 🟢 Verified")
+        else:
+            lines.append(f"> **Verification ({role_label}):** ⚠️ Not verified")
     elif d_id and d_id != "None" and d_id.isdigit():
         lines.append(f"> **Verification ({role_label}):** 🔴 Not in server")
     else:
@@ -394,21 +485,25 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
 
                 title_name = p_data['game_name'] if p_data['game_name'] != 'None' else (p_data['discord_tag'] if p_data['discord_tag'] != 'None' else "Player Information")
 
-                desc_lines = []
+                desc_mention = ""
                 if member:
-                    desc_lines.append(f"💂 {member.mention}\n")
+                    desc_mention = f"💂 {member.mention}"
                 elif p_data.get('discord_id') and p_data['discord_id'] != 'None' and p_data['discord_id'].isdigit():
-                    desc_lines.append(f"💂 <@{p_data['discord_id']}>\n")
+                    desc_mention = f"💂 <@{p_data['discord_id']}>"
                 elif p_data.get('discord_tag') and p_data['discord_tag'] != 'None':
-                    desc_lines.append(f"💂 **@{p_data['discord_tag']}**\n")
-
-                desc_lines.extend(format_player_block_quote("Captain details" if is_1v1 else "Player details", p_data, emoji="💂", is_captain=True))
+                    desc_mention = f"💂 **@{p_data['discord_tag']}**"
 
                 embed = discord.Embed(
                     title=f"🏆 {title_name}",
-                    description="\n".join(desc_lines),
+                    description=desc_mention if desc_mention else None,
                     color=discord.Color.gold(),
                     timestamp=discord.utils.utcnow()
+                )
+                cap_field_title = "👤 Captain details" if is_1v1 else "👤 Player details"
+                embed.add_field(
+                    name=cap_field_title,
+                    value=format_player_field_value(p_data, is_captain=True, guild=guild),
+                    inline=False
                 )
                 if member and hasattr(member, 'display_avatar'):
                     embed.set_thumbnail(url=member.display_avatar.url)
@@ -450,28 +545,34 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
 
                 team_title = tn_val or (cap_data['game_name'] if cap_data['game_name'] != 'None' else "Team Information")
 
-                desc_lines = []
+                desc_mention = ""
                 if member:
-                    desc_lines.append(f"💂 {member.mention}\n")
+                    desc_mention = f"💂 {member.mention}"
                 elif cap_data.get('discord_id') and cap_data['discord_id'] != 'None' and cap_data['discord_id'].isdigit():
-                    desc_lines.append(f"💂 <@{cap_data['discord_id']}>\n")
+                    desc_mention = f"💂 <@{cap_data['discord_id']}>"
                 elif cap_data.get('discord_tag') and cap_data['discord_tag'] != 'None':
-                    desc_lines.append(f"💂 **@{cap_data['discord_tag']}**\n")
+                    desc_mention = f"💂 **@{cap_data['discord_tag']}**"
 
-                desc_lines.extend(format_player_block_quote("Captain details", cap_data, emoji="💂", is_captain=True))
+                embed = discord.Embed(
+                    title=f"🏆 {team_title}",
+                    description=desc_mention if desc_mention else None,
+                    color=discord.Color.gold(),
+                    timestamp=discord.utils.utcnow()
+                )
+                embed.add_field(
+                    name="👤 Captain details",
+                    value=format_player_field_value(cap_data, is_captain=True, guild=guild),
+                    inline=False
+                )
 
                 for n in range(2, team_size + 1):
                     pn_data = extract_player_fields(header, row, is_captain=False, player_num=n, guild=guild)
                     if any(pn_data[k] != "None" for k in ["discord_tag", "discord_id", "game_name", "game_id", "title"]):
-                        desc_lines.append("")
-                        desc_lines.extend(format_player_block_quote(f"Player {n} details", pn_data, emoji="👥", is_captain=False))
-
-                embed = discord.Embed(
-                    title=f"🏆 {team_title}",
-                    description="\n".join(desc_lines),
-                    color=discord.Color.gold(),
-                    timestamp=discord.utils.utcnow()
-                )
+                        embed.add_field(
+                            name=f"👥 Player {n} details",
+                            value=format_player_field_value(pn_data, is_captain=False, guild=guild),
+                            inline=False
+                        )
                 if member and hasattr(member, 'display_avatar'):
                     embed.set_thumbnail(url=member.display_avatar.url)
                 elif member and member.avatar:
@@ -1008,15 +1109,16 @@ class Settings(commands.Cog):
 
                 title_name = p_data['game_name'] if p_data['game_name'] != 'None' else (p_data['discord_tag'] if p_data['discord_tag'] != 'None' else user.display_name)
 
-                desc_lines = []
-                desc_lines.append(f"💂 {user.mention}\n")
-                desc_lines.extend(format_player_block_quote("Captain details" if is_1v1 else "Player details", p_data, emoji="💂"))
-
                 pi_embed = discord.Embed(
                     title=f"🏆 {title_name}",
-                    description="\n".join(desc_lines),
+                    description=f"💂 {user.mention}",
                     color=discord.Color.gold(),
                     timestamp=discord.utils.utcnow()
+                )
+                pi_embed.add_field(
+                    name="👤 Captain details" if is_1v1 else "👤 Player details",
+                    value=format_player_field_value(p_data, is_captain=True, guild=interaction.guild),
+                    inline=False
                 )
                 if user.display_avatar:
                     pi_embed.set_thumbnail(url=user.display_avatar.url)
@@ -1059,22 +1161,26 @@ class Settings(commands.Cog):
 
                 team_title = tn_val or (cap_data['game_name'] if cap_data['game_name'] != 'None' else f"Team {user.display_name}")
 
-                desc_lines = []
-                desc_lines.append(f"💂 {user.mention}\n")
-                desc_lines.extend(format_player_block_quote("Captain details", cap_data, emoji="💂"))
+                ti_embed = discord.Embed(
+                    title=f"🏆 {team_title}",
+                    description=f"💂 {user.mention}",
+                    color=discord.Color.gold(),
+                    timestamp=discord.utils.utcnow()
+                )
+                ti_embed.add_field(
+                    name="👤 Captain details",
+                    value=format_player_field_value(cap_data, is_captain=True, guild=interaction.guild),
+                    inline=False
+                )
 
                 for n in range(2, team_size + 1):
                     pn_data = extract_player_fields(header, found_row, is_captain=False, player_num=n, guild=interaction.guild)
                     if any(pn_data[k] != "None" for k in ["discord_tag", "discord_id", "game_name", "game_id", "title"]):
-                        desc_lines.append("")
-                        desc_lines.extend(format_player_block_quote(f"Player {n} details", pn_data, emoji="👥"))
-
-                ti_embed = discord.Embed(
-                    title=f"🏆 {team_title}",
-                    description="\n".join(desc_lines),
-                    color=discord.Color.gold(),
-                    timestamp=discord.utils.utcnow()
-                )
+                        ti_embed.add_field(
+                            name=f"👥 Player {n} details",
+                            value=format_player_field_value(pn_data, is_captain=False, guild=interaction.guild),
+                            inline=False
+                        )
                 if user.display_avatar:
                     ti_embed.set_thumbnail(url=user.display_avatar.url)
                 elif user.avatar:

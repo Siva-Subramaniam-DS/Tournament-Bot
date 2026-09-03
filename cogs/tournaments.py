@@ -182,6 +182,26 @@ async def upload_score_winner_autocomplete(
             if m_match:
                 channel_match_id = m_match.group(1)
 
+        # Fallback 1: check scheduled_events for this channel
+        if not channel_match_id and interaction.channel:
+            c_id = interaction.channel.id
+            for ev_id, ev_data in scheduled_events.items():
+                if ev_data.get('channel_id') == c_id:
+                    if ev_data.get('match_id'):
+                        channel_match_id = str(ev_data.get('match_id'))
+                        break
+
+        # Fallback 2: check channel name for team names
+        if not channel_match_id and interaction.channel and hasattr(interaction.channel, 'name'):
+            c_name = interaction.channel.name.lower()
+            if "-vs-" in c_name or " vs " in c_name:
+                for m in matches:
+                    t1_str = str(m.get('team1') or "").lower()
+                    t2_str = str(m.get('team2') or "").lower()
+                    if t1_str and t2_str and (t1_str in c_name and t2_str in c_name):
+                        channel_match_id = str(m.get('id'))
+                        break
+
         added_match_ids = set()
 
         if channel_match_id:
@@ -210,7 +230,8 @@ async def upload_score_winner_autocomplete(
                 if not current_lower or current_lower in opt2_name.lower() or current_lower in team2.lower():
                     choices.append(app_commands.Choice(name=opt2_name[:100], value=opt2_val[:100]))
                 
-                added_match_ids.add(str(match_id))
+                # In a match room, only show the teams of this specific match to avoid confusion
+                return choices
 
         # Fallback/General search: show teams with opponents and round
         for m in matches:
