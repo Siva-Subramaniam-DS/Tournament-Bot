@@ -39,6 +39,7 @@ from core.database import (
     update_results_embed_with_links, save_scheduled_deadline, delete_scheduled_deadline,
     fetch_challonge_open_matches, fetch_google_sheet_captains, extract_discord_id_from_text
 )
+from core.emojis import EMOJIS
 
 
 
@@ -846,7 +847,7 @@ async def link_add(
 
     link_label = link_type.name
     embed = discord.Embed(
-        title=f"🎥 {link_label} Added",
+        title=f"{EMOJIS['recorder']} {link_label} Added",
         description=(
             f"**Tournament:** {tournament}\n"
             f"**Event / Match:** {ev_data.get('match_name') or match}\n"
@@ -910,7 +911,7 @@ async def link_edit(
     event_saved_note = f"✅ Link updated for event record **`{ev_id}`** ({ev_data.get('match_name', 'Match')})."
 
     embed = discord.Embed(
-        title=f"🎥 {link_type.name} Updated",
+        title=f"{EMOJIS['recorder']} {link_type.name} Updated",
         description=(
             f"**Tournament:** {tournament}\n"
             f"**Event / Match:** {ev_data.get('match_name') or match}\n"
@@ -971,7 +972,7 @@ async def link_delete(
 
 
     embed = discord.Embed(
-        title="🎥 Recording Link Deleted",
+        title=f"{EMOJIS['recorder']} Recording Link Deleted",
         description=(
             f"**Tournament:** {tournament}\n"
             f"**Event / Match:** {ev_data.get('match_name') or match}\n"
@@ -1841,19 +1842,19 @@ def create_match_room_embed(
     if clean_c1_id:
         embed.add_field(
             name=f"🦅 **{p1_label}:** {p1_title}",
-            value=f"Captain: `{clean_c1_id}`",
+            value=f"{EMOJIS['captain']} Captain: `{clean_c1_id}`",
             inline=False
         )
     elif captain1_mention and "<@" in str(captain1_mention):
         embed.add_field(
             name=f"🦅 **{p1_label}:** {p1_title}",
-            value=f"Captain: {captain1_mention}",
+            value=f"{EMOJIS['captain']} Captain: {captain1_mention}",
             inline=False
         )
     else:
         embed.add_field(
             name=f"🦅 **{p1_label}:** {p1_title}",
-            value="Captain: `N/A`",
+            value=f"{EMOJIS['captain']} Captain: `N/A`",
             inline=False
         )
 
@@ -1862,19 +1863,19 @@ def create_match_room_embed(
     if clean_c2_id:
         embed.add_field(
             name=f"🦅 **{p2_label}:** {p2_title}",
-            value=f"Captain: `{clean_c2_id}`",
+            value=f"{EMOJIS['captain']} Captain: `{clean_c2_id}`",
             inline=False
         )
     elif captain2_mention and "<@" in str(captain2_mention):
         embed.add_field(
             name=f"🦅 **{p2_label}:** {p2_title}",
-            value=f"Captain: {captain2_mention}",
+            value=f"{EMOJIS['captain']} Captain: {captain2_mention}",
             inline=False
         )
     else:
         embed.add_field(
             name=f"🦅 **{p2_label}:** {p2_title}",
-            value="Captain: `N/A`",
+            value=f"{EMOJIS['captain']} Captain: `N/A`",
             inline=False
         )
 
@@ -2994,14 +2995,14 @@ class Tournaments(commands.Cog):
                 color=discord.Color.green(),
                 timestamp=discord.utils.utcnow()
             )
-            embed.add_field(name="🏆 Score", value=f"**{winner_score}** – {loser_score}", inline=True)
+            embed.add_field(name=f"{EMOJIS['trophy']} Score", value=f"**{winner_score}** – {loser_score}", inline=True)
             embed.add_field(name="🆔 Match ID", value=f"`{match_id}`", inline=True)
             embed.add_field(name="👤 Winner Team", value=f"**{winner_name}** (`{winner_participant_id}`)", inline=True)
             embed.set_footer(text=f"{ORGANIZATION_NAME} • Uploaded by {interaction.user.display_name}")
             await interaction.followup.send(embed=embed, ephemeral=False)
 
             bot_log_embed = discord.Embed(
-                title="🏆 Score Uploaded to Challonge",
+                title=f"{EMOJIS['trophy']} Score Uploaded to Challonge",
                 description=f"Judge **{interaction.user.display_name}** successfully uploaded match score (Event ID: `{match_id}`): **{winner_name}** won!",
                 color=discord.Color.green(),
                 timestamp=discord.utils.utcnow()

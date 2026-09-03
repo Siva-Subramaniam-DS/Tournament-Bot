@@ -26,6 +26,7 @@ from core.database import (
     get_active_tournament_config, log_bot_activity, sheetdb_post,
     get_guild_staff_stats, save_guild_staff_stats, tournament_autocomplete
 )
+from core.emojis import EMOJIS, get_staff_emoji
 
 
 
@@ -33,18 +34,13 @@ from core.database import (
 # STAFF HELPER FUNCTIONS
 # ===========================================================================================
 
-def get_staff_emoji(guild: discord.Guild, role: str) -> str:
-    if guild:
-        for emoji in guild.emojis:
-            if "peek" in emoji.name.lower():
-                return str(emoji)
-    return "👩‍⚖️" if role == "judge" else "🎥"
-
 def remove_field_by_name(embed: discord.Embed, name: str) -> bool:
     try:
         fields = list(embed.fields)
+        target = name.strip().lower()
         for idx, field in enumerate(fields):
-            if field.name.strip().lower() == name.strip().lower():
+            fn = field.name.strip().lower()
+            if fn == target or ("judge" in target and "judge" in fn) or ("recorder" in target and "recorder" in fn):
                 embed.remove_field(idx)
                 return True
         return False
@@ -54,15 +50,15 @@ def remove_field_by_name(embed: discord.Embed, name: str) -> bool:
 
 def update_judge_field(embed: discord.Embed, judge: discord.Member, recorder: Optional[discord.Member] = None) -> bool:
     try:
-        remove_field_by_name(embed, "👨‍⚖️ Judge")
-        remove_field_by_name(embed, "🎥 Recorder")
+        remove_field_by_name(embed, "Judge")
+        remove_field_by_name(embed, "Recorder")
         
         judge_value = judge.mention if judge else "⏳ Waiting..."
-        embed.add_field(name="👨‍⚖️ Judge", value=judge_value, inline=True)
+        embed.add_field(name=f"{EMOJIS['judge']} Judge", value=judge_value, inline=True)
         
         if recorder:
             recorder_value = recorder.mention if hasattr(recorder, 'mention') else f"<@{recorder}>"
-            embed.add_field(name="🎥 Recorder", value=recorder_value, inline=True)
+            embed.add_field(name=f"{EMOJIS['recorder']} Recorder", value=recorder_value, inline=True)
         
         return True
     except Exception as e:
@@ -132,19 +128,22 @@ class StaffConfirmationView(discord.ui.View):
         if self.judge_member:
             is_confirmed = ev.get('judge_confirmed', False)
             if is_confirmed:
-                btn_label = "👨‍⚖️ Confirmed"
+                btn_label = "Confirmed"
+                btn_emoji = discord.PartialEmoji(name="White_Verification", id=1544979996395970560, animated=True)
                 btn_style = discord.ButtonStyle.green
                 btn_disabled = True
             elif is_too_late:
-                btn_label = "❌ Too Late - Replacement Needed"
+                btn_label = "Too Late - Replacement Needed"
+                btn_emoji = "❌"
                 btn_style = discord.ButtonStyle.red
                 btn_disabled = True
             else:
-                btn_label = "👨‍⚖️ Confirm Presence"
+                btn_label = "Confirm Presence"
+                btn_emoji = discord.PartialEmoji(name="judge", id=1544980903871127645)
                 btn_style = discord.ButtonStyle.gray
                 btn_disabled = False
             
-            btn = discord.ui.Button(label=btn_label, style=btn_style, custom_id=f"confirm_judge_{self.event_id}")
+            btn = discord.ui.Button(label=btn_label, emoji=btn_emoji, style=btn_style, custom_id=f"confirm_judge_{self.event_id}")
             btn.callback = self.confirm_judge_callback
             btn.disabled = btn_disabled
             self.add_item(btn)
@@ -152,19 +151,22 @@ class StaffConfirmationView(discord.ui.View):
         if self.recorder_member:
             is_confirmed = ev.get('recorder_confirmed', False)
             if is_confirmed:
-                btn_label = "🎥 Confirmed"
+                btn_label = "Confirmed"
+                btn_emoji = discord.PartialEmoji(name="White_Verification", id=1544979996395970560, animated=True)
                 btn_style = discord.ButtonStyle.blurple
                 btn_disabled = True
             elif is_too_late:
-                btn_label = "❌ Too Late - Replacement Needed"
+                btn_label = "Too Late - Replacement Needed"
+                btn_emoji = "❌"
                 btn_style = discord.ButtonStyle.red
                 btn_disabled = True
             else:
-                btn_label = "🎥 Confirm Presence"
+                btn_label = "Confirm Presence"
+                btn_emoji = discord.PartialEmoji(name="camera", id=1544981791566331924)
                 btn_style = discord.ButtonStyle.gray
                 btn_disabled = False
             
-            btn = discord.ui.Button(label=btn_label, style=btn_style, custom_id=f"confirm_recorder_{self.event_id}")
+            btn = discord.ui.Button(label=btn_label, emoji=btn_emoji, style=btn_style, custom_id=f"confirm_recorder_{self.event_id}")
             btn.callback = self.confirm_recorder_callback
             btn.disabled = btn_disabled
             self.add_item(btn)
@@ -214,10 +216,10 @@ class StaffConfirmationView(discord.ui.View):
             await interaction.response.edit_message(embed=embed, view=self)
         else:
             await interaction.response.edit_message(view=self)
-        await interaction.followup.send("✅ You have confirmed your presence as Judge!", ephemeral=False)
+        await interaction.followup.send(f"{EMOJIS['attendance_done']} You have confirmed your presence as Judge!", ephemeral=False)
         
         log_embed = discord.Embed(
-            title="⚖️ Judge Presence Confirmed",
+            title=f"{EMOJIS['judge']} Judge Presence Confirmed",
             description=f"Judge **{interaction.user.display_name}** confirmed presence for match (Event ID: `{self.event_id}`).",
             color=discord.Color.green(),
             timestamp=discord.utils.utcnow()
@@ -270,10 +272,10 @@ class StaffConfirmationView(discord.ui.View):
             await interaction.response.edit_message(embed=embed, view=self)
         else:
             await interaction.response.edit_message(view=self)
-        await interaction.followup.send("✅ You have confirmed your presence as Recorder!", ephemeral=False)
+        await interaction.followup.send(f"{EMOJIS['attendance_done']} You have confirmed your presence as Recorder!", ephemeral=False)
         
         log_embed = discord.Embed(
-            title="🎥 Recorder Presence Confirmed",
+            title=f"{EMOJIS['recorder']} Recorder Presence Confirmed",
             description=f"Recorder **{interaction.user.display_name}** confirmed presence for match (Event ID: `{self.event_id}`).",
             color=discord.Color.green(),
             timestamp=discord.utils.utcnow()
@@ -296,17 +298,19 @@ class StaffReplacementView(discord.ui.View):
         
         if self.replace_judge:
             is_replaced = ev.get('judge_replaced', False)
-            btn_label = "👨‍⚖️ Replaced" if is_replaced else "👨‍⚖️ Replace Judge"
+            btn_label = "Replaced" if is_replaced else "Replace Judge"
+            btn_emoji = discord.PartialEmoji(name="judge", id=1544980903871127645)
             btn_style = discord.ButtonStyle.green if is_replaced else discord.ButtonStyle.primary
-            btn = discord.ui.Button(label=btn_label, style=btn_style, disabled=is_replaced, custom_id=f"replace_judge_{self.event_id}")
+            btn = discord.ui.Button(label=btn_label, emoji=btn_emoji, style=btn_style, disabled=is_replaced, custom_id=f"replace_judge_{self.event_id}")
             btn.callback = self.replace_judge_callback
             self.add_item(btn)
             
         if self.replace_recorder:
             is_replaced = ev.get('recorder_replaced', False)
-            btn_label = "🎥 Replaced" if is_replaced else "🎥 Replace Recorder"
+            btn_label = "Replaced" if is_replaced else "Replace Recorder"
+            btn_emoji = discord.PartialEmoji(name="CameramanRemove", id=1544981504680140890)
             btn_style = discord.ButtonStyle.green if is_replaced else discord.ButtonStyle.primary
-            btn = discord.ui.Button(label=btn_label, style=btn_style, disabled=is_replaced, custom_id=f"replace_recorder_{self.event_id}")
+            btn = discord.ui.Button(label=btn_label, emoji=btn_emoji, style=btn_style, disabled=is_replaced, custom_id=f"replace_recorder_{self.event_id}")
             btn.callback = self.replace_recorder_callback
             self.add_item(btn)
 
@@ -432,8 +436,8 @@ class StaffReplacementView(discord.ui.View):
                     sched_msg = await sched_chan.fetch_message(sched_msg_id)
                     if sched_msg:
                         sched_embed = sched_msg.embeds[0]
-                        remove_field_by_name(sched_embed, "🎥 Recorder")
-                        sched_embed.add_field(name="🎥 Recorder", value=interaction.user.mention, inline=True)
+                        remove_field_by_name(sched_embed, "Recorder")
+                        sched_embed.add_field(name=f"{EMOJIS['recorder']} Recorder", value=interaction.user.mention, inline=True)
                         sched_view = TakeScheduleButton(self.event_id, ev.get('team1_captain'), ev.get('team2_captain'), event_ch)
                         await sched_msg.edit(embed=sched_embed, view=sched_view)
         except Exception as e:
@@ -442,14 +446,14 @@ class StaffReplacementView(discord.ui.View):
         if interaction.message.embeds:
             embed = interaction.message.embeds[0]
             embed.color = discord.Color.green()
-            embed.add_field(name="✅ New Recorder Assigned", value=f"{interaction.user.mention} has taken over recording this match.", inline=False)
+            embed.add_field(name=f"{EMOJIS['cameraman_in']} New Recorder Assigned", value=f"{interaction.user.mention} has taken over recording this match.", inline=False)
             await interaction.response.edit_message(embed=embed, view=self)
         else:
             await interaction.response.edit_message(view=self)
-        await interaction.followup.send("✅ You have successfully replaced the recorder for this match!", ephemeral=False)
+        await interaction.followup.send(f"{EMOJIS['cameraman_in']} You have successfully replaced the recorder for this match!", ephemeral=False)
         
         log_embed = discord.Embed(
-            title="🎥 Recorder Replaced",
+            title=f"{EMOJIS['cameraman_out']} Recorder Replaced",
             description=f"New Recorder **{interaction.user.display_name}** took over recording for match (Event ID: `{self.event_id}`).",
             color=discord.Color.orange(),
             timestamp=discord.utils.utcnow()
@@ -620,7 +624,7 @@ class TakeScheduleButton(discord.ui.View):
         finally:
             self._taking_schedule = False
 
-    @discord.ui.button(label="Record", style=discord.ButtonStyle.blurple, emoji="🎥", custom_id="record_btn")
+    @discord.ui.button(label="Record", style=discord.ButtonStyle.blurple, emoji=discord.PartialEmoji(name="camera", id=1544981791566331924), custom_id="record_btn")
     @with_guild_context
     async def record_schedule(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self._is_event_started():
@@ -654,14 +658,14 @@ class TakeScheduleButton(discord.ui.View):
         ev['recorder'] = interaction.user
         save_scheduled_events()
 
-        button.label = "📹 Assigned"
+        button.label = "Assigned"
         button.style = discord.ButtonStyle.green
         button.disabled = True
-        button.emoji = None
+        button.emoji = discord.PartialEmoji(name="camera", id=1544981791566331924)
 
         embed = interaction.message.embeds[0]
-        remove_field_by_name(embed, "🎥 Recorder")
-        embed.add_field(name="🎥 Recorder", value=interaction.user.mention, inline=True)
+        remove_field_by_name(embed, "Recorder")
+        embed.add_field(name=f"{EMOJIS['recorder']} Recorder", value=interaction.user.mention, inline=True)
 
         await interaction.response.edit_message(embed=embed, view=self)
         await interaction.followup.send("✅ You have successfully claimed recorder for this match!", ephemeral=False)
@@ -955,7 +959,7 @@ async def render_staff_work_count(
         color=discord.Color(0x2F3136),
         timestamp=discord.utils.utcnow()
     )
-    header_embed.add_field(name="🏆 Tournament", value=target_t_name, inline=False)
+    header_embed.add_field(name=f"{EMOJIS['trophy']} Tournament", value=target_t_name, inline=False)
     header_embed.add_field(name="🥀 Default Wins", value=dw_setting, inline=False)
     header_embed.add_field(name="👑 Requested By", value=interaction.user.mention, inline=False)
     
@@ -963,21 +967,21 @@ async def render_staff_work_count(
     header_embed.set_footer(text=f"{org_name} · {t_slug}")
 
     sorted_judges = sorted(judges.items(), key=lambda x: (len(x[1]['matches']), len(x[1]['rounds'])), reverse=True)
-    judges_embed = discord.Embed(title="🧑‍⚖️ Judges", color=discord.Color.red())
+    judges_embed = discord.Embed(title=f"{EMOJIS['judge']} Judges", color=discord.Color.red())
     if sorted_judges:
         judges_embed.description = "\n".join([format_staff_entry(i, uid, d) for i, (uid, d) in enumerate(sorted_judges, 1)][:25])
     else:
         judges_embed.description = "*No judge activity recorded.*"
 
     sorted_recorders = sorted(recorders.items(), key=lambda x: (len(x[1]['matches']), len(x[1]['rounds'])), reverse=True)
-    recorders_embed = discord.Embed(title="🎥 Recorders", color=discord.Color.green())
+    recorders_embed = discord.Embed(title=f"{EMOJIS['recorder']} Recorders", color=discord.Color.green())
     if sorted_recorders:
         recorders_embed.description = "\n".join([format_staff_entry(i, uid, d) for i, (uid, d) in enumerate(sorted_recorders, 1)][:25])
     else:
         recorders_embed.description = "*No recorder activity recorded.*"
 
     sorted_combined = sorted(judge_and_recorders.items(), key=lambda x: (len(x[1]['matches']), len(x[1]['rounds'])), reverse=True)
-    combined_embed = discord.Embed(title="🎥🧑‍⚖️ Judge & Recorder", color=discord.Color.blue())
+    combined_embed = discord.Embed(title=f"{EMOJIS['judge']} {EMOJIS['recorder']} Judge & Recorder", color=discord.Color.blue())
     if sorted_combined:
         combined_embed.description = "\n".join([format_staff_entry(i, uid, d) for i, (uid, d) in enumerate(sorted_combined, 1)][:25])
     else:
@@ -1472,15 +1476,15 @@ class Staff(commands.Cog):
                         if msg and msg.embeds:
                             embed = msg.embeds[0]
                             if role_type == "Judge":
-                                remove_field_by_name(embed, "👨‍⚖️ Judge")
+                                remove_field_by_name(embed, "Judge")
                                 recorder = event_data.get('recorder')
                                 if not recorder:
-                                    embed.add_field(name="👨‍⚖️ Judge", value="⏳ Waiting...", inline=True)
+                                    embed.add_field(name=f"{EMOJIS['judge']} Judge", value="⏳ Waiting...", inline=True)
                             else:
-                                remove_field_by_name(embed, "🎥 Recorder")
+                                remove_field_by_name(embed, "Recorder")
                                 judge = event_data.get('judge')
                                 if not judge:
-                                    embed.add_field(name="🎥 Recorder", value="⏳ Waiting...", inline=True)
+                                    embed.add_field(name=f"{EMOJIS['recorder']} Recorder", value="⏳ Waiting...", inline=True)
                             
                             embed.color = discord.Color.blue()
                             if embed.title and embed.title.startswith("✅"):

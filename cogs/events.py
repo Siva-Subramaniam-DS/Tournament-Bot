@@ -40,6 +40,7 @@ from core.image_generator import (
     get_random_template, create_event_poster,
     get_thumbnail_url_from_channel
 )
+from core.emojis import EMOJIS
 from cogs.staff import (
     TakeScheduleButton, StaffConfirmationView, StaffReplacementView,
     remove_judge_assignment, add_judge_assignment, get_staff_emoji
@@ -274,11 +275,11 @@ async def update_results_embed_with_links(guild: discord.Guild, ev_data: dict):
         jdg_link = ev_data.get('judge_link')
         
         link_lines = []
-        if general_link: link_lines.append(f"🎥 **Recording:** [Watch Here]({general_link})")
-        if rec_link:     link_lines.append(f"🎥 **Recorder VOD:** [Watch Here]({rec_link})")
-        if jdg_link:     link_lines.append(f"⚖️ **Judge VOD:** [Watch Here]({jdg_link})")
+        if general_link: link_lines.append(f"{EMOJIS['recorder']} **Recording:** [Watch Here]({general_link})")
+        if rec_link:     link_lines.append(f"{EMOJIS['recorder']} **Recorder VOD:** [Watch Here]({rec_link})")
+        if jdg_link:     link_lines.append(f"{EMOJIS['judge']} **Judge VOD:** [Watch Here]({jdg_link})")
         
-        fields = [f for f in embed.fields if f.name not in ("🎥 Recording Link", "🎥 Recordings / VODs")]
+        fields = [f for f in embed.fields if f.name not in ("🎥 Recording Link", "🎥 Recordings / VODs", f"{EMOJIS['recorder']} Recordings / VODs")]
         embed.clear_fields()
         for f in fields:
             embed.add_field(name=f.name, value=f.value, inline=f.inline)
@@ -322,9 +323,9 @@ async def send_ten_minute_reminder(event_id: str, team1_captain: discord.Member,
         embed.add_field(name="🕒 Match Time", value=f"<t:{int(_mt_utc.timestamp())}:F>", inline=False)
         embed.add_field(name="👥 Team Captains", value=f"<@{t1_id}> vs <@{t2_id}>", inline=False)
         if j_id:
-            embed.add_field(name="👨‍⚖️ Judge", value=f"<@{j_id}>", inline=True)
+            embed.add_field(name=f"{EMOJIS['judge']} Judge", value=f"<@{j_id}>", inline=True)
         if r_id:
-            embed.add_field(name="🎥 Recorder", value=f"<@{r_id}>", inline=True)
+            embed.add_field(name=f"{EMOJIS['recorder']} Recorder", value=f"<@{r_id}>", inline=True)
         embed.add_field(name="📝 Action Required", value="Please prepare for the match and join the designated channel.", inline=False)
         embed.set_footer(text="Tournament Management System")
 
@@ -926,7 +927,7 @@ class Events(commands.Cog):
         embed_description += f"\n\n**Channel:** {interaction.channel.mention}"
         
         embed = discord.Embed(
-            title=f"🏆 {w_display_name} 🆚 {l_display_name}",
+            title=f"{EMOJIS['trophy']} {w_display_name} 🆚 {l_display_name}",
             description=embed_description,
             color=discord.Color.gold(),
             timestamp=discord.utils.utcnow()
@@ -936,11 +937,11 @@ class Events(commands.Cog):
         captains_text = f"**Captains**\n- Team1 Captain: {w_display_mention}" + (f" ({winner.name})" if winner else "") + f"\n- Team2 Captain: {l_display_mention}" + (f" ({loser.name})" if loser else "")
         embed.add_field(name="", value=captains_text, inline=False)
         
-        results_text = f"**Results**\n🏆 {w_name} ({winner_score}) Vs ({loser_score}) {l_name} 💀"
+        results_text = f"**Results**\n{EMOJIS['trophy']} {w_name} ({winner_score}) Vs ({loser_score}) {l_name} {EMOJIS['skull']}"
         embed.add_field(name="", value=results_text, inline=False)
         
-        staff_text = f"👨‍⚖️ **Staffs**\n▪ Judge: {interaction.user.mention}" + (f" ({interaction.user.name})" if interaction.user else "")
-        if recorder: staff_text += f"\n▪ Recorder: {recorder.mention}" + (f" ({recorder.name})" if recorder else "")
+        staff_text = f"**Staffs**\n▪ {EMOJIS['judge']} Judge: {interaction.user.mention}" + (f" ({interaction.user.name})" if interaction.user else "")
+        if recorder: staff_text += f"\n▪ {EMOJIS['recorder']} Recorder: {recorder.mention}" + (f" ({recorder.name})" if recorder else "")
         embed.add_field(name="", value=staff_text, inline=False)
         embed.add_field(name="📝 Remarks", value=remarks, inline=False)
         
@@ -1024,7 +1025,7 @@ class Events(commands.Cog):
         if staff_attendance_channel:
             try:
                 att_embed = discord.Embed(
-                    title="📋 Staff Attendance Log",
+                    title=f"{EMOJIS['attendance_done']} Staff Attendance Log",
                     description=(
                         f"🏅 **{w_name}** vs **{l_name}**\n"
                         f"**Tournament:** {t_display_name}\n"
@@ -1042,13 +1043,13 @@ class Events(commands.Cog):
                     l_att_text += " (Disqualified)"
 
                 att_embed.add_field(
-                    name="🏆 Result",
+                    name=f"{EMOJIS['trophy']} Result",
                     value=f"**Winner/Team 1:** {w_att_text} `({winner_score})`\n**Loser/Team 2:** {l_att_text} `({loser_score})`",
                     inline=False
                 )
-                staff_val = f"⚖️ **Judge:** {interaction.user.mention}"
+                staff_val = f"{EMOJIS['judge']} **Judge:** {interaction.user.mention}"
                 if recorder:
-                    staff_val += f"\n🎥 **Recorder:** {recorder.mention}"
+                    staff_val += f"\n{EMOJIS['recorder']} **Recorder:** {recorder.mention}"
                 att_embed.add_field(name="👥 Staff on Duty", value=staff_val, inline=False)
                 att_embed.add_field(name="📝 Remarks", value=remarks, inline=False)
                 att_embed.set_footer(text=f"{ORGANIZATION_NAME} • Attendance")
@@ -1056,7 +1057,7 @@ class Events(commands.Cog):
             except Exception as e:
                 print(f"Error posting in Staff Attendance channel: {e}")
 
-        await interaction.followup.send("✅ Event results processed and posted successfully!", ephemeral=False)
+        await interaction.followup.send(f"{EMOJIS['attendance_done']} Event results processed and posted successfully!", ephemeral=False)
 
 
     @app_commands.command(name="event-edit", description="Edit the event in this ticket channel")
@@ -1231,7 +1232,7 @@ class Events(commands.Cog):
         if winner == "TIE":
             embed.add_field(name="🤝 Result", value=f"**STILL TIED!** Both teams scored {winner_total} points.")
         else:
-            embed.add_field(name="🏆 Winner", value=f"**{winner}** wins with {winner_total} points against **{loser}** ({loser_total} points)!")
+            embed.add_field(name=f"{EMOJIS['trophy']} Winner", value=f"**{winner}** wins with {winner_total} points against **{loser}** ({loser_total} points)!")
         await interaction.response.send_message(embed=embed)
 
 

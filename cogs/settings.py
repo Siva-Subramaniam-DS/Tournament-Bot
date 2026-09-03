@@ -26,6 +26,7 @@ from core.database import (
     get_active_tournament_config, fetch_discord_channel_safe,
     log_bot_activity
 )
+from core.emojis import EMOJIS
 
 # ===========================================================================================
 # SHEET COLUMN HELPERS
@@ -309,11 +310,11 @@ def format_player_field_value(data: dict, is_captain: bool = True, guild: discor
                 break
 
         if has_verified_role:
-            lines.append(f"**Verification ({role_label}):** 🟢 Verified")
+            lines.append(f"**Verification ({role_label}):** {EMOJIS['verified']} Verified")
         else:
-            lines.append(f"**Verification ({role_label}):** ⚠️ Not verified")
+            lines.append(f"**Verification ({role_label}):** {EMOJIS['not_verified']} Not verified")
     elif d_id and d_id != "None" and d_id.isdigit():
-        lines.append(f"**Verification ({role_label}):** 🔴 Not in server")
+        lines.append(f"**Verification ({role_label}):** {EMOJIS['not_in_server']} Not in server")
     else:
         lines.append(f"**Verification ({role_label}):** ⚪ Pending")
 
@@ -381,11 +382,11 @@ def format_player_block_quote(section_header: str, data: dict, emoji: str = "�
                 break
 
         if has_verified_role:
-            lines.append(f"> **Verification ({role_label}):** 🟢 Verified")
+            lines.append(f"> **Verification ({role_label}):** {EMOJIS['verified']} Verified")
         else:
-            lines.append(f"> **Verification ({role_label}):** ⚠️ Not verified")
+            lines.append(f"> **Verification ({role_label}):** {EMOJIS['not_verified']} Not verified")
     elif d_id and d_id != "None" and d_id.isdigit():
-        lines.append(f"> **Verification ({role_label}):** 🔴 Not in server")
+        lines.append(f"> **Verification ({role_label}):** {EMOJIS['not_in_server']} Not in server")
     else:
         lines.append(f"> **Verification ({role_label}):** ⚪ Pending")
 
@@ -494,12 +495,12 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
                     desc_mention = f"💂 **@{p_data['discord_tag']}**"
 
                 embed = discord.Embed(
-                    title=f"🏆 {title_name}",
+                    title=f"{EMOJIS['trophy']} {title_name}",
                     description=desc_mention if desc_mention else None,
                     color=discord.Color.gold(),
                     timestamp=discord.utils.utcnow()
                 )
-                cap_field_title = "👤 Captain details" if is_1v1 else "👤 Player details"
+                cap_field_title = f"{EMOJIS['captain']} Captain details" if is_1v1 else f"{EMOJIS['captain']} Player details"
                 embed.add_field(
                     name=cap_field_title,
                     value=format_player_field_value(p_data, is_captain=True, guild=guild),
@@ -554,13 +555,13 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
                     desc_mention = f"💂 **@{cap_data['discord_tag']}**"
 
                 embed = discord.Embed(
-                    title=f"🏆 {team_title}",
+                    title=f"{EMOJIS['trophy']} {team_title}",
                     description=desc_mention if desc_mention else None,
                     color=discord.Color.gold(),
                     timestamp=discord.utils.utcnow()
                 )
                 embed.add_field(
-                    name="👤 Captain details",
+                    name=f"{EMOJIS['captain']} Captain details",
                     value=format_player_field_value(cap_data, is_captain=True, guild=guild),
                     inline=False
                 )
@@ -852,8 +853,8 @@ async def settings_show(interaction: discord.Interaction):
         f"👑 **Admin:** {get_role_str('head_organizer')}\n"
         f"🛡️ **Organizer:** {get_role_str('organizer')}\n"
         f"👥 **Helper:** {get_role_str('helper_team')}\n"
-        f"⚖️ **Judge:** {get_role_str('judge')}\n"
-        f"🎥 **Recorder:** {get_role_str('recorder')}\n"
+        f"{EMOJIS['judge']} **Judge:** {get_role_str('judge')}\n"
+        f"{EMOJIS['recorder']} **Recorder:** {get_role_str('recorder')}\n"
         f"📝 **Staff:** {get_role_str('staff')}\n"
         f"🎮 **Players:** {get_role_str('players')}"
     )
@@ -1110,13 +1111,13 @@ class Settings(commands.Cog):
                 title_name = p_data['game_name'] if p_data['game_name'] != 'None' else (p_data['discord_tag'] if p_data['discord_tag'] != 'None' else user.display_name)
 
                 pi_embed = discord.Embed(
-                    title=f"🏆 {title_name}",
+                    title=f"{EMOJIS['trophy']} {title_name}",
                     description=f"💂 {user.mention}",
                     color=discord.Color.gold(),
                     timestamp=discord.utils.utcnow()
                 )
                 pi_embed.add_field(
-                    name="👤 Captain details" if is_1v1 else "👤 Player details",
+                    name=f"{EMOJIS['captain']} Captain details" if is_1v1 else f"{EMOJIS['captain']} Player details",
                     value=format_player_field_value(p_data, is_captain=True, guild=interaction.guild),
                     inline=False
                 )
@@ -1162,13 +1163,13 @@ class Settings(commands.Cog):
                 team_title = tn_val or (cap_data['game_name'] if cap_data['game_name'] != 'None' else f"Team {user.display_name}")
 
                 ti_embed = discord.Embed(
-                    title=f"🏆 {team_title}",
+                    title=f"{EMOJIS['trophy']} {team_title}",
                     description=f"💂 {user.mention}",
                     color=discord.Color.gold(),
                     timestamp=discord.utils.utcnow()
                 )
                 ti_embed.add_field(
-                    name="👤 Captain details",
+                    name=f"{EMOJIS['captain']} Captain details",
                     value=format_player_field_value(cap_data, is_captain=True, guild=interaction.guild),
                     inline=False
                 )
