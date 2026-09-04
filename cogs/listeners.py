@@ -51,11 +51,7 @@ class Listeners(commands.Cog):
         # Auto-resolve and cache custom emojis by ID from connected servers and application emojis
         if init_emojis_from_bot:
             try:
-                import inspect
-                if inspect.iscoroutinefunction(init_emojis_from_bot):
-                    await init_emojis_from_bot(self.bot)
-                else:
-                    init_emojis_from_bot(self.bot)
+                await init_emojis_from_bot(self.bot)
             except Exception as e:
                 print(f"Error resolving emojis: {e}")
 

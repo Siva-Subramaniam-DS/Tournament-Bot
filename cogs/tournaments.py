@@ -94,35 +94,88 @@ async def match_autocomplete(
         selected_tournament = getattr(interaction.namespace, "tournament", None)
         choices = []
         current_lower = current.lower()
-        
+
+        # Detect if command is adding a link (/link add)
+        cmd_name = getattr(interaction.command, 'name', '')
+        parent_name = getattr(getattr(interaction.command, 'parent', None), 'name', '')
+        data_name = interaction.data.get('name') if isinstance(interaction.data, dict) else ''
+        data_options = interaction.data.get('options', []) if isinstance(interaction.data, dict) else []
+        subcmd_name = ""
+        for opt in data_options:
+            if opt.get('type') == 1:
+                subcmd_name = opt.get('name', '')
+                break
+
+        is_link_add = (
+            (parent_name == "link" and cmd_name == "add") or
+            (data_name == "link" and subcmd_name == "add") or
+            (cmd_name == "add" and hasattr(interaction.namespace, "link_type"))
+        )
+
+        selected_link_type = getattr(interaction.namespace, "link_type", None)
+        if isinstance(selected_link_type, app_commands.Choice):
+            selected_link_type = selected_link_type.value
+
+        guild = interaction.guild or (interaction.client.get_guild(guild_id) if hasattr(interaction, "client") else None)
+
+        def resolve_name(team_val, captain_val, default_name="TBD"):
+            val = team_val
+            if not val and captain_val:
+                val = getattr(captain_val, 'display_name', None) or getattr(captain_val, 'name', None) or str(captain_val)
+            val = str(val or default_name).strip()
+            if val.isdigit() and guild:
+                mem = guild.get_member(int(val))
+                if mem:
+                    val = mem.display_name or mem.name
+            return val
+
+        seen_names = {}
+
         for ev_id, ev_data in scheduled_events.items():
             if str(ev_data.get('guild_id')) != str(guild_id):
                 continue
-            
+
             if selected_tournament:
                 ev_t = ev_data.get('tournament')
                 t_cfg = load_guild_tournaments(guild_id).get(selected_tournament)
                 t_name = t_cfg.get('name') if t_cfg else None
                 if ev_t and selected_tournament.lower() not in ev_t.lower() and (not t_name or t_name.lower() not in ev_t.lower()):
                     continue
-            
-            t1_val = ev_data.get('team1_name')
-            if not t1_val:
-                t1_cap = ev_data.get('team1_captain')
-                t1_val = getattr(t1_cap, 'name', str(t1_cap))
-            t2_val = ev_data.get('team2_name')
-            if not t2_val:
-                t2_cap = ev_data.get('team2_captain')
-                t2_val = getattr(t2_cap, 'name', str(t2_cap))
-                
-            rnd = ev_data.get('round', '')
-            choice_name = f"[{ev_id}] {t1_val} vs {t2_val} ({rnd})"
-            if len(choice_name) > 100:
-                choice_name = choice_name[:97] + "..."
-                
-            if not current or current_lower in choice_name.lower():
+
+            # In /link add: only show matches where video link is not uploaded yet
+            if is_link_add:
+                if selected_link_type == "recorder":
+                    if ev_data.get('recorder_link'):
+                        continue
+                elif selected_link_type == "judge":
+                    if ev_data.get('judge_link'):
+                        continue
+                elif selected_link_type == "general":
+                    if ev_data.get('recording_link'):
+                        continue
+                else:
+                    # By default in link add, skip if both general and recorder links already exist
+                    if ev_data.get('recording_link') or ev_data.get('recorder_link'):
+                        continue
+
+            t1_val = resolve_name(ev_data.get('team1_name'), ev_data.get('team1_captain'), "Team 1")
+            t2_val = resolve_name(ev_data.get('team2_name'), ev_data.get('team2_captain'), "Team 2")
+
+            # Clean match name only - no event ID, no match number
+            base_name = f"{t1_val} vs {t2_val}"
+            if len(base_name) > 100:
+                base_name = base_name[:97] + "..."
+
+            if not current or current_lower in base_name.lower() or current_lower in ev_id.lower():
+                choice_name = base_name
+                if choice_name in seen_names:
+                    seen_names[choice_name] += 1
+                    choice_name = f"{choice_name} ({seen_names[choice_name]})"[:100]
+                else:
+                    seen_names[choice_name] = 1
+
                 choices.append(app_commands.Choice(name=choice_name, value=ev_id))
-                
+
         return choices[:25]
     except Exception as e:
         print(f"Error in match_autocomplete: {e}")
@@ -1815,7 +1868,7 @@ def create_match_room_embed(
 
     # 3. Match Room Created Embed (Vibrant green border matching screenshot: #2ECC71)
     embed = discord.Embed(
-        title="🐸 Match Room Created",
+        title=f"{EMOJIS['player']} Match Room Created",
         color=discord.Color(0x2ECC71)
     )
 
@@ -1895,7 +1948,7 @@ def create_match_room_embed(
     info_lines = [
         f"📖 **Rules:** {rules_val}",
         f"📅 **Deadline:** {deadline_val}",
-        f"☎️ Please decide on a schedule and ping {helper_str}."
+        f"{EMOJIS['helpers']} Please decide on a schedule and ping {helper_str}."
     ]
     embed.add_field(
         name="\u200b",
@@ -1905,7 +1958,7 @@ def create_match_room_embed(
 
     # Footer
     m_id_str = str(match_id) if match_id else "N/A"
-    organization = org_name or (get_org_name(guild.id) if guild else "Fanplay Esports")
+    organization = org_name or (get_org_name(guild.id) if guild else "Tournament Bot")
     embed.set_footer(text=f"Match ID: {m_id_str} | {organization}")
 
     if guild and guild.icon:

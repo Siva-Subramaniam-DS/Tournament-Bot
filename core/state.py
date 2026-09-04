@@ -651,13 +651,20 @@ def has_event_result_permission(interaction: discord.Interaction) -> bool:
     staff_id = safe_get("staff")
     
     user_role_ids = [r.id for r in interaction.user.roles] if hasattr(interaction.user, "roles") else []
+    role_names = [r.name.lower() for r in interaction.user.roles] if hasattr(interaction.user, "roles") else []
+    name_match = any(
+        target in r_name
+        for r_name in role_names
+        for target in ["head organizer", "organizer", "judge", "recorder", "helper", "staff"]
+    )
     
     return (
         (head_organizer_id and head_organizer_id in user_role_ids) or
         (helper_team_id and helper_team_id in user_role_ids) or
         (judge_id and judge_id in user_role_ids) or
         (recorder_id and recorder_id in user_role_ids) or
-        (staff_id and staff_id in user_role_ids)
+        (staff_id and staff_id in user_role_ids) or
+        name_match
     )
 
 # Embed Helpers

@@ -1963,9 +1963,7 @@ async def match_autocomplete(
                 continue
             m_name = ev_data.get('match_name') or f"{ev_data.get('team1_name', 'Team 1')} vs {ev_data.get('team2_name', 'Team 2')}"
             t_name = ev_data.get('tournament', '')
-            display = f"{m_name} [{ev_id}]"
-            if t_name:
-                display += f" ({t_name})"
+            display = m_name
             if not curr_clean or curr_clean in display.lower() or curr_clean in ev_id.lower():
                 choices.append(discord.app_commands.Choice(name=display[:100], value=ev_id[:100]))
         return choices[:25]

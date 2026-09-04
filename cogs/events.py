@@ -828,7 +828,7 @@ class Events(commands.Cog):
         except Exception as e:
             print(f"Error posting in current channel: {e}")
 
-    @app_commands.command(name="event-result", description="Add event results (Head Organizer/Judge only)")
+    @app_commands.command(name="event-result", description="Add event results (Staff/Judge/Recorder/Helper)")
     @app_commands.describe(
         winner="Winner of the event (optional if team name is provided)",
         winner_score="Winner's score",
@@ -838,6 +838,7 @@ class Events(commands.Cog):
         round="Round name (e.g., Semi-Final, Final, Quarter-Final)",
         group="Group assignment (A-J) - optional",
         remarks="Remarks about the match (e.g., ggwp, close match)",
+        judge="Staff member who judged the match (optional, defaults to you)",
         recorder="Staff member who recorded the match (optional)",
         winner_team_name="Optional name of the winning team",
         loser_team_name="Optional name of the losing team",
@@ -876,6 +877,7 @@ class Events(commands.Cog):
         loser: discord.Member = None,
         group: app_commands.Choice[str] = None,
         remarks: str = "ggwp",
+        judge: discord.Member = None,
         recorder: discord.Member = None,
         winner_team_name: str = None,
         loser_team_name: str = None,
@@ -888,7 +890,7 @@ class Events(commands.Cog):
         await interaction.response.defer(ephemeral=False)
         
         if not has_event_result_permission(interaction):
-            await interaction.followup.send("❌ You need **Head Organizer** or **Judge** role to post event results.", ephemeral=False)
+            await interaction.followup.send("❌ You need **Head Organizer**, **Judge**, **Recorder**, or **Helper/Staff** role to post event results.", ephemeral=False)
             return
 
         if not winner and not winner_team_name:
@@ -916,6 +918,8 @@ class Events(commands.Cog):
         w_display_mention = f"{w_mention} (Disqualified)" if dq_status in ("Winner", "Both") else w_mention
         l_display_mention = f"{l_mention} (Disqualified)" if dq_status in ("Loser", "Both") else l_mention
 
+        actual_judge = judge or interaction.user
+
         now_utc = datetime.datetime.now(pytz.UTC)
         timestamp = int(now_utc.timestamp())
         
@@ -942,12 +946,12 @@ class Events(commands.Cog):
         results_text = f"**Results**\n{winner_badge} {w_name} ({winner_score}) {EMOJIS['vs']} ({loser_score}) {l_name} {EMOJIS['skull']}"
         embed.add_field(name="", value=results_text, inline=False)
         
-        staff_text = f"**Staffs**\n▪ {EMOJIS['judge']} Judge: {interaction.user.mention}" + (f" ({interaction.user.name})" if interaction.user else "")
+        staff_text = f"**Staffs**\n▪ {EMOJIS['judge']} Judge: {actual_judge.mention}" + (f" ({actual_judge.name})" if actual_judge else "")
         if recorder: staff_text += f"\n▪ {EMOJIS['recorder']} Recorder: {recorder.mention}" + (f" ({recorder.name})" if recorder else "")
         embed.add_field(name="", value=staff_text, inline=False)
         embed.add_field(name="📝 Remarks", value=remarks, inline=False)
         
-        update_staff_stats(interaction.user, "judge")
+        update_staff_stats(actual_judge, "judge")
         if recorder:
             update_staff_stats(recorder, "recorder")
 
@@ -990,7 +994,8 @@ class Events(commands.Cog):
             'team2_name': l_name,
             'winner_score': winner_score,
             'loser_score': loser_score,
-            'judge': interaction.user,
+            'judge': actual_judge,
+            'result_judge': actual_judge.name,
             'recorder': recorder,
             'match_name': f"{w_name} vs {l_name}"
         })
@@ -1049,7 +1054,7 @@ class Events(commands.Cog):
                     value=f"**Winner/Team 1:** {w_att_text} `({winner_score})`\n**Loser/Team 2:** {l_att_text} `({loser_score})`",
                     inline=False
                 )
-                staff_val = f"{EMOJIS['judge']} **Judge:** {interaction.user.mention}"
+                staff_val = f"{EMOJIS['judge']} **Judge:** {actual_judge.mention}"
                 if recorder:
                     staff_val += f"\n{EMOJIS['recorder']} **Recorder:** {recorder.mention}"
                 att_embed.add_field(name="👥 Staff on Duty", value=staff_val, inline=False)
