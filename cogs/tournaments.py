@@ -1847,19 +1847,19 @@ def create_match_room_embed(
     p1_label = "Player 1" if is_1v1 else "Team 1"
     if clean_c1_id:
         embed.add_field(
-            name=f"🦅 **{p1_label}:** {p1_field_title}",
+            name=f"{EMOJIS['captain']} **{p1_label}:** {p1_field_title}",
             value=f"{EMOJIS['captain']} Captain: `{clean_c1_id}`",
             inline=False
         )
     elif captain1_mention and "<@" in str(captain1_mention):
         embed.add_field(
-            name=f"🦅 **{p1_label}:** {p1_field_title}",
+            name=f"{EMOJIS['captain']} **{p1_label}:** {p1_field_title}",
             value=f"{EMOJIS['captain']} Captain: {captain1_mention}",
             inline=False
         )
     else:
         embed.add_field(
-            name=f"🦅 **{p1_label}:** {p1_field_title}",
+            name=f"{EMOJIS['captain']} **{p1_label}:** {p1_field_title}",
             value=f"{EMOJIS['captain']} Captain: `N/A`",
             inline=False
         )
@@ -1868,19 +1868,19 @@ def create_match_room_embed(
     p2_label = "Player 2" if is_1v1 else "Team 2"
     if clean_c2_id:
         embed.add_field(
-            name=f"🦅 **{p2_label}:** {p2_field_title}",
+            name=f"{EMOJIS['captain']} **{p2_label}:** {p2_field_title}",
             value=f"{EMOJIS['captain']} Captain: `{clean_c2_id}`",
             inline=False
         )
     elif captain2_mention and "<@" in str(captain2_mention):
         embed.add_field(
-            name=f"🦅 **{p2_label}:** {p2_field_title}",
+            name=f"{EMOJIS['captain']} **{p2_label}:** {p2_field_title}",
             value=f"{EMOJIS['captain']} Captain: {captain2_mention}",
             inline=False
         )
     else:
         embed.add_field(
-            name=f"🦅 **{p2_label}:** {p2_field_title}",
+            name=f"{EMOJIS['captain']} **{p2_label}:** {p2_field_title}",
             value=f"{EMOJIS['captain']} Captain: `N/A`",
             inline=False
         )

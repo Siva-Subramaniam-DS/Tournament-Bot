@@ -28,8 +28,10 @@ EMOJI_IDS = {
     "helpers": 1545271188593320006,
 
     # Staff replacement action fallbacks
-    "cameraman_in": 1545045386199044106,
-    "cameraman_out": 1545045386199044106,
+    "cameraman_in": 1545321783165587546,
+    "cameraman_out": 1545321785388437584,
+    "cameraman_add": 1545321783165587546,
+    "cameraman_remove": 1545321785388437584,
 }
 
 # Direct Discord emoji format strings (Application Emojis uploaded in Discord Dev Portal)
@@ -55,9 +57,11 @@ EMOJIS = {
     "winner": "<:winner:1545271946223292426>",
     "helpers": "<:Helpers:1545271188593320006>",
 
-    # Fallbacks for cameraman replacement
-    "cameraman_in": "<:Recorder:1545045386199044106>",
-    "cameraman_out": "<:Recorder:1545045386199044106>",
+    # Cameraman replacement emojis
+    "cameraman_in": "<:CameramanAdd:1545321783165587546>",
+    "cameraman_out": "<:Cameramanremove:1545321785388437584>",
+    "cameraman_add": "<:CameramanAdd:1545321783165587546>",
+    "cameraman_remove": "<:Cameramanremove:1545321785388437584>",
 }
 
 # Dynamic cache for real resolved Discord emoji strings
@@ -89,51 +93,72 @@ NAME_TO_KEY = {
     "winner": "winner",
     "helpers": "helpers",
     "helper": "helpers",
+    "cameramanadd": "cameraman_in",
+    "cameramanremove": "cameraman_out",
 }
 
 async def init_emojis_from_bot(bot):
     """
-    Scan application emojis (uploaded to Discord Developer Portal)
-    and any server emojis accessible to the bot, caching their exact Discord string by ID and name.
+    Scan application emojis from Discord Developer Portal first (high priority),
+    caching their exact strings by ID and name. Server emojis only fill in missing keys.
     """
     global EMOJI_CACHE
     found_count = 0
 
-    all_emojis = []
-
-    # 1. Fetch Application Emojis from Discord Developer Portal
+    # 1. Fetch Application Emojis from Discord Developer Portal (PRIORITY)
     try:
         if hasattr(bot, 'fetch_application_emojis'):
             app_emojis = await bot.fetch_application_emojis()
-            all_emojis.extend(app_emojis)
+            for emoji in app_emojis:
+                prefix = "a" if getattr(emoji, 'animated', False) else ""
+                formatted = f"<{prefix}:{emoji.name}:{emoji.id}>"
+                norm = _norm_name(emoji.name)
+
+                # Match by ID
+                for k, v in EMOJI_IDS.items():
+                    if v == emoji.id:
+                        EMOJI_CACHE[k] = formatted
+                        EMOJIS[k] = formatted
+                        found_count += 1
+
+                # Match by normalized name
+                if norm in NAME_TO_KEY:
+                    target_k = NAME_TO_KEY[norm]
+                    EMOJI_CACHE[target_k] = formatted
+                    EMOJIS[target_k] = formatted
+                    if target_k == "attendance_done":
+                        EMOJI_CACHE["match_done"] = formatted
+                        EMOJIS["match_done"] = formatted
+                    if target_k == "cameraman_in":
+                        EMOJI_CACHE["cameraman_add"] = formatted
+                        EMOJIS["cameraman_add"] = formatted
+                    if target_k == "cameraman_out":
+                        EMOJI_CACHE["cameraman_remove"] = formatted
+                        EMOJIS["cameraman_remove"] = formatted
+                    found_count += 1
+            print(f"✅ Loaded {len(app_emojis)} Application Emojis from Developer Portal.")
     except Exception as e:
         print(f"  [App Emojis Info] Could not fetch application emojis: {e}")
 
-    # 2. Add guild emojis accessible to the bot
+    # 2. Guild emojis (fill in only what is not already in EMOJI_CACHE)
     if hasattr(bot, 'emojis'):
-        all_emojis.extend(bot.emojis)
+        for emoji in bot.emojis:
+            prefix = "a" if getattr(emoji, 'animated', False) else ""
+            formatted = f"<{prefix}:{emoji.name}:{emoji.id}>"
+            norm = _norm_name(emoji.name)
 
-    for emoji in all_emojis:
-        prefix = "a" if getattr(emoji, 'animated', False) else ""
-        formatted = f"<{prefix}:{emoji.name}:{emoji.id}>"
-        
-        # Match by ID
-        for k, v in EMOJI_IDS.items():
-            if v == emoji.id:
-                EMOJI_CACHE[k] = formatted
-                EMOJIS[k] = formatted
-                found_count += 1
-                
-        # Match by normalized name
-        norm = _norm_name(emoji.name)
-        if norm in NAME_TO_KEY:
-            target_k = NAME_TO_KEY[norm]
-            EMOJI_CACHE[target_k] = formatted
-            EMOJIS[target_k] = formatted
-            if target_k == "attendance_done":
-                EMOJI_CACHE["match_done"] = formatted
-                EMOJIS["match_done"] = formatted
-            found_count += 1
+            for k, v in EMOJI_IDS.items():
+                if v == emoji.id and k not in EMOJI_CACHE:
+                    EMOJI_CACHE[k] = formatted
+                    EMOJIS[k] = formatted
+                    found_count += 1
+
+            if norm in NAME_TO_KEY:
+                target_k = NAME_TO_KEY[norm]
+                if target_k not in EMOJI_CACHE:
+                    EMOJI_CACHE[target_k] = formatted
+                    EMOJIS[target_k] = formatted
+                    found_count += 1
 
     print(f"✅ Loaded {len(EMOJI_CACHE) or len(EMOJIS)} custom emojis for bot.")
 

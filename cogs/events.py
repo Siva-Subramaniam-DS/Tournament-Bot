@@ -926,7 +926,7 @@ class Events(commands.Cog):
         if group_label: embed_description += f"\n**Group:** {group_label}"
         embed_description += f"\n\n**Channel:** {interaction.channel.mention}"
         
-        winner_badge = EMOJIS.get('winner') or EMOJIS.get('trophy', '🏆')
+        winner_badge = EMOJIS.get('winner')
 
         embed = discord.Embed(
             title=f"{winner_badge} {w_display_name} 🆚 {l_display_name}",

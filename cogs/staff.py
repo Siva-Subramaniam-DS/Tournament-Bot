@@ -308,7 +308,7 @@ class StaffReplacementView(discord.ui.View):
         if self.replace_recorder:
             is_replaced = ev.get('recorder_replaced', False)
             btn_label = "Replaced" if is_replaced else "Replace Recorder"
-            btn_emoji = discord.PartialEmoji(name="CameramanRemove", id=1544981504680140890)
+            btn_emoji = discord.PartialEmoji(name="Cameramanremove", id=1545321785388437584)
             btn_style = discord.ButtonStyle.green if is_replaced else discord.ButtonStyle.primary
             btn = discord.ui.Button(label=btn_label, emoji=btn_emoji, style=btn_style, disabled=is_replaced, custom_id=f"replace_recorder_{self.event_id}")
             btn.callback = self.replace_recorder_callback
