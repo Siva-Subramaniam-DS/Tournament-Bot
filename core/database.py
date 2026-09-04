@@ -555,27 +555,53 @@ def get_tournament_attendance_channel(guild: discord.Guild, tournament_name_or_i
 async def log_bot_activity(guild: discord.Guild, embed: discord.Embed):
     if not guild:
         return
-    t_cfg = get_active_tournament_config(guild.id)
+
     channel = None
-    if t_cfg and t_cfg.get('bot_logs'):
-        try:
-            channel = guild.get_channel(int(t_cfg['bot_logs']))
-            if not channel:
-                channel = await guild.fetch_channel(int(t_cfg['bot_logs']))
-        except Exception:
-            pass
-            
+
+    # 1. Try active tournament config
+    t_cfg = get_active_tournament_config(guild.id)
+    if t_cfg:
+        for k in ['bot_logs', 'bot_logs_channel_id', 'Bot_Logs_Channel_ID']:
+            if t_cfg.get(k):
+                try:
+                    c_id = int(t_cfg[k])
+                    channel = guild.get_channel(c_id) or await guild.fetch_channel(c_id)
+                    if channel: break
+                except Exception:
+                    pass
+
+    # 2. Try any tournament configured in the guild
+    if not channel:
+        tournaments = load_guild_tournaments(guild.id)
+        for _, tdata in tournaments.items():
+            for k in ['bot_logs', 'bot_logs_channel_id', 'Bot_Logs_Channel_ID']:
+                if tdata.get(k):
+                    try:
+                        c_id = int(tdata[k])
+                        channel = guild.get_channel(c_id) or await guild.fetch_channel(c_id)
+                        if channel: break
+                    except Exception:
+                        pass
+            if channel:
+                break
+
+    # 3. Try guild config bot_logs
     if not channel:
         cfg = get_guild_config(guild.id)
-        default_logs_id = cfg.get('channel_ids', {}).get('bot_logs')
+        default_logs_id = cfg.get('channel_ids', {}).get('bot_logs') or cfg.get('bot_logs')
         if default_logs_id:
             try:
-                channel = guild.get_channel(int(default_logs_id))
-                if not channel:
-                    channel = await guild.fetch_channel(int(default_logs_id))
+                channel = guild.get_channel(int(default_logs_id)) or await guild.fetch_channel(int(default_logs_id))
             except Exception:
                 pass
-                
+
+    # 4. Fallback search by channel name
+    if not channel:
+        for ch in guild.text_channels:
+            if ch.name.lower() in ('bot-logs', 'bot_logs', 'bot-log', 'audit-logs', 'audit_logs', 'logs'):
+                channel = ch
+                break
+
     if channel:
         try:
             await channel.send(embed=embed)
@@ -777,15 +803,22 @@ def load_scheduled_events():
         if os.path.exists(path):
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
+                active_events = {}
                 for event_id, event_data in data.items():
-                    if isinstance(event_data, dict) and 'datetime' in event_data and isinstance(event_data['datetime'], str):
+                    if not isinstance(event_data, dict):
+                        continue
+                    # Skip completed schedules to save memory
+                    if str(event_data.get('status', '')).lower() == 'completed':
+                        continue
+                    if 'datetime' in event_data and isinstance(event_data['datetime'], str):
                         try:
                             event_data['datetime'] = datetime.datetime.fromisoformat(event_data['datetime'])
                         except Exception:
                             pass
+                    active_events[event_id] = event_data
                 scheduled_events.clear()
-                scheduled_events.update(data)
-                print(f"Loaded {len(scheduled_events)} scheduled events from local file")
+                scheduled_events.update(active_events)
+                print(f"Loaded {len(scheduled_events)} active scheduled events from local file")
     except Exception as e:
         print(f"Error loading scheduled events from local file: {e}")
     return scheduled_events
@@ -807,6 +840,10 @@ async def load_scheduled_events_from_supabase():
         if res and res.data:
             loaded_count = 0
             for row in res.data:
+                # Skip completed or closed matches
+                if str(row.get("State") or row.get("Status") or "").lower() in ("completed", "closed", "finished", "done"):
+                    continue
+
                 event_id = row.get("Match_ID") or row.get("Event_ID")
                 if not event_id:
                     continue
@@ -1634,12 +1671,22 @@ def _sync_fetch_google_sheet_captains(sheet_link: str):
                     break
 
         ign_col = -1
+        game_name_col = -1
+        game_id_col = -1
         for i, h in enumerate(h_lower):
             if i != key_col and i != val_col:
-                if any(x in h for x in ['ign', 'in game id', 'in-game id', 'game id', 'in game name', 'in-game name', 'captain id', 'player id']):
+                if any(x in h for x in ['in-game name', 'in game name', 'game name', 'ign', 'player name', 'ingame name']):
+                    game_name_col = i
+                elif any(x in h for x in ['in-game id', 'in game id', 'game id', 'player id', 'account id']):
+                    game_id_col = i
+                elif any(x in h for x in ['captain id']):
                     ign_col = i
-                    break
-                
+
+        if ign_col == -1 and game_id_col != -1:
+            ign_col = game_id_col
+        elif ign_col == -1 and game_name_col != -1:
+            ign_col = game_name_col
+
         if key_col == -1: key_col = 0
         if val_col == -1: val_col = 1
         
@@ -1653,6 +1700,8 @@ def _sync_fetch_google_sheet_captains(sheet_link: str):
                     continue
                 v = row[val_col].strip() if len(row) > val_col else ""
                 ign = row[ign_col].strip() if (ign_col != -1 and len(row) > ign_col) else ""
+                g_name = row[game_name_col].strip() if (game_name_col != -1 and len(row) > game_name_col) else ""
+                g_id = row[game_id_col].strip() if (game_id_col != -1 and len(row) > game_id_col) else ""
                 
                 # Check for Discord UID in target column first, then check all cells in row
                 discord_uid = extract_discord_id_from_text(v)
@@ -1671,7 +1720,9 @@ def _sync_fetch_google_sheet_captains(sheet_link: str):
                     "team": k,
                     "discord": discord_str,
                     "discord_id": discord_uid,
-                    "ign": ign or v or k,
+                    "ign": g_name or ign or v or k,
+                    "game_name": g_name or (ign if g_id and ign != g_id else ""),
+                    "game_id": g_id or ign or "",
                     "raw": v
                 }
 
@@ -1682,6 +1733,12 @@ def _sync_fetch_google_sheet_captains(sheet_link: str):
                 clean_k = re.sub(r'[^a-zA-Z0-9]', '', k).lower()
                 if clean_k:
                     captains[clean_k] = entry
+
+                if g_name and g_name.strip():
+                    captains[g_name.strip().lower()] = entry
+                    clean_gn = re.sub(r'[^a-zA-Z0-9]', '', g_name).lower()
+                    if clean_gn:
+                        captains[clean_gn] = entry
 
                 if ign and ign.strip():
                     captains[ign.strip().lower()] = entry

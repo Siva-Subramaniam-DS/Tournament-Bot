@@ -439,7 +439,7 @@ async def schedule_ten_minute_reminder(event_id: str, team1_captain: discord.Mem
     except Exception as e:
         print(f"Error scheduling reminders for event {event_id}: {e}")
 
-async def schedule_event_cleanup(event_id: str, delay_hours: int = 36, delay_minutes: int = None, keep_event_data: bool = True):
+async def schedule_event_cleanup(event_id: str, delay_hours: int = 1, delay_minutes: int = None, keep_event_data: bool = False):
     try:
         if event_id not in scheduled_events:
             return
@@ -926,8 +926,10 @@ class Events(commands.Cog):
         if group_label: embed_description += f"\n**Group:** {group_label}"
         embed_description += f"\n\n**Channel:** {interaction.channel.mention}"
         
+        winner_badge = EMOJIS.get('winner') or EMOJIS.get('trophy', '🏆')
+
         embed = discord.Embed(
-            title=f"{EMOJIS['trophy']} {w_display_name} 🆚 {l_display_name}",
+            title=f"{winner_badge} {w_display_name} 🆚 {l_display_name}",
             description=embed_description,
             color=discord.Color.gold(),
             timestamp=discord.utils.utcnow()
@@ -937,7 +939,7 @@ class Events(commands.Cog):
         captains_text = f"**Captains**\n- Team1 Captain: {w_display_mention}" + (f" ({winner.name})" if winner else "") + f"\n- Team2 Captain: {l_display_mention}" + (f" ({loser.name})" if loser else "")
         embed.add_field(name="", value=captains_text, inline=False)
         
-        results_text = f"**Results**\n{EMOJIS['trophy']} {w_name} ({winner_score}) {EMOJIS['vs']} ({loser_score}) {l_name} {EMOJIS['skull']}"
+        results_text = f"**Results**\n{winner_badge} {w_name} ({winner_score}) {EMOJIS['vs']} ({loser_score}) {l_name} {EMOJIS['skull']}"
         embed.add_field(name="", value=results_text, inline=False)
         
         staff_text = f"**Staffs**\n▪ {EMOJIS['judge']} Judge: {interaction.user.mention}" + (f" ({interaction.user.name})" if interaction.user else "")
@@ -1043,7 +1045,7 @@ class Events(commands.Cog):
                     l_att_text += " (Disqualified)"
 
                 att_embed.add_field(
-                    name=f"{EMOJIS['trophy']} Result",
+                    name=f"{winner_badge} Result",
                     value=f"**Winner/Team 1:** {w_att_text} `({winner_score})`\n**Loser/Team 2:** {l_att_text} `({loser_score})`",
                     inline=False
                 )
@@ -1056,6 +1058,9 @@ class Events(commands.Cog):
                 await staff_attendance_channel.send(embed=att_embed)
             except Exception as e:
                 print(f"Error posting in Staff Attendance channel: {e}")
+
+        # Once schedule is over, prune completed match from scheduled_events JSON to save memory
+        asyncio.create_task(schedule_event_cleanup(matched_ev_id, delay_minutes=2, keep_event_data=False))
 
         await interaction.followup.send(f"{EMOJIS['attendance_done']} Event results processed and posted successfully!", ephemeral=False)
 

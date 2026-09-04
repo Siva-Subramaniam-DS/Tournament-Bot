@@ -182,8 +182,8 @@ class Listeners(commands.Cog):
                     await msg.edit(content=f"❌ Sync failed: {e}")
                 return
 
-        # Ticket status prefix commands (?sh, ?dq, ?dd, ?ho, $close, $delete, $reopen)
-        if command in ['?sh', '?dq', '?dd', '?ho', '$close', '$delete', '$reopen']:
+        # Ticket status prefix commands (?sh, ?dq, ?dd, ?ho, $close, $delete, $reopen, $add, $remove)
+        if command in ['?sh', '?dq', '?dd', '?ho', '$close', '$delete', '$reopen', '$add', '$remove']:
 
             is_owner = message.author.id == BOT_OWNER_ID
             is_admin = message.author.guild_permissions.administrator if hasattr(message.author, 'guild_permissions') else False
@@ -202,9 +202,87 @@ class Listeners(commands.Cog):
                 staff = discord.utils.get(message.author.roles, id=staff_id_val) if staff_id_val else None
                 has_role = bool(head_org or helper_team or judge or recorder or staff)
                 
-            if not (is_owner or is_admin or has_role):
+            # Allow captains/participants inside the channel to use $add
+            is_channel_participant = False
+            if command in ['$add', '$remove'] and hasattr(message.channel, 'permissions_for'):
+                perms = message.channel.permissions_for(message.author)
+                is_channel_participant = perms.send_messages
+
+            if not (is_owner or is_admin or has_role or is_channel_participant):
                 try: await message.delete()
                 except Exception: pass
+                return
+
+            if command in ['$add', '$remove']:
+                target_member = None
+                if message.mentions:
+                    target_member = message.mentions[0]
+                else:
+                    parts = message.content.split()
+                    if len(parts) > 1:
+                        raw_id = parts[1].strip().lstrip('<@!').rstrip('>')
+                        if raw_id.isdigit():
+                            target_member = message.guild.get_member(int(raw_id))
+                            if not target_member:
+                                try: target_member = await message.guild.fetch_member(int(raw_id))
+                                except Exception: pass
+
+                if not target_member:
+                    await message.channel.send(f"⚠️ Usage: `{command} @user` or `{command} <user_id>`")
+                    return
+
+                if command == '$add':
+                    try:
+                        await message.channel.set_permissions(
+                            target_member,
+                            view_channel=True,
+                            send_messages=True,
+                            read_message_history=True,
+                            attach_files=True,
+                            embed_links=True,
+                            reason=f"Added to ticket by {message.author.name}"
+                        )
+                        embed = discord.Embed(
+                            title="👤 Member Added to Ticket",
+                            description=f"{target_member.mention} has been added to this ticket channel by {message.author.mention}.",
+                            color=discord.Color.green(),
+                            timestamp=discord.utils.utcnow()
+                        )
+                        embed.set_footer(text=f"{ORGANIZATION_NAME} • Ticket Manager")
+                        await message.channel.send(embed=embed)
+
+                        add_log_embed = discord.Embed(
+                            title="👤 Member Added to Ticket",
+                            description=f"**Action By:** {message.author.mention}\n**Member Added:** {target_member.mention} (`{target_member.id}`)\n**Channel:** {message.channel.mention} (`#{message.channel.name}`)",
+                            color=discord.Color.green(),
+                            timestamp=discord.utils.utcnow()
+                        )
+                        add_log_embed.set_footer(text=f"{ORGANIZATION_NAME} • Audit Log")
+                        await log_bot_activity(message.guild, add_log_embed)
+                    except Exception as e:
+                        await message.channel.send(f"❌ Failed to add member: {e}")
+                else:
+                    try:
+                        await message.channel.set_permissions(target_member, overwrite=None, reason=f"Removed from ticket by {message.author.name}")
+                        embed = discord.Embed(
+                            title="👤 Member Removed from Ticket",
+                            description=f"{target_member.mention} has been removed from this ticket channel by {message.author.mention}.",
+                            color=discord.Color.orange(),
+                            timestamp=discord.utils.utcnow()
+                        )
+                        embed.set_footer(text=f"{ORGANIZATION_NAME} • Ticket Manager")
+                        await message.channel.send(embed=embed)
+
+                        rem_log_embed = discord.Embed(
+                            title="👤 Member Removed from Ticket",
+                            description=f"**Action By:** {message.author.mention}\n**Member Removed:** {target_member.mention} (`{target_member.id}`)\n**Channel:** {message.channel.mention} (`#{message.channel.name}`)",
+                            color=discord.Color.orange(),
+                            timestamp=discord.utils.utcnow()
+                        )
+                        rem_log_embed.set_footer(text=f"{ORGANIZATION_NAME} • Audit Log")
+                        await log_bot_activity(message.guild, rem_log_embed)
+                    except Exception as e:
+                        await message.channel.send(f"❌ Failed to remove member: {e}")
                 return
 
             if command == '$reopen':
@@ -262,6 +340,19 @@ class Listeners(commands.Cog):
                     )
                     embed.set_footer(text=f"{ORGANIZATION_NAME} • Ticket Manager")
                     await channel.send(embed=embed)
+
+                    # Audit Log for Reopen
+                    try:
+                        reopen_log_embed = discord.Embed(
+                            title=f"🔓 Ticket Reopened: #{clean_name}",
+                            description=f"**Reopened By:** {message.author.mention}\n**Channel:** {channel.mention}",
+                            color=discord.Color.green(),
+                            timestamp=discord.utils.utcnow()
+                        )
+                        reopen_log_embed.set_footer(text=f"{ORGANIZATION_NAME} • Audit Log")
+                        await log_bot_activity(guild, reopen_log_embed)
+                    except Exception: pass
+
                     try: await message.delete()
                     except Exception: pass
                 except Exception as e:
@@ -387,12 +478,40 @@ class Listeners(commands.Cog):
                         await message.channel.send("🔒 Ticket closed and moved to closed category. Use `$delete` to permanently delete it.")
                     else:
                         await message.channel.send("🔒 Ticket closed.")
+
+                    # Audit Log for Ticket Close
+                    try:
+                        close_log_embed = discord.Embed(
+                            title=f"🔒 Ticket Closed: #{message.channel.name}",
+                            description=(
+                                f"**Closed By:** {message.author.mention}\n"
+                                f"**Channel:** {message.channel.mention}\n"
+                                f"**Messages:** `{len(messages_list)}`\n"
+                                f"**Attachments:** `{attachment_count}`"
+                            ),
+                            color=discord.Color.gold(),
+                            timestamp=discord.utils.utcnow()
+                        )
+                        close_log_embed.set_footer(text=f"{ORGANIZATION_NAME} • Audit Log")
+                        await log_bot_activity(message.guild, close_log_embed)
+                    except Exception: pass
                 except Exception as e:
                     print(f"Error closing ticket: {e}")
                 return
 
 
             elif command == '$delete':
+                try:
+                    del_log_embed = discord.Embed(
+                        title=f"🗑️ Ticket Deleted: #{message.channel.name}",
+                        description=f"**Deleted By:** {message.author.mention}\n**Channel Name:** `#{message.channel.name}` (`{message.channel.id}`)",
+                        color=discord.Color.red(),
+                        timestamp=discord.utils.utcnow()
+                    )
+                    del_log_embed.set_footer(text=f"{ORGANIZATION_NAME} • Audit Log")
+                    await log_bot_activity(message.guild, del_log_embed)
+                except Exception: pass
+
                 try:
                     await message.channel.delete(reason=f"Ticket deleted by {message.author.name}")
                 except Exception as e:

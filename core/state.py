@@ -760,7 +760,7 @@ def update_embed_title_with_checkmark(embed: discord.Embed) -> bool:
         return False
 
 def load_scheduled_events() -> dict:
-    """Load scheduled events from local JSON storage into the shared dictionary."""
+    """Load scheduled events from local JSON storage into the shared dictionary, pruning finished events to save memory."""
     global scheduled_events
     path = os.path.join(BASE_DIR, 'scheduled_events.json')
     if os.path.exists(path):
@@ -768,15 +768,21 @@ def load_scheduled_events() -> dict:
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 import datetime
+                active_events = {}
                 for event_id, event_data in data.items():
-                    if isinstance(event_data, dict) and 'datetime' in event_data and isinstance(event_data['datetime'], str):
+                    if not isinstance(event_data, dict):
+                        continue
+                    if str(event_data.get('status', '')).lower() == 'completed':
+                        continue
+                    if 'datetime' in event_data and isinstance(event_data['datetime'], str):
                         try:
                             event_data['datetime'] = datetime.datetime.fromisoformat(event_data['datetime'])
                         except Exception:
                             pass
+                    active_events[event_id] = event_data
                 scheduled_events.clear()
-                scheduled_events.update(data)
-                print(f"Loaded {len(scheduled_events)} scheduled events from local fallback")
+                scheduled_events.update(active_events)
+                print(f"Loaded {len(scheduled_events)} active scheduled events from local fallback")
         except Exception as e:
             print(f"Error loading scheduled_events.json: {e}")
     return scheduled_events

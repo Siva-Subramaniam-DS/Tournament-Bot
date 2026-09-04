@@ -1755,6 +1755,8 @@ def create_match_room_embed(
     captain2_mention: str,
     captain1_ign_or_id: Optional[str] = None,
     captain2_ign_or_id: Optional[str] = None,
+    captain1_game_name: Optional[str] = None,
+    captain2_game_name: Optional[str] = None,
     group_name: Optional[str] = None,
     match_id: Optional[Union[str, int]] = None,
     rules_channel_id: Optional[Union[int, str]] = None,
@@ -1837,23 +1839,27 @@ def create_match_room_embed(
     clean_c1_id = re.sub(r'<@!?\d+>', '', c1_raw_ign).strip()
     clean_c2_id = re.sub(r'<@!?\d+>', '', c2_raw_ign).strip()
 
+    # In field headers: use actual Game Name (IGN) if provided, otherwise fallback to title
+    p1_field_title = str(captain1_game_name).strip() if (captain1_game_name and str(captain1_game_name).strip() and "<@" not in str(captain1_game_name)) else p1_title
+    p2_field_title = str(captain2_game_name).strip() if (captain2_game_name and str(captain2_game_name).strip() and "<@" not in str(captain2_game_name)) else p2_title
+
     # Team 1 / Player 1 Field
     p1_label = "Player 1" if is_1v1 else "Team 1"
     if clean_c1_id:
         embed.add_field(
-            name=f"🦅 **{p1_label}:** {p1_title}",
+            name=f"🦅 **{p1_label}:** {p1_field_title}",
             value=f"{EMOJIS['captain']} Captain: `{clean_c1_id}`",
             inline=False
         )
     elif captain1_mention and "<@" in str(captain1_mention):
         embed.add_field(
-            name=f"🦅 **{p1_label}:** {p1_title}",
+            name=f"🦅 **{p1_label}:** {p1_field_title}",
             value=f"{EMOJIS['captain']} Captain: {captain1_mention}",
             inline=False
         )
     else:
         embed.add_field(
-            name=f"🦅 **{p1_label}:** {p1_title}",
+            name=f"🦅 **{p1_label}:** {p1_field_title}",
             value=f"{EMOJIS['captain']} Captain: `N/A`",
             inline=False
         )
@@ -1862,19 +1868,19 @@ def create_match_room_embed(
     p2_label = "Player 2" if is_1v1 else "Team 2"
     if clean_c2_id:
         embed.add_field(
-            name=f"🦅 **{p2_label}:** {p2_title}",
+            name=f"🦅 **{p2_label}:** {p2_field_title}",
             value=f"{EMOJIS['captain']} Captain: `{clean_c2_id}`",
             inline=False
         )
     elif captain2_mention and "<@" in str(captain2_mention):
         embed.add_field(
-            name=f"🦅 **{p2_label}:** {p2_title}",
+            name=f"🦅 **{p2_label}:** {p2_field_title}",
             value=f"{EMOJIS['captain']} Captain: {captain2_mention}",
             inline=False
         )
     else:
         embed.add_field(
-            name=f"🦅 **{p2_label}:** {p2_title}",
+            name=f"🦅 **{p2_label}:** {p2_field_title}",
             value=f"{EMOJIS['captain']} Captain: `N/A`",
             inline=False
         )
@@ -1883,11 +1889,13 @@ def create_match_room_embed(
     rules_val = f"<#{rules_channel_id}>" if rules_channel_id else (f"[Rules Channel]({rules_link})" if rules_link else "Not Set")
     deadline_val = f"<#{deadline_channel_id}>" if deadline_channel_id else (f"[Deadline Channel]({deadline_link})" if deadline_link else "Not Set")
     helper_mention = helper_role.mention if helper_role else "@Helper Team"
+    helper_badge = EMOJIS.get('helpers', '')
+    helper_str = f"{helper_badge} {helper_mention}".strip()
 
     info_lines = [
         f"📖 **Rules:** {rules_val}",
         f"📅 **Deadline:** {deadline_val}",
-        f"☎️ Please decide on a schedule and ping {helper_mention}."
+        f"☎️ Please decide on a schedule and ping {helper_str}."
     ]
     embed.add_field(
         name="\u200b",
@@ -2033,6 +2041,8 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
             c2_uid = c2_entry.get('discord_id') if isinstance(c2_entry, dict) else None
             c1_ign = c1_entry.get('ign') if isinstance(c1_entry, dict) else ""
             c2_ign = c2_entry.get('ign') if isinstance(c2_entry, dict) else ""
+            c1_game_name = c1_entry.get('game_name') if isinstance(c1_entry, dict) else ""
+            c2_game_name = c2_entry.get('game_name') if isinstance(c2_entry, dict) else ""
 
             if not c1_uid and c1_raw:
                 c1_uid = extract_discord_id_from_text(c1_raw)
@@ -2263,6 +2273,8 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                     captain2_mention=c2_mention,
                     captain1_ign_or_id=c1_ign,
                     captain2_ign_or_id=c2_ign,
+                    captain1_game_name=c1_game_name,
+                    captain2_game_name=c2_game_name,
                     group_name=None,
                     match_id=match_id,
                     rules_channel_id=rules_ch_id,
@@ -3146,6 +3158,24 @@ class Tournaments(commands.Cog):
                 await message_channel.send("🔒 Ticket closed and moved to closed category. Use `$delete` (or `/delete_room`) to permanently delete it.")
             else:
                 await message_channel.send("🔒 Ticket closed.")
+
+            # Audit Log for Ticket Close
+            try:
+                close_log_embed = discord.Embed(
+                    title=f"🔒 Ticket Closed: #{message_channel.name}",
+                    description=(
+                        f"**Closed By:** {interaction.user.mention}\n"
+                        f"**Channel:** {message_channel.mention}\n"
+                        f"**Messages:** `{len(messages_list)}`\n"
+                        f"**Attachments:** `{attachment_count}`"
+                    ),
+                    color=discord.Color.gold(),
+                    timestamp=discord.utils.utcnow()
+                )
+                close_log_embed.set_footer(text=f"{ORGANIZATION_NAME} • Audit Log")
+                await log_bot_activity(interaction.guild, close_log_embed)
+            except Exception:
+                pass
         except Exception as e:
             print(f"Error closing ticket via slash command: {e}")
             await interaction.followup.send(f"❌ Failed to close ticket: {e}")
@@ -3161,12 +3191,108 @@ class Tournaments(commands.Cog):
             await interaction.response.send_message("❌ You do not have permission to delete ticket rooms.", ephemeral=True)
             return
 
+        chan_name = interaction.channel.name
+        chan_id = interaction.channel.id
+        guild = interaction.guild
+
+        # Audit Log for Ticket Delete
+        try:
+            del_log_embed = discord.Embed(
+                title=f"🗑️ Ticket Deleted: #{chan_name}",
+                description=f"**Deleted By:** {interaction.user.mention}\n**Channel Name:** `#{chan_name}` (`{chan_id}`)",
+                color=discord.Color.red(),
+                timestamp=discord.utils.utcnow()
+            )
+            del_log_embed.set_footer(text=f"{ORGANIZATION_NAME} • Audit Log")
+            await log_bot_activity(guild, del_log_embed)
+        except Exception:
+            pass
+
         await interaction.response.send_message("🗑️ Deleting this ticket channel in 3 seconds...")
         await asyncio.sleep(3)
         try:
             await interaction.channel.delete(reason=f"Ticket deleted by {interaction.user.name}")
         except Exception as e:
             print(f"Error deleting channel: {e}")
+
+    @app_commands.command(name="add_member", description="Add a member to this ticket channel")
+    @app_commands.describe(member="The member to add into this ticket channel")
+    @with_guild_context
+    async def add_member_cmd(self, interaction: discord.Interaction, member: discord.Member):
+        if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
+            await interaction.response.send_message("❌ This command can only be used in server text channels.", ephemeral=True)
+            return
+
+        perms = interaction.channel.permissions_for(interaction.user)
+        if not is_authorized_to_configure(interaction) and not is_staff(interaction.user) and not perms.send_messages:
+            await interaction.response.send_message("❌ You do not have permission to add members to this ticket.", ephemeral=True)
+            return
+
+        try:
+            await interaction.channel.set_permissions(
+                member,
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                attach_files=True,
+                embed_links=True,
+                reason=f"Added to ticket by {interaction.user.name}"
+            )
+            embed = discord.Embed(
+                title="👤 Member Added to Ticket",
+                description=f"{member.mention} has been added to this ticket channel by {interaction.user.mention}.",
+                color=discord.Color.green(),
+                timestamp=discord.utils.utcnow()
+            )
+            embed.set_footer(text=f"{ORGANIZATION_NAME} • Ticket Manager")
+            await interaction.response.send_message(embed=embed)
+
+            # Audit Log
+            log_embed = discord.Embed(
+                title="👤 Member Added to Ticket",
+                description=f"**Action By:** {interaction.user.mention}\n**Member Added:** {member.mention} (`{member.id}`)\n**Channel:** {interaction.channel.mention} (`#{interaction.channel.name}`)",
+                color=discord.Color.green(),
+                timestamp=discord.utils.utcnow()
+            )
+            log_embed.set_footer(text=f"{ORGANIZATION_NAME} • Audit Log")
+            await log_bot_activity(interaction.guild, log_embed)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Failed to add member: {e}", ephemeral=True)
+
+    @app_commands.command(name="remove_member", description="Remove a member from this ticket channel")
+    @app_commands.describe(member="The member to remove from this ticket channel")
+    @with_guild_context
+    async def remove_member_cmd(self, interaction: discord.Interaction, member: discord.Member):
+        if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
+            await interaction.response.send_message("❌ This command can only be used in server text channels.", ephemeral=True)
+            return
+
+        if not is_authorized_to_configure(interaction) and not is_staff(interaction.user):
+            await interaction.response.send_message("❌ You do not have permission to remove members from this ticket.", ephemeral=True)
+            return
+
+        try:
+            await interaction.channel.set_permissions(member, overwrite=None, reason=f"Removed from ticket by {interaction.user.name}")
+            embed = discord.Embed(
+                title="👤 Member Removed from Ticket",
+                description=f"{member.mention} has been removed from this ticket channel by {interaction.user.mention}.",
+                color=discord.Color.orange(),
+                timestamp=discord.utils.utcnow()
+            )
+            embed.set_footer(text=f"{ORGANIZATION_NAME} • Ticket Manager")
+            await interaction.response.send_message(embed=embed)
+
+            # Audit Log
+            log_embed = discord.Embed(
+                title="👤 Member Removed from Ticket",
+                description=f"**Action By:** {interaction.user.mention}\n**Member Removed:** {member.mention} (`{member.id}`)\n**Channel:** {interaction.channel.mention} (`#{interaction.channel.name}`)",
+                color=discord.Color.orange(),
+                timestamp=discord.utils.utcnow()
+            )
+            log_embed.set_footer(text=f"{ORGANIZATION_NAME} • Audit Log")
+            await log_bot_activity(interaction.guild, log_embed)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Failed to remove member: {e}", ephemeral=True)
 
     @app_commands.command(name="assign_role", description="Assign a role to all participants in a tournament")
     @app_commands.describe(

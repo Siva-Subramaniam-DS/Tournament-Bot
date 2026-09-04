@@ -1234,6 +1234,8 @@ class Settings(commands.Cog):
             await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=False)
             return
 
+        guild = interaction.guild
+
         if not is_authorized_to_configure(interaction) and not is_staff(interaction.user):
             await interaction.response.send_message("❌ You do not have permission to edit player details.", ephemeral=False)
             return

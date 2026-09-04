@@ -740,64 +740,144 @@ class ConfirmResetView(discord.ui.View):
 
 staff_group = app_commands.Group(name="staff", description="Manage tournament staff roles and workload stats")
 
-@staff_group.command(name="recruit", description="Recruit a member to a staff role")
+@staff_group.command(name="recruit", description="Recruit a member to one or more staff roles")
 @app_commands.describe(
     member="The discord member to recruit",
-    role="Select any role to assign to the member"
+    role="Primary role to assign",
+    role_2="Optional 2nd role to assign",
+    role_3="Optional 3rd role to assign",
+    role_4="Optional 4th role to assign",
+    role_5="Optional 5th role to assign"
 )
 @with_guild_context
-async def staff_recruit(interaction: discord.Interaction, member: discord.Member, role: discord.Role):
+async def staff_recruit(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    role: discord.Role,
+    role_2: Optional[discord.Role] = None,
+    role_3: Optional[discord.Role] = None,
+    role_4: Optional[discord.Role] = None,
+    role_5: Optional[discord.Role] = None
+):
+    if not is_authorized_to_configure(interaction) and not is_staff(interaction.user):
+        await interaction.response.send_message("❌ You do not have permission to recruit staff.", ephemeral=True)
+        return
+
     await interaction.response.defer(ephemeral=False)
 
+    roles_to_add = []
+    for r in [role, role_2, role_3, role_4, role_5]:
+        if r and r not in roles_to_add and r not in member.roles:
+            if interaction.guild and interaction.guild.me.top_role > r:
+                roles_to_add.append(r)
+
+    if not roles_to_add:
+        already = [r.mention for r in [role, role_2, role_3, role_4, role_5] if r and r in member.roles]
+        if already:
+            await interaction.followup.send(f"⚠️ {member.mention} already has role(s): {', '.join(already)}")
+        else:
+            await interaction.followup.send("⚠️ No valid roles could be assigned (check bot role hierarchy).")
+        return
+
     try:
-        await member.add_roles(role, reason=f"Recruited by {interaction.user}")
-        assigned_role_text = role.mention
+        await member.add_roles(*roles_to_add, reason=f"Recruited by {interaction.user}")
+        assigned_role_text = ", ".join(r.mention for r in roles_to_add)
     except Exception as e:
-        await interaction.followup.send(f"⚠️ Failed to add Discord role {role.mention}: {e}", ephemeral=False)
+        await interaction.followup.send(f"⚠️ Failed to add Discord role(s): {e}", ephemeral=False)
         return
 
     embed = discord.Embed(
         title="📋 Staff Recruitment Updated",
-        description=f"Successfully assigned staff role to {member.mention}",
+        description=f"Successfully assigned {len(roles_to_add)} staff role(s) to {member.mention}",
         color=discord.Color.green(),
         timestamp=discord.utils.utcnow()
     )
     embed.add_field(name="👤 Staff Member", value=f"{member.mention} (`{member.display_name}`)", inline=True)
-    embed.add_field(name="🛡️ Assigned Role", value=assigned_role_text, inline=True)
+    embed.add_field(name="🛡️ Assigned Role(s)", value=assigned_role_text, inline=True)
     embed.add_field(name="👑 Recruited By", value=interaction.user.mention, inline=True)
     embed.set_footer(text=f"{ORGANIZATION_NAME} • Staff Management")
-
     await interaction.followup.send(embed=embed, ephemeral=False)
 
+    # Audit Log
+    try:
+        log_embed = discord.Embed(
+            title="📋 Staff Recruited",
+            description=f"**Target Member:** {member.mention} (`{member.id}`)\n**Roles Added:** {assigned_role_text}\n**Recruited By:** {interaction.user.mention}",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow()
+        )
+        log_embed.set_footer(text=f"{ORGANIZATION_NAME} • Audit Log")
+        await log_bot_activity(interaction.guild, log_embed)
+    except Exception:
+        pass
 
-@staff_group.command(name="fire", description="Remove a staff role from a member")
+
+@staff_group.command(name="fire", description="Remove one or more staff roles from a member")
 @app_commands.describe(
-    member="The discord member to remove staff role from",
-    role="Select any role to remove from the member"
+    member="The discord member to remove staff role(s) from",
+    role="Primary role to remove",
+    role_2="Optional 2nd role to remove",
+    role_3="Optional 3rd role to remove",
+    role_4="Optional 4th role to remove",
+    role_5="Optional 5th role to remove"
 )
 @with_guild_context
-async def staff_fire(interaction: discord.Interaction, member: discord.Member, role: discord.Role):
+async def staff_fire(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    role: discord.Role,
+    role_2: Optional[discord.Role] = None,
+    role_3: Optional[discord.Role] = None,
+    role_4: Optional[discord.Role] = None,
+    role_5: Optional[discord.Role] = None
+):
+    if not is_authorized_to_configure(interaction) and not is_staff(interaction.user):
+        await interaction.response.send_message("❌ You do not have permission to remove staff.", ephemeral=True)
+        return
+
     await interaction.response.defer(ephemeral=False)
 
+    roles_to_remove = []
+    for r in [role, role_2, role_3, role_4, role_5]:
+        if r and r not in roles_to_remove and r in member.roles:
+            if interaction.guild and interaction.guild.me.top_role > r:
+                roles_to_remove.append(r)
+
+    if not roles_to_remove:
+        await interaction.followup.send(f"⚠️ {member.mention} does not have any of the specified roles or bot lacks role hierarchy permission.")
+        return
+
     try:
-        await member.remove_roles(role, reason=f"Removed by {interaction.user}")
-        removed_role_text = role.mention
+        await member.remove_roles(*roles_to_remove, reason=f"Removed by {interaction.user}")
+        removed_role_text = ", ".join(r.mention for r in roles_to_remove)
     except Exception as e:
-        await interaction.followup.send(f"⚠️ Failed to remove Discord role {role.mention}: {e}", ephemeral=False)
+        await interaction.followup.send(f"⚠️ Failed to remove Discord role(s): {e}", ephemeral=False)
         return
 
     embed = discord.Embed(
         title="⚠️ Staff Removal Updated",
-        description=f"Successfully removed staff role from {member.mention}",
+        description=f"Successfully removed {len(roles_to_remove)} staff role(s) from {member.mention}",
         color=discord.Color.red(),
         timestamp=discord.utils.utcnow()
     )
     embed.add_field(name="👤 Staff Member", value=f"{member.mention} (`{member.display_name}`)", inline=True)
-    embed.add_field(name="🛡️ Removed Role", value=removed_role_text, inline=True)
+    embed.add_field(name="🛡️ Removed Role(s)", value=removed_role_text, inline=True)
     embed.add_field(name="👑 Action By", value=interaction.user.mention, inline=True)
     embed.set_footer(text=f"{ORGANIZATION_NAME} • Staff Management")
-
     await interaction.followup.send(embed=embed, ephemeral=False)
+
+    # Audit Log
+    try:
+        log_embed = discord.Embed(
+            title="⚠️ Staff Role(s) Removed",
+            description=f"**Target Member:** {member.mention} (`{member.id}`)\n**Roles Removed:** {removed_role_text}\n**Action By:** {interaction.user.mention}",
+            color=discord.Color.red(),
+            timestamp=discord.utils.utcnow()
+        )
+        log_embed.set_footer(text=f"{ORGANIZATION_NAME} • Audit Log")
+        await log_bot_activity(interaction.guild, log_embed)
+    except Exception:
+        pass
 
 
 async def render_staff_work_count(
@@ -1442,6 +1522,9 @@ class Staff(commands.Cog):
                     return
 
                 dt = event_data.get('datetime')
+                if isinstance(dt, str):
+                    try: dt = datetime.datetime.fromisoformat(dt)
+                    except Exception: dt = None
                 if dt:
                     if dt.tzinfo is None:
                         dt = dt.replace(tzinfo=pytz.UTC)
@@ -1462,6 +1545,16 @@ class Staff(commands.Cog):
                     event_data['recorder_confirmed'] = False
                 
                 save_scheduled_events()
+
+                # Remove old staff permissions from the match ticket channel
+                ticket_ch_id = event_data.get('channel_id')
+                if ticket_ch_id and select_interaction.guild:
+                    ticket_ch = select_interaction.guild.get_channel(ticket_ch_id)
+                    if ticket_ch:
+                        try:
+                            await ticket_ch.set_permissions(old_staff, overwrite=None, reason=f"Staff resigned from match as {role_type}")
+                        except Exception as e:
+                            print(f"Error removing permissions for resigned staff from ticket room: {e}")
 
                 sched_ch_id = event_data.get('schedule_channel_id') or event_data.get('channel_id')
                 msg_id = event_data.get('schedule_message_id')
@@ -1494,7 +1587,15 @@ class Staff(commands.Cog):
                     except Exception as e:
                         print(f"Failed to restore schedule message: {e}")
 
-                    role_ping_id = ROLE_IDS.get('judge' if role_type == "Judge" else 'recorder')
+                    role_key = 'judge' if role_type == "Judge" else 'recorder'
+                    cfg = get_guild_config(select_interaction.guild.id) if select_interaction.guild else {}
+                    role_ping_id = cfg.get('role_ids', {}).get(role_key) or ROLE_IDS.get(role_key)
+                    if not role_ping_id and select_interaction.guild:
+                        for r in select_interaction.guild.roles:
+                            if r.name.lower() == role_key:
+                                role_ping_id = r.id
+                                break
+
                     notify_embed = discord.Embed(
                         title=f"🔄 {role_type} Needed — Schedule Open",
                         description=f"**{old_staff.display_name}** has resigned from {role_type.lower()}ing this match.\n\nA replacement {role_type.lower()} is required! Please click the appropriate button on the event post.",
@@ -1508,12 +1609,32 @@ class Staff(commands.Cog):
                     )
                     notify_embed.set_footer(text=f"{ORGANIZATION_NAME} • Reassign System")
                     try:
+                        content_str = f"⚠️ <@&{role_ping_id}> — A {role_type.lower()} is needed for this match!" if role_ping_id else f"⚠️ Attention Staff — A replacement {role_type.lower()} is needed for this match!"
                         await sched_channel.send(
-                            content=f"⚠️ <@&{role_ping_id}> — A {role_type.lower()} is needed for this match!",
+                            content=content_str,
                             embed=notify_embed
                         )
                     except Exception as e:
                         print(f"Error sending reassign notification: {e}")
+
+                # Audit Log
+                try:
+                    reassign_log_embed = discord.Embed(
+                        title=f"🔄 Staff Resigned from Match: {role_type}",
+                        description=(
+                            f"**Staff Member:** {old_staff.mention} (`{old_staff.id}`)\n"
+                            f"**Role:** {role_type}\n"
+                            f"**Tournament:** {event_data.get('tournament', 'N/A')}\n"
+                            f"**Round:** {event_data.get('round', 'N/A')}\n"
+                            f"**Match:** {event_data.get('team1_name', '')} vs {event_data.get('team2_name', '')}"
+                        ),
+                        color=discord.Color.orange(),
+                        timestamp=discord.utils.utcnow()
+                    )
+                    reassign_log_embed.set_footer(text=f"{ORGANIZATION_NAME} • Audit Log")
+                    await log_bot_activity(select_interaction.guild, reassign_log_embed)
+                except Exception:
+                    pass
 
                 await select_interaction.response.send_message(
                     f"✅ You have been removed from the schedule as {role_type}. Staff have been notified.", ephemeral=False

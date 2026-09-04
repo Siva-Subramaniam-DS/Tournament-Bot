@@ -7,7 +7,7 @@
 ![Supabase](https://img.shields.io/badge/Supabase-PostgreSQL-3ECF8E?style=for-the-badge&logo=supabase&logoColor=white)
 ![Hosting](https://img.shields.io/badge/Hosted%20on-bot.hosting.net-6C47FF?style=for-the-badge&logo=server&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)
-![Release](https://img.shields.io/badge/Release-v1.5.0-blue?style=for-the-badge)
+![Release](https://img.shields.io/badge/Release-v2.0.0-blue?style=for-the-badge)
 ![Status](https://img.shields.io/badge/Status-Active-brightgreen?style=for-the-badge)
 
 **A fully-featured, multi-guild Discord tournament management bot.**  
@@ -184,13 +184,14 @@ The player information system automatically synchronizes rosters from Google She
 
 ### 📱 1 vs 1 Format:
 ```markdown
-🏆 YG-GamingMW
+<:trophy:1545045388145205298> YG-GamingMW
 
-💂 @ZeroPing
+<:Details:1545045370961133668> @ZeroPing
 
-💂 **Player details**
+<:Details:1545045370961133668> **Player details**
 > **Discord Tag:** `yg_gamingmw`
 > **Discord ID:** `713394981213175829`
+> **Verification (Player):** <:Verified:1545045390452334602> Verified
 > **Game Name:** `YG-GamingMW`
 > **Game ID:** `8202C9AF0056E12A`
 > **Title:** `None`
@@ -198,20 +199,22 @@ The player information system automatically synchronizes rosters from Google She
 
 ### 👥 Team Format (2v2 – 5v5):
 ```markdown
-🏆 Team Alpha
+<:trophy:1545045388145205298> Team Alpha
 
-💂 @CaptainPing
+<:CaptainDetails:1545045368218329208> @CaptainPing
 
-💂 **Captain details**
+<:CaptainDetails:1545045368218329208> **Captain details**
 > **Discord Tag:** `captain_tag`
 > **Discord ID:** `111222333444555`
+> **Verification (Captain):** <:Verified:1545045390452334602> Verified
 > **Game Name:** `CaptainIGN`
 > **Game ID:** `CAP12345`
 > **Title:** `Leader`
 
-👥 **Player 2 details**
+<:Details:1545045370961133668> **Player 2 details**
 > **Discord Tag:** `player2_tag`
 > **Discord ID:** `666777888999000`
+> **Verification (Player):** <:NotVerifed:1545045384274116669> Not verified
 > **Game Name:** `Player2IGN`
 > **Game ID:** `P2_98765`
 > **Title:** `None`
@@ -350,9 +353,88 @@ The bot is hosted on [bot.hosting.net](https://bot.hosting.net), a Python-friend
 
 ## 🗓️ Version History & Changelog
 
-> **Latest Release:** `v1.5.0`
+> **Latest Release:** `v2.0.0`
 
-### 🚀 v1.5.0 — Latest
+### 🚀 v2.0.0 — Latest
+**Tags:** `emojis` `discord-portal` `branding` `ui-overhaul`
+
+> **GitHub Release Title:** `v2.0.0 - Discord Application Emojis & Custom Brand Assets`
+>
+> Milestone major release introducing full integration with Discord Developer Portal Application Emojis, dynamic API resolution, and a native UI overhaul replacing raw Unicode characters with custom tournament assets.
+
+#### What's Changed
+- **Discord Developer Portal Application Emojis:** Native support for application emojis uploaded directly to the Discord Developer Portal (`Vs`, `Verified`, `NotVerifed`, `NotInServer`, `MatchDone`, `Loser`, `Judge`, `Recorder`, `Details`, `CaptainDetails`, `trophy`).
+- **Dynamic Startup Emoji Loader (`bot.fetch_application_emojis`):** Upgraded `core/emojis.py` with an asynchronous `init_emojis_from_bot()` routine in `on_ready` that dynamically fetches and caches application emojis across all servers the bot operates in.
+- **Player & Captain UI Transformation:** Replaced legacy placeholder Unicode emojis (`💂`) with customized `CaptainDetails` and `Details` soldier emblems across Google Sheets player info syncs, 1v1 match announcements, and team roster cards.
+- **Bespoke Match Announcements & Results:** Integrated `<:Vs:...>` and `<:Loser:...>` badges into `/event-result`, match ticket generation, and result channel embeds.
+- **Enhanced `/player_edit` Parser:** Upgraded regex replacement patterns to dynamically recognize and replace both legacy Unicode and custom Discord emoji tokens.
+
+#### Full Changelog
+`v1.8.0...v2.0.0`
+
+---
+
+### ⚡ v1.8.0
+**Tags:** `architecture` `cogs` `refactoring` `utilities`
+
+> **GitHub Release Title:** `v1.8.0 - Modular Cog Architecture & Server Utilities Suite`
+>
+> Major architectural overhaul decomposing the monolithic codebase into high-cohesion, modular Discord cogs and adding advanced utility tooling.
+
+#### What's Changed
+- **Modular Cog Decomposition:** Migrated from a single monolithic file into a modular `cogs/` package:
+  - `cogs.tournaments` — Bracket management, auto room sweep, and match room tickets.
+  - `cogs.events` — Event creation, poster rendering, and result logging.
+  - `cogs.staff` — Judge/recorder scheduling, presence checks, and work statistics.
+  - `cogs.settings` — Server configurations, role mappings, and Google Sheet rosters.
+  - `cogs.utilities` — Embed builder, moderation tools, time/map pickers, and category monitors.
+  - `cogs.listeners` — Core event lifecycle listeners, persistence handlers, and startup routines.
+- **Interactive Embed Builder:** Added persistent multi-button interactive modal embed designer (`/embed`) with color presets, field additions, and live channel delivery.
+- **Category Monitor System (`/categorymonitor`):** Real-time monitoring of category channel counts to safeguard against Discord's 50-channel hard limit.
+- **Server Moderation Suite:** Added administrative commands including `/channel lock/unlock`, `/timeout add/remove`, `/purge`, and role cleanup tools.
+
+#### Full Changelog
+`v1.7.0...v1.8.0`
+
+---
+
+### 🎫 v1.7.0
+**Tags:** `automation` `auto-room` `challonge` `tickets`
+
+> **GitHub Release Title:** `v1.7.0 - Automated Room Creation & Challonge Bracket Polling`
+>
+> Autonomous background engine for automatic match room ticket creation and bracket synchronization.
+
+#### What's Changed
+- **Automated Match Room Creation Engine:** Background 5-minute Challonge polling worker that detects open tournament matches and automatically spawns private match ticket channels for competing team captains.
+- **Auto-Room Command Suite (`/auto_room`):** Added `/auto_room toggle`, `/auto_room run`, `/auto_room stop`, and `/auto_room status` to give organizers complete control over automated matchmaking.
+- **Category Capacity Handling:** Automatically balances match room creation across configured category pools (`Category 1`, `Category 2`) with closed ticket category routing.
+- **Match Prefix Commands:** Quick prefix shortcuts for room management: `?sh` (🟢 scheduled), `?dq` (🔴 disqualified), `?dd` (✅ deadline passed), `?ho` (🟡 on hold).
+
+#### Full Changelog
+`v1.6.0...v1.7.0`
+
+---
+
+### ⏰ v1.6.0
+**Tags:** `deadlines` `reminders` `scheduler` `supabase`
+
+> **GitHub Release Title:** `v1.6.0 - Match Deadlines & Automated Reminders System`
+>
+> Comprehensive round deadline scheduling with automated Discord reminder pings and Supabase persistence.
+
+#### What's Changed
+- **Round Deadline Suite (`/deadline`):** Added `/deadline add`, `/deadline edit`, `/deadline delete`, and `/deadline list` commands for round deadlines.
+- **Discord Dynamic Timestamps:** Implemented `<t:TIMESTAMP:F>` (absolute formatted date) and `<t:TIMESTAMP:R>` (live relative countdowns) in deadline announcements.
+- **Automated Background Reminders:** Async scheduler that triggers player role reminder pings 24 hours prior to deadline and at 06:00 UTC on the deadline day.
+- **Supabase Deadlines Persistence:** Synchronized deadlines to the PostgreSQL `Deadlines` table with fallback local caching in `scheduled_deadlines.json`.
+
+#### Full Changelog
+`v1.5.0...v1.6.0`
+
+---
+
+### 🚀 v1.5.0
 **Tags:** `transcripts` `vods` `supabase` `ui` `player-info`
 
 > **GitHub Release Title:** `v1.5.0 - Rich Transcripts, Multi-Link VODs & Blockquote Player Info`
