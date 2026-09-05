@@ -66,6 +66,18 @@ def supabase_safe_upsert(table_name: str, payload: dict, on_conflict: Optional[s
                     del row[matched_key]
                     continue
 
+            # Foreign key constraint violation (e.g. Key (Team1_ID)=(...) is not present in table "Teams")
+            fk_key_match = re.search(r'Key \((\w+)\)=\([^)]+\) is not present in table', err_msg, re.IGNORECASE)
+            if not fk_key_match:
+                fk_key_match = re.search(r'violates foreign key constraint ["\']?[a-zA-Z0-9_]*_?(\w+)_fkey["\']?', err_msg, re.IGNORECASE)
+            if fk_key_match:
+                fk_col = fk_key_match.group(1)
+                matched_key = next((k for k in row.keys() if k.lower() == fk_col.lower()), None)
+                if matched_key and row.get(matched_key) is not None:
+                    print(f"[Supabase] Foreign key {matched_key} not present in parent table for '{table_name}'. Setting to None and retrying...")
+                    row[matched_key] = None
+                    continue
+
             # Relation error (e.g. table not found)
             if "does not exist" in err_msg and "relation" in err_msg:
                 print(f"[Supabase] Table '{table_name}' does not exist or access denied: {e}")
@@ -1186,6 +1198,25 @@ async def save_event_to_supabase(event_id: str, event_data: dict):
                 "Updated_At": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
             }
 
+            # Ensure Team1 and Team2 exist in Teams table so foreign key constraint (Matches_Team1_ID_fkey) is satisfied
+            if t1_id:
+                t1_row = {
+                    "Team_ID": str(t1_id),
+                    "Tournament_ID": resolved_t_id,
+                    "Team_Name": str(t1_name or f"Team {t1_id}"),
+                    "Captain_ID": str(t1_id)
+                }
+                await asyncio.to_thread(supabase_safe_upsert, "Teams", t1_row, "Team_ID")
+
+            if t2_id:
+                t2_row = {
+                    "Team_ID": str(t2_id),
+                    "Tournament_ID": resolved_t_id,
+                    "Team_Name": str(t2_name or f"Team {t2_id}"),
+                    "Captain_ID": str(t2_id)
+                }
+                await asyncio.to_thread(supabase_safe_upsert, "Teams", t2_row, "Team_ID")
+
             try:
                 await asyncio.to_thread(supabase_safe_upsert, "Matches", match_row, "Match_ID")
             except Exception as upsert_err:
@@ -1562,7 +1593,7 @@ def save_team_data(captain_id: Union[int, str], team_name: str, tournament_id: O
             pass
             
     team_entry = teams.get(c_id, {
-        "Team_ID": f"t_{c_id}",
+        "Team_ID": c_id,
         "Tournament_ID": str(tournament_id or ""),
         "Team_Name": team_name.strip(),
         "Captain_ID": c_id,
