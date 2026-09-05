@@ -31,6 +31,52 @@ if SUPABASE_URL and SUPABASE_KEY:
 else:
     print("Supabase URL or Key not found in environment. Supabase logging is disabled.")
 
+def supabase_safe_upsert(table_name: str, payload: dict, on_conflict: Optional[str] = None) -> bool:
+    """
+    Safely upserts a row into Supabase. If any columns do not exist in the remote table,
+    it dynamically detects the missing column from the error message, prunes it, and retries.
+    """
+    if not supabase_client:
+        return False
+        
+    row = payload.copy()
+    for attempt in range(5):
+        try:
+            query = supabase_client.table(table_name)
+            if on_conflict:
+                query.upsert(row, on_conflict=on_conflict).execute()
+            else:
+                query.upsert(row).execute()
+            return True
+        except Exception as e:
+            err_msg = str(e)
+            col_match = re.search(r'column ["\']?([a-zA-Z0-9_]+)["\']? of relation', err_msg, re.IGNORECASE)
+            if not col_match:
+                col_match = re.search(r'Could not find the [\'"]([a-zA-Z0-9_]+)[\'"] column of [\'"]([a-zA-Z0-9_]+)[\'"]', err_msg, re.IGNORECASE)
+            if not col_match:
+                col_match = re.search(r'column ["\']?([a-zA-Z0-9_]+)["\']? does not exist', err_msg, re.IGNORECASE)
+
+            if col_match:
+                bad_col = col_match.group(1)
+                if bad_col in row:
+                    del row[bad_col]
+                    continue
+                matched_key = next((k for k in row.keys() if k.lower() == bad_col.lower()), None)
+                if matched_key:
+                    del row[matched_key]
+                    continue
+
+            # Relation error (e.g. table not found)
+            if "does not exist" in err_msg and "relation" in err_msg:
+                print(f"[Supabase] Table '{table_name}' does not exist or access denied: {e}")
+                return False
+
+            print(f"[Supabase] Upsert error on '{table_name}': {e}")
+            if attempt < 2:
+                time.sleep(0.3)
+            else:
+                return False
+    return False
 
 # ===========================================================================================
 # GUILD CONFIGURATION
@@ -180,44 +226,44 @@ def get_guild_config(context=None) -> dict:
 def _sync_save_guild_config_to_supabase(guild_id: int, cfg: dict):
     if not supabase_client:
         return False
+    roles = cfg.get('role_ids', {})
+    channels = cfg.get('channel_ids', {})
+    org_name = str(cfg.get('organization_name', '') or '')
+    sys_name = str(cfg.get('tournament_system_name', '') or '')
+    logo_path = str(cfg.get('server_logo_path', '') or '')
+    logo_url = str(cfg.get('server_logo_url', '') or '')
+    updated_at = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
     row = {
         "Guild_ID": str(guild_id),
-        "Admin_Role_ID": str(cfg.get('role_ids', {}).get('head_organizer') or ""),
-        "Organizer_Role_ID": str(cfg.get('role_ids', {}).get('organizer') or ""),
-        "Helper_Role_ID": str(cfg.get('role_ids', {}).get('helper_team') or ""),
-        "Judge_Role_ID": str(cfg.get('role_ids', {}).get('judge') or ""),
-        "Recorder_Role_ID": str(cfg.get('role_ids', {}).get('recorder') or ""),
-        "Staff_Role_ID": str(cfg.get('role_ids', {}).get('staff') or ""),
-        "Players_Role_ID": str(cfg.get('role_ids', {}).get('players') or ""),
-        "Organization_Name": str(cfg.get('organization_name', '')),
-        "Tournament_System_Name": str(cfg.get('tournament_system_name', '')),
-        "server_logo_path": str(cfg.get('server_logo_path', '') or ''),
-        "server_logo_url": str(cfg.get('server_logo_url', '') or ''),
-        "Updated_At": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        "Admin_Role_ID": str(roles.get('head_organizer') or ""),
+        "Organizer_Role_ID": str(roles.get('organizer') or ""),
+        "Helper_Role_ID": str(roles.get('helper_team') or ""),
+        "Judge_Role_ID": str(roles.get('judge') or ""),
+        "Recorder_Role_ID": str(roles.get('recorder') or ""),
+        "Staff_Role_ID": str(roles.get('staff') or ""),
+        "Players_Role_ID": str(roles.get('players') or ""),
+        "Challonge_Role_ID": str(roles.get('challonge_role') or ""),
+        "Organization_Name": org_name,
+        "Tournament_System_Name": sys_name,
+        "organization_name": org_name,
+        "tournament_system_name": sys_name,
+        "server_logo_path": logo_path,
+        "server_logo_url": logo_url,
+        "player_info_link": str(cfg.get('player_info_link', '') or ''),
+        "player_info_format": str(cfg.get('player_info_format', '') or ''),
+        "google_sheet_link": str(cfg.get('google_sheet_link', '') or ''),
+        "Challonge_Logs_Channel_ID": str(channels.get('challonge_logs') or ""),
+        "Transcript_Logs_Channel_ID": str(channels.get('transcript_logs') or ""),
+        "Closed_Category_ID": str(channels.get('closed_tickets_category') or ""),
+        "Schedule_Channel_ID": str(channels.get('take_schedule') or ""),
+        "Results_Channel_ID": str(channels.get('results') or ""),
+        "channel_bracket": str(channels.get('bracket') or ""),
+        "Bot_Logs_Channel_ID": str(channels.get('bot_logs') or ""),
+        "Thumbnail_Channel_ID": str(channels.get('thumbnail') or ""),
+        "Updated_At": updated_at
     }
-    try:
-        supabase_client.table("GuildConfig").upsert(row).execute()
-        return True
-    except Exception as e:
-        safe_row = {
-            "Guild_ID": str(guild_id),
-            "Admin_Role_ID": str(cfg.get('role_ids', {}).get('head_organizer') or ""),
-            "Organizer_Role_ID": str(cfg.get('role_ids', {}).get('organizer') or ""),
-            "Helper_Role_ID": str(cfg.get('role_ids', {}).get('helper_team') or ""),
-            "Judge_Role_ID": str(cfg.get('role_ids', {}).get('judge') or ""),
-            "Recorder_Role_ID": str(cfg.get('role_ids', {}).get('recorder') or ""),
-            "Staff_Role_ID": str(cfg.get('role_ids', {}).get('staff') or ""),
-            "Players_Role_ID": str(cfg.get('role_ids', {}).get('players') or ""),
-            "Organization_Name": str(cfg.get('organization_name', '')),
-            "Tournament_System_Name": str(cfg.get('tournament_system_name', '')),
-            "server_logo_path": str(cfg.get('server_logo_path', '') or ''),
-            "Updated_At": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        }
-        try:
-            supabase_client.table("GuildConfig").upsert(safe_row).execute()
-            return True
-        except Exception:
-            return False
+    return supabase_safe_upsert("GuildConfig", row, on_conflict="Guild_ID")
 
 async def save_guild_config_to_supabase(guild_id: int, cfg: dict):
     if supabase_client:
@@ -362,6 +408,10 @@ def _sync_save_tournament_to_supabase(guild_id: int, tournament_id: str, t_data:
                 return str(v).strip()
         return ""
 
+    bracket_link = _get_val('challonge_bracket_link', 'Challonge_Bracket_Link', 'bracket')
+    sheet_link = _get_val('google_sheet_link', 'Google_Sheet_Link', 'captains_sheet_link', 'Captains_Sheet_Link', 'sheet_link')
+    updated_at = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
     row = {
         "Tournament_ID": str(tournament_id),
         "Guild_ID": str(guild_id),
@@ -369,8 +419,11 @@ def _sync_save_tournament_to_supabase(guild_id: int, tournament_id: str, t_data:
         "State": _get_val('state', 'State') or "pending",
         "Game": _get_val('game', 'Game'),
         "Key": _get_val('key', 'Key'),
-        "Challonge_Bracket_Link": _get_val('challonge_bracket_link', 'Challonge_Bracket_Link', 'bracket'),
-        "Google_Sheet_Link": _get_val('google_sheet_link', 'Google_Sheet_Link', 'captains_sheet_link', 'Captains_Sheet_Link', 'sheet_link'),
+        "Challonge_Bracket_Link": bracket_link,
+        "challonge_bracket_link": bracket_link,
+        "Google_Sheet_Link": sheet_link,
+        "Captains_Sheet_Link": sheet_link,
+        "Sheet_Link": sheet_link,
         "Attendance_Channel_ID": _get_val('attendance', 'attendance_channel', 'Attendance_Channel_ID'),
         "Transcript_Channel_ID": _get_val('transcript', 'transcript_channel', 'Transcript_Channel_ID'),
         "Schedule_Channel_ID": _get_val('schedule', 'schedule_channel', 'schedule_channel_id', 'Schedule_Channel_ID'),
@@ -379,24 +432,22 @@ def _sync_save_tournament_to_supabase(guild_id: int, tournament_id: str, t_data:
         "Deadline_Channel_ID": _get_val('deadline', 'deadline_channel', 'Deadline_Channel_ID'),
         "Bot_Logs_Channel_ID": _get_val('bot_logs', 'Bot_Logs_Channel_ID'),
         "Challonge_Logs_Channel_ID": _get_val('challonge_logs', 'Challonge_Logs_Channel_ID'),
+        "Transcript_Logs_Channel_ID": _get_val('transcript_logs', 'Transcript_Logs_Channel_ID'),
+        "Thumbnail_Channel_ID": _get_val('thumbnail', 'Thumbnail_Channel_ID'),
+        "Participant_Channel_ID": _get_val('participant', 'Participant_Channel_ID'),
         "Closed_Ticket_Category_ID": _get_val('closed_ticket_1', 'Closed_Ticket_Category_ID'),
+        "Closed_Ticket_Category_2_ID": _get_val('closed_ticket_2', 'Closed_Ticket_Category_2_ID'),
         "Open_Category_1_ID": _get_val('ticket_open_category_1', 'Open_Category_1_ID'),
         "Open_Category_2_ID": _get_val('ticket_open_category_2', 'Open_Category_2_ID'),
         "Open_Category_3_ID": _get_val('ticket_open_category_3', 'Open_Category_3_ID'),
+        "Open_Category_4_ID": _get_val('ticket_open_category_4', 'Open_Category_4_ID'),
         "Auto_Room_Creation": bool(auto_room_val),
+        "Players_Role_ID": _get_val('players_role_id', 'Players_Role_ID'),
         "Map_Pool": _get_val('map_pool', 'Map_Pool'),
-        "Updated_At": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        "Updated_At": updated_at
     }
 
-    for attempt in range(3):
-        try:
-            supabase_client.table("Tournaments").upsert(row, on_conflict="Tournament_ID").execute()
-            return True
-        except Exception as e:
-            if attempt < 2:
-                time.sleep(0.5)
-            else:
-                return False
+    return supabase_safe_upsert("Tournaments", row, on_conflict="Tournament_ID")
 
 async def save_tournament_to_supabase(guild_id: int, tournament_id: str, t_data: dict):
     if supabase_client:
@@ -696,6 +747,25 @@ def save_guild_staff_stats(guild_id: int, stats: dict):
             json.dump(all_stats, f, indent=2, ensure_ascii=False)
     except Exception as e:
         print(f"Error saving staff stats to staff_stats.json: {e}")
+
+    if supabase_client:
+        try:
+            loop = asyncio.get_running_loop()
+            for u_id, u_stats in stats.items():
+                if not isinstance(u_stats, dict):
+                    continue
+                row = {
+                    "Guild_ID": guild_id_str,
+                    "User_ID": str(u_id),
+                    "Name": str(u_stats.get("name") or "Staff"),
+                    "Judge_Count": int(u_stats.get("judge_count", 0)),
+                    "Recorder_Count": int(u_stats.get("recorder_count", 0)),
+                    "Total_Count": int(u_stats.get("total_count", 0)),
+                    "Timestamp": u_stats.get("last_active") or datetime.datetime.utcnow().isoformat()
+                }
+                loop.create_task(asyncio.to_thread(supabase_safe_upsert, "StaffStats", row, "Guild_ID,User_ID"))
+        except RuntimeError:
+            pass
 
 def load_rules():
     global RULES_CACHE
@@ -1063,9 +1133,9 @@ async def save_event_to_supabase(event_id: str, event_data: dict):
                         "Tournament_ID": t_candidate,
                         "Guild_ID": str(guild_id),
                         "Tournament_Name": t_candidate,
-                        "Status": "active"
+                        "State": "active"
                     }
-                    supabase_client.table("Tournaments").upsert(t_payload, on_conflict="Tournament_ID").execute()
+                    supabase_safe_upsert("Tournaments", t_payload, on_conflict="Tournament_ID")
                     resolved_t_id = t_candidate
                 else:
                     resolved_t_id = None
@@ -1088,12 +1158,19 @@ async def save_event_to_supabase(event_id: str, event_data: dict):
         if target_table == "Matches":
             round_val = event_data.get('round', '')
             round_int = int(round_val) if str(round_val).isdigit() else 1
+            w_score = event_data.get('winner_score') if event_data.get('winner_score') is not None else event_data.get('team1_score')
+            l_score = event_data.get('loser_score') if event_data.get('loser_score') is not None else event_data.get('team2_score')
+
             match_row = {
                 "Match_ID": event_id,
                 "Match_Name": match_name,
                 "Tournament_ID": resolved_t_id,
                 "Round": round_int,
                 "Group": str(event_data.get('group', '') or ''),
+                "Team1_ID": str(t1_id) if t1_id else None,
+                "Team2_ID": str(t2_id) if t2_id else None,
+                "Team1_Score": int(w_score) if w_score is not None and str(w_score).isdigit() else None,
+                "Team2_Score": int(l_score) if l_score is not None and str(l_score).isdigit() else None,
                 "Status": str(event_data.get('status', 'scheduled')).lower(),
                 "Channel_ID": str(event_data.get('channel_id', '')),
                 "recording_link": str(event_data.get('recording_link', '')),
@@ -1102,21 +1179,44 @@ async def save_event_to_supabase(event_id: str, event_data: dict):
                 "results_message_id": str(event_data.get('results_message_id', '')),
                 "results_channel_id": str(event_data.get('results_channel_id', '')),
                 "match_results_message_id": str(event_data.get('match_results_message_id', '')),
-                "match_results_channel_id": str(event_data.get('match_results_channel_id', ''))
+                "match_results_channel_id": str(event_data.get('match_results_channel_id', '')),
+                "Winner_ID": str(event_data.get('winner_id')) if event_data.get('winner_id') else None,
+                "Remarks": str(event_data.get('remarks') or ''),
+                "Disqualified": bool(event_data.get('disqualified') or False),
+                "Updated_At": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
             }
+
             try:
-                await asyncio.to_thread(
-                    lambda: supabase_client.table("Matches").upsert(match_row, on_conflict="Match_ID").execute()
-                )
+                await asyncio.to_thread(supabase_safe_upsert, "Matches", match_row, "Match_ID")
             except Exception as upsert_err:
-                # If foreign key fails, retry with Tournament_ID = None
-                if "Matches_Tournament_ID_fkey" in str(upsert_err) or "Tournament_ID" in str(upsert_err):
+                if "Tournament_ID" in str(upsert_err):
                     match_row["Tournament_ID"] = None
-                    await asyncio.to_thread(
-                        lambda: supabase_client.table("Matches").upsert(match_row, on_conflict="Match_ID").execute()
-                    )
+                    await asyncio.to_thread(supabase_safe_upsert, "Matches", match_row, "Match_ID")
                 else:
-                    raise upsert_err
+                    print(f"[Supabase] Error upserting match {event_id}: {upsert_err}")
+
+            # Sync staff assignments to MatchStaff
+            if j_id:
+                j_name = judge_val.display_name if hasattr(judge_val, 'display_name') else (judge_val.name if hasattr(judge_val, 'name') else "Judge")
+                j_payload = {
+                    "Match_ID": event_id,
+                    "User_ID": str(j_id),
+                    "Name": str(j_name),
+                    "Role": "Judge",
+                    "Confirmed": True
+                }
+                await asyncio.to_thread(supabase_safe_upsert, "MatchStaff", j_payload, "Match_ID,User_ID,Role")
+            if r_id:
+                r_name = recorder_val.display_name if hasattr(recorder_val, 'display_name') else (recorder_val.name if hasattr(recorder_val, 'name') else "Recorder")
+                r_payload = {
+                    "Match_ID": event_id,
+                    "User_ID": str(r_id),
+                    "Name": str(r_name),
+                    "Role": "Recorder",
+                    "Confirmed": True
+                }
+                await asyncio.to_thread(supabase_safe_upsert, "MatchStaff", r_payload, "Match_ID,User_ID,Role")
+
         else:
             legacy_row = {
                 "Guild_ID": str(guild_id) if guild_id else "",
@@ -1133,6 +1233,8 @@ async def save_event_to_supabase(event_id: str, event_data: dict):
                 "Team2_Captain_Name": t2_name,
                 "Judge_ID": str(j_id) if j_id else '',
                 "Judge_Name": judge_val.name if hasattr(judge_val, 'name') else '',
+                "Recorder_ID": str(r_id) if r_id else '',
+                "Recorder_Name": recorder_val.name if hasattr(recorder_val, 'name') else '',
                 "Channel_ID": str(event_data.get('channel_id', '')),
                 "Status": event_data.get('status', 'Scheduled'),
                 "recording_link": event_data.get('recording_link', ''),
@@ -1141,7 +1243,8 @@ async def save_event_to_supabase(event_id: str, event_data: dict):
                 "results_message_id": str(event_data.get('results_message_id', '')),
                 "results_channel_id": str(event_data.get('results_channel_id', '')),
                 "match_results_message_id": str(event_data.get('match_results_message_id', '')),
-                "match_results_channel_id": str(event_data.get('match_results_channel_id', ''))
+                "match_results_channel_id": str(event_data.get('match_results_channel_id', '')),
+                "Timestamp": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
             }
             if res and res.data and len(res.data) > 0:
                 row_id = res.data[0]["id"]
@@ -1149,10 +1252,36 @@ async def save_event_to_supabase(event_id: str, event_data: dict):
                     lambda: supabase_client.table("Events").update(legacy_row).eq("id", row_id).execute()
                 )
             else:
-                legacy_row["Timestamp"] = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
                 await asyncio.to_thread(
                     lambda: supabase_client.table("Events").insert(legacy_row).execute()
                 )
+
+            # If match has results, sync to Results table
+            w_score = event_data.get('winner_score')
+            l_score = event_data.get('loser_score')
+            if w_score is not None or event_data.get('winner_id'):
+                results_row = {
+                    "Event_ID": event_id,
+                    "Guild_ID": str(guild_id) if guild_id else "",
+                    "Match_Name": match_name,
+                    "Tournament": event_data.get('tournament', ''),
+                    "Round": str(event_data.get('round', '')),
+                    "Group": str(event_data.get('group', '') or ''),
+                    "Winner_ID": str(event_data.get('winner_id', '')),
+                    "Winner_Name": str(event_data.get('winner_name', '')),
+                    "Winner_Score": str(w_score) if w_score is not None else "",
+                    "Loser_ID": str(event_data.get('loser_id', '')),
+                    "Loser_Name": str(event_data.get('loser_name', '')),
+                    "Loser_Score": str(l_score) if l_score is not None else "",
+                    "Judge_ID": str(j_id) if j_id else '',
+                    "Judge_Name": judge_val.name if hasattr(judge_val, 'name') else '',
+                    "Recorder_ID": str(r_id) if r_id else '',
+                    "Recorder_Name": recorder_val.name if hasattr(recorder_val, 'name') else '',
+                    "Remarks": str(event_data.get('remarks', '') or ''),
+                    "Disqualified": bool(event_data.get('disqualified') or False),
+                    "Timestamp": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                }
+                await asyncio.to_thread(supabase_safe_upsert, "Results", results_row)
     except Exception as e:
         print(f"[Supabase] Error saving event {event_id} to database: {e}")
 
@@ -1228,23 +1357,6 @@ def load_scheduled_deadlines():
                 print(f"Loaded {len(scheduled_deadlines)} scheduled deadlines from local fallback")
     except Exception as e:
         print(f"Error loading scheduled_deadlines.json fallback: {e}")
-def load_scheduled_deadlines():
-    global scheduled_deadlines
-    try:
-        if os.path.exists(DEADLINES_FILE_PATH):
-            with open(DEADLINES_FILE_PATH, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                for dl_id, dl_data in data.items():
-                    if isinstance(dl_data, dict) and 'deadline_dt' in dl_data:
-                        try:
-                            dl_data['deadline_dt'] = datetime.datetime.fromisoformat(dl_data['deadline_dt'])
-                        except Exception:
-                            pass
-                scheduled_deadlines.clear()
-                scheduled_deadlines.update(data)
-                print(f"Loaded {len(scheduled_deadlines)} scheduled deadlines from local fallback")
-    except Exception as e:
-        print(f"Error loading scheduled_deadlines.json fallback: {e}")
         scheduled_deadlines.clear()
 
 async def load_all_deadlines_from_supabase():
@@ -1256,28 +1368,50 @@ async def load_all_deadlines_from_supabase():
         if resp and resp.data:
             for row in resp.data:
                 try:
-                    t_id = str(row.get("Tournament_ID", ""))
+                    t_id = str(row.get("Tournament_ID") or row.get("Guild_ID") or "")
                     rnd_int = row.get("Round", 1)
+                    if isinstance(rnd_int, str) and rnd_int.isdigit():
+                        rnd_int = int(rnd_int)
+                    elif not isinstance(rnd_int, int):
+                        rnd_int = parse_round_to_int(rnd_int)
                     rnd_name = f"Round {rnd_int}" if rnd_int < 90 else ("Final" if rnd_int == 99 else "Semi-Final")
                     dl_id = f"dl_{t_id}_{rnd_int}"
-                    g_id = None
-                    for g_k, t_dict in TOURNAMENTS_CACHE.items():
-                        if isinstance(t_dict, dict):
-                            for t_k, t_cfg in t_dict.items():
-                                if isinstance(t_cfg, dict) and (t_cfg.get('id') == t_id or t_cfg.get('Tournament_ID') == t_id or t_k == t_id):
-                                    g_id = int(g_k) if str(g_k).isdigit() else g_k
-                                    break
-                        if g_id:
-                            break
+                    g_id = row.get("Guild_ID")
+                    if not g_id:
+                        for g_k, t_dict in TOURNAMENTS_CACHE.items():
+                            if isinstance(t_dict, dict):
+                                for t_k, t_cfg in t_dict.items():
+                                    if isinstance(t_cfg, dict) and (t_cfg.get('id') == t_id or t_cfg.get('Tournament_ID') == t_id or t_k == t_id):
+                                        g_id = int(g_k) if str(g_k).isdigit() else g_k
+                                        break
+                            if g_id:
+                                break
                     if dl_id not in scheduled_deadlines:
+                        dt_raw = row.get("Deadline_Time")
+                        dt_obj = datetime.datetime.fromisoformat(str(dt_raw)) if dt_raw else datetime.datetime.utcnow()
                         scheduled_deadlines[dl_id] = {
-                            'guild_id': g_id,
+                            'guild_id': int(g_id) if g_id and str(g_id).isdigit() else g_id,
                             'tournament': t_id,
+                            'tournament_id': t_id,
                             'round': rnd_name,
-                            'deadline_dt': datetime.datetime.fromisoformat(row["Deadline_Time"])
+                            'deadline_dt': dt_obj
                         }
                 except Exception as parse_err:
                     print(f"Error parsing Supabase deadline row {row}: {parse_err}")
+            
+            # Keep local JSON in sync with Supabase deadlines
+            try:
+                data_to_save = {}
+                for d_id, d_data in scheduled_deadlines.items():
+                    if isinstance(d_data, dict):
+                        copy_data = d_data.copy()
+                        if 'deadline_dt' in copy_data and isinstance(copy_data['deadline_dt'], datetime.datetime):
+                            copy_data['deadline_dt'] = copy_data['deadline_dt'].isoformat()
+                        data_to_save[d_id] = copy_data
+                with open(DEADLINES_FILE_PATH, 'w', encoding='utf-8') as f:
+                    json.dump(data_to_save, f, indent=4)
+            except Exception as save_err:
+                print(f"Error caching deadlines to JSON: {save_err}")
             print(f"Merged config with {len(resp.data)} deadlines from Supabase.")
     except Exception as e:
         print(f"Error loading deadlines from Supabase: {e}")
@@ -1299,17 +1433,17 @@ def save_scheduled_deadline(dl_id: str, dl_data: dict):
 
     if supabase_client:
         try:
-            g_id = dl_data.get('guild_id')
+            g_id = str(dl_data.get('guild_id') or "")
             t_name = dl_data.get('tournament', '')
             t_id = dl_data.get('tournament_id')
             if not t_id and g_id:
-                tourns = load_guild_tournaments(g_id)
+                tourns = load_guild_tournaments(int(g_id) if g_id.isdigit() else g_id)
                 for tk, tv in tourns.items():
                     if tv.get('name', '').lower() == t_name.lower() or tk.lower() == t_name.lower():
                         t_id = tv.get('id') or tv.get('Tournament_ID') or tk
                         break
             if not t_id:
-                tourns = load_guild_tournaments(g_id) if g_id else {}
+                tourns = load_guild_tournaments(int(g_id)) if g_id and g_id.isdigit() else {}
                 if tourns:
                     first_t = next(iter(tourns.values()))
                     t_id = first_t.get('id') or first_t.get('Tournament_ID') or next(iter(tourns.keys()))
@@ -1320,19 +1454,14 @@ def save_scheduled_deadline(dl_id: str, dl_data: dict):
             dt_val = dl_data['deadline_dt']
             dt_iso = dt_val.isoformat() if isinstance(dt_val, datetime.datetime) else str(dt_val)
 
-            existing = supabase_client.table("Deadlines").select("id").eq("Tournament_ID", t_id).eq("Round", rnd_int).execute()
-            if existing and existing.data:
-                row_id = existing.data[0]["id"]
-                supabase_client.table("Deadlines").update({
-                    "Deadline_Time": dt_iso
-                }).eq("id", row_id).execute()
-            else:
-                supabase_client.table("Deadlines").insert({
-                    "Tournament_ID": t_id,
-                    "Round": rnd_int,
-                    "Deadline_Time": dt_iso,
-                    "Created_At": datetime.datetime.utcnow().isoformat()
-                }).execute()
+            dl_payload = {
+                "Tournament_ID": str(t_id),
+                "Guild_ID": g_id,
+                "Round": rnd_int,
+                "Deadline_Time": dt_iso,
+                "Created_At": datetime.datetime.utcnow().isoformat()
+            }
+            supabase_safe_upsert("Deadlines", dl_payload)
         except Exception as e:
             print(f"[Supabase] Failed to upsert deadline to Supabase: {e}")
 
@@ -1356,11 +1485,11 @@ def delete_scheduled_deadline(dl_id: str) -> bool:
 
     if supabase_client and isinstance(dl_data, dict):
         try:
-            g_id = dl_data.get('guild_id')
+            g_id = str(dl_data.get('guild_id') or "")
             t_name = dl_data.get('tournament', '')
             t_id = dl_data.get('tournament_id')
             if not t_id and g_id:
-                tourns = load_guild_tournaments(g_id)
+                tourns = load_guild_tournaments(int(g_id) if g_id.isdigit() else g_id)
                 for tk, tv in tourns.items():
                     if tv.get('name', '').lower() == t_name.lower() or tk.lower() == t_name.lower():
                         t_id = tv.get('id') or tv.get('Tournament_ID') or tk
@@ -1368,11 +1497,93 @@ def delete_scheduled_deadline(dl_id: str) -> bool:
             if not t_id:
                 t_id = t_name
             rnd_int = parse_round_to_int(dl_data.get('round', 1))
-            supabase_client.table("Deadlines").delete().eq("Tournament_ID", t_id).eq("Round", rnd_int).execute()
+            try:
+                supabase_client.table("Deadlines").delete().eq("Tournament_ID", str(t_id)).eq("Round", rnd_int).execute()
+            except Exception:
+                if g_id:
+                    supabase_client.table("Deadlines").delete().eq("Guild_ID", g_id).eq("Round", rnd_int).execute()
         except Exception as e:
             print(f"[Supabase] Failed to delete deadline from Supabase: {e}")
             
     return True
+
+def save_player_data(discord_id: Union[int, str], ign: Optional[str] = None, game_id: Optional[str] = None, title: Optional[str] = None) -> dict:
+    """
+    Saves player profile info to players.json and synchronizes to Supabase Players table.
+    """
+    d_id = str(discord_id)
+    players = {}
+    path = os.path.join(BASE_DIR, 'players.json')
+    if os.path.exists(path):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                players = json.load(f)
+        except Exception:
+            pass
+    
+    player_entry = players.get(d_id, {
+        "Player_ID": f"p_{d_id}",
+        "Discord_ID": d_id,
+        "IGN": "",
+        "Game_ID": "",
+        "Title": "",
+        "Updated_At": datetime.datetime.utcnow().isoformat()
+    })
+    
+    if ign is not None: player_entry["IGN"] = ign.strip()
+    if game_id is not None: player_entry["Game_ID"] = game_id.strip()
+    if title is not None: player_entry["Title"] = title.strip()
+    player_entry["Updated_At"] = datetime.datetime.utcnow().isoformat()
+    
+    players[d_id] = player_entry
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(players, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"Error saving players.json: {e}")
+        
+    if supabase_client:
+        supabase_safe_upsert("Players", player_entry, on_conflict="Discord_ID")
+        
+    return player_entry
+
+def save_team_data(captain_id: Union[int, str], team_name: str, tournament_id: Optional[str] = None) -> dict:
+    """
+    Saves team info to teams.json and synchronizes to Supabase Teams table.
+    """
+    c_id = str(captain_id)
+    teams = {}
+    path = os.path.join(BASE_DIR, 'teams.json')
+    if os.path.exists(path):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                teams = json.load(f)
+        except Exception:
+            pass
+            
+    team_entry = teams.get(c_id, {
+        "Team_ID": f"t_{c_id}",
+        "Tournament_ID": str(tournament_id or ""),
+        "Team_Name": team_name.strip(),
+        "Captain_ID": c_id,
+        "Updated_At": datetime.datetime.utcnow().isoformat()
+    })
+    team_entry["Team_Name"] = team_name.strip()
+    if tournament_id:
+        team_entry["Tournament_ID"] = str(tournament_id)
+    team_entry["Updated_At"] = datetime.datetime.utcnow().isoformat()
+    
+    teams[c_id] = team_entry
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(teams, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"Error saving teams.json: {e}")
+        
+    if supabase_client:
+        supabase_safe_upsert("Teams", team_entry, on_conflict="Captain_ID")
+        
+    return team_entry
 
 
 
@@ -1922,10 +2133,40 @@ async def load_all_staff_stats_from_supabase():
     try:
         resp = await asyncio.to_thread(lambda: supabase_client.table("StaffStats").select("*").execute())
         if resp and resp.data:
+            all_stats = {}
+            if os.path.exists('staff_stats.json'):
+                try:
+                    with open('staff_stats.json', 'r', encoding='utf-8') as f:
+                        all_stats = json.load(f)
+                except Exception:
+                    pass
             for row in resp.data:
-                g_id = row.get("Guild_ID")
-                if g_id:
-                    get_guild_staff_stats(int(g_id) if str(g_id).isdigit() else g_id)
+                g_id = str(row.get("Guild_ID") or "")
+                u_id = str(row.get("User_ID") or "")
+                if not g_id or not u_id:
+                    continue
+                if g_id not in STAFF_STATS_CACHE:
+                    STAFF_STATS_CACHE[g_id] = {}
+                if g_id not in all_stats:
+                    all_stats[g_id] = {}
+                
+                user_stat = {
+                    "name": row.get("Name") or "Staff",
+                    "judge_count": int(row.get("Judge_Count") or 0),
+                    "recorder_count": int(row.get("Recorder_Count") or 0),
+                    "judge_and_recorder_count": 0,
+                    "total_count": int(row.get("Total_Count") or 0),
+                    "last_active": row.get("Timestamp") or datetime.datetime.utcnow().isoformat()
+                }
+                STAFF_STATS_CACHE[g_id][u_id] = user_stat
+                all_stats[g_id][u_id] = user_stat
+
+            try:
+                with open('staff_stats.json', 'w', encoding='utf-8') as f:
+                    json.dump(all_stats, f, indent=2, ensure_ascii=False)
+            except Exception as e:
+                print(f"Error saving staff_stats.json during Supabase load: {e}")
+            print(f"✅ Loaded {len(resp.data)} staff stat entries from Supabase.")
     except Exception as e:
         print(f"Error loading all staff stats from Supabase: {e}")
 

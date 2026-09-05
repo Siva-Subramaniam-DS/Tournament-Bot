@@ -160,13 +160,15 @@ The bot operates on the following production PostgreSQL tables in Supabase:
 - `/tournament delete` — Deletes tournament from database and local cache.
 - `/tournament info` — Displays detailed channels, roles, and status of a tournament.
 - `/tournament list` — Lists all tournaments registered for the server.
-- `/auto_room run` — Manually triggers the automatic match room ticket creation sweep.
+- `/auto_room start` — Starts/enables automatic match room ticket creation and launches the background loop.
 - `/auto_room stop` — Suspends the automatic match room loop for a tournament.
+- `/auto_room run` — Manually triggers the automatic match room ticket creation sweep.
 - `/auto_room toggle` — Toggles the automatic match room loop status.
 ### 🎫 Automatic Room Creation Commands
+- `/auto_room start` — Starts and enables automatic match room ticket creation for a tournament, launching the 5-minute Challonge polling background loop.
+- `/auto_room stop` — Suspends automatic room creation and stops the background loop for a tournament.
 - `/auto_room toggle` — Toggle automatic match room ticket creation on/off for a tournament (with optional explicit `enabled` boolean). Automatically starts or stops the background 5-minute Challonge polling loop.
 - `/auto_room run` — Manually triggers an immediate match room ticket creation sweep for all open Challonge matches, setting up private captain channels and syncing with Supabase.
-- `/auto_room stop` — Suspends automatic room creation and stops the background loop for a tournament.
 - `/auto_room status` — Displays detailed auto-room configuration, bracket & sheet links, open categories, and background loop active state.
 
 - `/clear category` — Deletes all open/closed ticket channels in a specified category (Organizer only).
@@ -407,7 +409,7 @@ The bot is hosted on [bot.hosting.net](https://bot.hosting.net), a Python-friend
 
 #### What's Changed
 - **Automated Match Room Creation Engine:** Background 5-minute Challonge polling worker that detects open tournament matches and automatically spawns private match ticket channels for competing team captains.
-- **Auto-Room Command Suite (`/auto_room`):** Added `/auto_room toggle`, `/auto_room run`, `/auto_room stop`, and `/auto_room status` to give organizers complete control over automated matchmaking.
+- **Auto-Room Command Suite (`/auto_room`):** Added `/auto_room start`, `/auto_room stop`, `/auto_room toggle`, `/auto_room run`, and `/auto_room status` to give organizers complete control over automated matchmaking.
 - **Category Capacity Handling:** Automatically balances match room creation across configured category pools (`Category 1`, `Category 2`) with closed ticket category routing.
 - **Match Prefix Commands:** Quick prefix shortcuts for room management: `?sh` (🟢 scheduled), `?dq` (🔴 disqualified), `?dd` (✅ deadline passed), `?ho` (🟡 on hold).
 

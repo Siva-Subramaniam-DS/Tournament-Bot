@@ -24,7 +24,7 @@ from core.state import (
 from core.database import (
     supabase_client, get_guild_config, save_guild_config,
     get_active_tournament_config, fetch_discord_channel_safe,
-    log_bot_activity
+    log_bot_activity, save_player_data, save_team_data
 )
 from core.emojis import EMOJIS, get_emoji
 
@@ -1412,26 +1412,19 @@ class Settings(commands.Cog):
                 except Exception as e:
                     print(f"Failed to edit participant message: {e}")
 
-        if supabase_client:
-            try:
-                if field.value == "game_name":
-                    await asyncio.to_thread(
-                        lambda: supabase_client.table("Players").update({"IGN": new_value.strip()}).eq("Discord_ID", str(user.id)).execute()
-                    )
-                elif field.value == "game_id":
-                    await asyncio.to_thread(
-                        lambda: supabase_client.table("Players").update({"Game_ID": new_value.strip()}).eq("Discord_ID", str(user.id)).execute()
-                    )
-                elif field.value == "title":
-                    await asyncio.to_thread(
-                        lambda: supabase_client.table("Players").update({"Title": new_value.strip()}).eq("Discord_ID", str(user.id)).execute()
-                    )
-                elif field.value == "team_name":
-                    await asyncio.to_thread(
-                        lambda: supabase_client.table("Teams").update({"Team_Name": new_value.strip()}).eq("Captain_ID", str(user.id)).execute()
-                    )
-            except Exception as e:
-                print(f"[Supabase] Player edit sync note: {e}")
+        # Update both local JSON (players.json / teams.json) and Supabase (Players / Teams)
+        try:
+            val = new_value.strip()
+            if field.value == "game_name":
+                await asyncio.to_thread(save_player_data, user.id, ign=val)
+            elif field.value == "game_id":
+                await asyncio.to_thread(save_player_data, user.id, game_id=val)
+            elif field.value == "title":
+                await asyncio.to_thread(save_player_data, user.id, title=val)
+            elif field.value == "team_name":
+                await asyncio.to_thread(save_team_data, user.id, team_name=val)
+        except Exception as e:
+            print(f"[Player/Team Edit] Dual sync note: {e}")
 
         reply_embed = discord.Embed(
             title="✏️ Player Information Updated",

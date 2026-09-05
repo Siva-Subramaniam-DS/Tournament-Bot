@@ -691,7 +691,7 @@ async def tournament_delete(interaction: discord.Interaction, tournament: str):
     for dl_id, dl_data in list(scheduled_deadlines.items()):
         dl_t = str(dl_data.get('tournament_id', '') or dl_data.get('tournament', '') or '').lower()
         if dl_t == t_id_clean or (t_name and dl_t == t_name):
-            del scheduled_deadlines[dl_id]
+            delete_scheduled_deadline(dl_id)
 
     if supabase_client:
         try:
@@ -2561,6 +2561,66 @@ async def auto_room_run_cmd(interaction: discord.Interaction, tournament: Option
         embed.description = f"🎉 All open matches for **{target_cfg.get('name')}** already have tickets created!"
     embed.set_footer(text=f"{interaction.guild.name} • Auto Room System")
     await msg.edit(content=None, embed=embed)
+
+@auto_room_group.command(name="start", description="Start automatic room creation and the background loop")
+@app_commands.describe(tournament="Tournament to start auto rooms for (optional)")
+@app_commands.autocomplete(tournament=tournament_autocomplete)
+@with_guild_context
+async def auto_room_start_cmd(interaction: discord.Interaction, tournament: Optional[str] = None):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    if not is_authorized_to_configure(interaction) and not is_staff(interaction.user):
+        await interaction.response.send_message("❌ You do not have permission to manage tournament settings.", ephemeral=True)
+        return
+
+    guild_id = interaction.guild.id
+    all_tournaments = load_guild_tournaments(guild_id)
+    target_key = None
+    target_cfg = None
+
+    if tournament:
+        for k, v in all_tournaments.items():
+            if v.get('name', '').lower() == tournament.lower() or k.lower() == tournament.lower():
+                target_key = k
+                target_cfg = v
+                break
+        if not target_cfg:
+            await interaction.response.send_message(f"❌ Tournament `{tournament}` not found.", ephemeral=True)
+            return
+    else:
+        for k, v in all_tournaments.items():
+            if v.get('state') == 'active':
+                target_key = k
+                target_cfg = v
+                break
+        if not target_cfg and all_tournaments:
+            target_key, target_cfg = next(iter(all_tournaments.items()))
+
+    if not target_cfg:
+        await interaction.response.send_message("❌ No tournaments configured for this server. Use `/tournament add` first.", ephemeral=True)
+        return
+
+    target_cfg['auto_room_creation'] = True
+    all_tournaments[target_key] = target_cfg
+    save_guild_tournaments(guild_id, all_tournaments)
+
+    start_auto_room_loop(interaction.client, guild_id)
+
+    embed = discord.Embed(
+        title="⚙️ Automatic Room Creation",
+        description=f"Auto room creation for **{target_cfg.get('name')}** is now **ENABLED ✅**.",
+        color=discord.Color.green(),
+        timestamp=discord.utils.utcnow()
+    )
+    embed.add_field(
+        name="🔄 Background Sweep",
+        value="Bot will automatically poll Challonge for open matches every 5 minutes and create ticket channels.",
+        inline=False
+    )
+    embed.set_footer(text=f"{interaction.guild.name} • Auto Room System")
+    await interaction.response.send_message(embed=embed)
 
 @auto_room_group.command(name="stop", description="Suspend automatic room creation and stop the background loop")
 @app_commands.describe(tournament="Tournament to stop auto rooms for (optional)")
