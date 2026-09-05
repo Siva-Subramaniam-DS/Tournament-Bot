@@ -1,4 +1,4 @@
-# Discord Bot Requirements - Optimized for Railway Deployment
+# Discord Bot Requirements
 
 # Core Discord library
 discord.py>=2.3.0
