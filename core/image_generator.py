@@ -66,13 +66,19 @@ def get_font_with_fallbacks(font_name: str, size: int, font_style: str = "regula
     font_candidates = []
     
     # 1. Try local fonts FIRST (from Fonts/ folder)
-    if font_name == "DS-Digital":
-        local_fonts = [
-            str(Path(fonts_dir) / "ds_digital" / "DS-DIGIB.TTF"),
-            str(Path(fonts_dir) / "ds_digital" / "DS-DIGII.TTF"),
-            str(Path(fonts_dir) / "ds_digital" / "DS-DIGI.TTF"),
-            str(Path(fonts_dir) / "ds_digital" / "DS-DIGIT.TTF"),
-        ]
+    if font_name in ("Geoform", "geoform", "DS-Digital"):
+        if font_style == "bold":
+            local_fonts = [
+                str(Path(fonts_dir) / "geoform" / "Geoform-Bold.otf"),
+                str(Path(fonts_dir) / "geoform" / "Geoform.otf"),
+                str(Path(fonts_dir) / "geoform" / "Geoform-BoldItalic.otf"),
+            ]
+        else:
+            local_fonts = [
+                str(Path(fonts_dir) / "geoform" / "Geoform.otf"),
+                str(Path(fonts_dir) / "geoform" / "Geoform-Bold.otf"),
+                str(Path(fonts_dir) / "geoform" / "Geoform-BoldItalic.otf"),
+            ]
     else:
         local_fonts = []
         if font_name == "Capture it":
@@ -84,24 +90,28 @@ def get_font_with_fallbacks(font_name: str, size: int, font_style: str = "regula
             ])
             
         all_other_fonts = [
+            str(Path(fonts_dir) / "geoform" / "Geoform-Bold.otf"),
+            str(Path(fonts_dir) / "geoform" / "Geoform.otf"),
             str(Path(fonts_dir) / "capture_it" / "Capture it.ttf"),
-            str(Path(fonts_dir) / "square_one_2" / "Square One.ttf"),
             str(Path(fonts_dir) / "square_one_2" / "Square One Bold.ttf"),
-            str(Path(fonts_dir) / "ds_digital" / "DS-DIGIB.TTF"),
-            str(Path(fonts_dir) / "ds_digital" / "DS-DIGII.TTF"),
-            str(Path(fonts_dir) / "ds_digital" / "DS-DIGI.TTF"),
-            str(Path(fonts_dir) / "ds_digital" / "DS-DIGIT.TTF"),
+            str(Path(fonts_dir) / "square_one_2" / "Square One.ttf"),
         ]
         for f_path in all_other_fonts:
             if f_path not in local_fonts:
                 local_fonts.append(f_path)
-    font_candidates.extend(local_fonts)
-    
-    # 2. Try Google Fonts
+    # 1. Check local fonts FIRST
+    for font_path in local_fonts:
+        try:
+            if os.path.exists(font_path):
+                return ImageFont.truetype(font_path, size)
+        except Exception:
+            continue
+
+    # 2. Try Google Fonts as fallback
     try:
         google_font_path = download_google_font(font_name, font_style)
-        if google_font_path:
-            font_candidates.append(google_font_path)
+        if google_font_path and os.path.exists(google_font_path):
+            return ImageFont.truetype(google_font_path, size)
     except Exception:
         pass
     
@@ -116,9 +126,7 @@ def get_font_with_fallbacks(font_name: str, size: int, font_style: str = "regula
         "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
     ]
-    font_candidates.extend(system_fonts)
-    
-    for font_path in font_candidates:
+    for font_path in system_fonts:
         try:
             if os.path.exists(font_path):
                 return ImageFont.truetype(font_path, size)
@@ -335,9 +343,9 @@ def create_event_poster(
             
             try:
                 font_title = get_font_with_fallbacks("Capture it", title_size, "bold")
-                font_round = get_font_with_fallbacks("DS-Digital", round_size, "bold")
+                font_round = get_font_with_fallbacks("Geoform", round_size, "bold")
                 font_vs = get_font_with_fallbacks("Capture it", vs_size, "bold")
-                font_time = get_font_with_fallbacks("DS-Digital", time_size, "bold")
+                font_time = get_font_with_fallbacks("Geoform", time_size, "bold")
             except Exception:
                 font_title = ImageFont.load_default()
                 font_round = ImageFont.load_default()
