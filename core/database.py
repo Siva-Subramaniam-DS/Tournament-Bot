@@ -131,6 +131,7 @@ def load_guild_config(guild_id: int) -> dict:
                     ('recorder', 'Recorder_Role_ID'),
                     ('staff', 'Staff_Role_ID'),
                     ('players', 'Players_Role_ID'),
+                    ('verification', 'Verification_Role_ID'),
                     ('challonge_role', 'Challonge_Role_ID'),
                 ]
                 for dict_key, col_name in role_mappings:
@@ -255,6 +256,7 @@ def _sync_save_guild_config_to_supabase(guild_id: int, cfg: dict):
         "Recorder_Role_ID": str(roles.get('recorder') or ""),
         "Staff_Role_ID": str(roles.get('staff') or ""),
         "Players_Role_ID": str(roles.get('players') or ""),
+        "Verification_Role_ID": str(roles.get('verification') or ""),
         "Challonge_Role_ID": str(roles.get('challonge_role') or ""),
         "Organization_Name": org_name,
         "Tournament_System_Name": sys_name,
@@ -459,7 +461,7 @@ def _sync_save_tournament_to_supabase(guild_id: int, tournament_id: str, t_data:
         "Updated_At": updated_at
     }
 
-    return supabase_safe_upsert("Tournaments", row, on_conflict="Tournament_ID")
+    return supabase_safe_upsert("Tournaments", row, on_conflict="Guild_ID,Tournament_ID")
 
 async def save_tournament_to_supabase(guild_id: int, tournament_id: str, t_data: dict):
     if supabase_client:
@@ -469,7 +471,7 @@ def _sync_delete_tournament_from_supabase(guild_id: int, tournament_id: str):
     if not supabase_client:
         return False
     try:
-        supabase_client.table("Tournaments").delete().eq("Tournament_ID", tournament_id).execute()
+        supabase_client.table("Tournaments").delete().eq("Guild_ID", str(guild_id)).eq("Tournament_ID", tournament_id).execute()
         return True
     except Exception as e:
         print(f"[Supabase] Error deleting tournament {tournament_id}: {e}")
@@ -621,19 +623,29 @@ async def log_bot_activity(guild: discord.Guild, embed: discord.Embed):
 
     channel = None
 
-    # 1. Try active tournament config
-    t_cfg = get_active_tournament_config(guild.id)
-    if t_cfg:
-        for k in ['bot_logs', 'bot_logs_channel_id', 'Bot_Logs_Channel_ID']:
-            if t_cfg.get(k):
-                try:
-                    c_id = int(t_cfg[k])
-                    channel = guild.get_channel(c_id) or await guild.fetch_channel(c_id)
-                    if channel: break
-                except Exception:
-                    pass
+    # 1. Try guild config bot_logs (Primary server-wide setting)
+    cfg = get_guild_config(guild.id)
+    default_logs_id = cfg.get('channel_ids', {}).get('bot_logs') or cfg.get('bot_logs')
+    if default_logs_id:
+        try:
+            channel = guild.get_channel(int(default_logs_id)) or await guild.fetch_channel(int(default_logs_id))
+        except Exception:
+            pass
 
-    # 2. Try any tournament configured in the guild
+    # 2. Try active tournament config
+    if not channel:
+        t_cfg = get_active_tournament_config(guild.id)
+        if t_cfg:
+            for k in ['bot_logs', 'bot_logs_channel_id', 'Bot_Logs_Channel_ID']:
+                if t_cfg.get(k):
+                    try:
+                        c_id = int(t_cfg[k])
+                        channel = guild.get_channel(c_id) or await guild.fetch_channel(c_id)
+                        if channel: break
+                    except Exception:
+                        pass
+
+    # 3. Try any tournament configured in the guild
     if not channel:
         tournaments = load_guild_tournaments(guild.id)
         for _, tdata in tournaments.items():
@@ -647,16 +659,6 @@ async def log_bot_activity(guild: discord.Guild, embed: discord.Embed):
                         pass
             if channel:
                 break
-
-    # 3. Try guild config bot_logs
-    if not channel:
-        cfg = get_guild_config(guild.id)
-        default_logs_id = cfg.get('channel_ids', {}).get('bot_logs') or cfg.get('bot_logs')
-        if default_logs_id:
-            try:
-                channel = guild.get_channel(int(default_logs_id)) or await guild.fetch_channel(int(default_logs_id))
-            except Exception:
-                pass
 
     # 4. Fallback search by channel name
     if not channel:
@@ -1136,7 +1138,10 @@ async def save_event_to_supabase(event_id: str, event_data: dict):
             t_candidate = str(raw_tourney).strip()
             # Verify if this tournament exists in Supabase Tournaments table
             try:
-                t_check_res = supabase_client.table("Tournaments").select("Tournament_ID").eq("Tournament_ID", t_candidate).execute()
+                t_check_query = supabase_client.table("Tournaments").select("Tournament_ID").eq("Tournament_ID", t_candidate)
+                if guild_id:
+                    t_check_query = t_check_query.eq("Guild_ID", str(guild_id))
+                t_check_res = t_check_query.execute()
                 if t_check_res and t_check_res.data and len(t_check_res.data) > 0:
                     resolved_t_id = t_candidate
                 elif guild_id:
@@ -1147,7 +1152,7 @@ async def save_event_to_supabase(event_id: str, event_data: dict):
                         "Tournament_Name": t_candidate,
                         "State": "active"
                     }
-                    supabase_safe_upsert("Tournaments", t_payload, on_conflict="Tournament_ID")
+                    supabase_safe_upsert("Tournaments", t_payload, on_conflict="Guild_ID,Tournament_ID")
                     resolved_t_id = t_candidate
                 else:
                     resolved_t_id = None
@@ -1175,6 +1180,7 @@ async def save_event_to_supabase(event_id: str, event_data: dict):
 
             match_row = {
                 "Match_ID": event_id,
+                "Guild_ID": str(guild_id) if guild_id else None,
                 "Match_Name": match_name,
                 "Tournament_ID": resolved_t_id,
                 "Round": round_int,
@@ -1406,7 +1412,6 @@ async def load_all_deadlines_from_supabase():
                     elif not isinstance(rnd_int, int):
                         rnd_int = parse_round_to_int(rnd_int)
                     rnd_name = f"Round {rnd_int}" if rnd_int < 90 else ("Final" if rnd_int == 99 else "Semi-Final")
-                    dl_id = f"dl_{t_id}_{rnd_int}"
                     g_id = row.get("Guild_ID")
                     if not g_id:
                         for g_k, t_dict in TOURNAMENTS_CACHE.items():
@@ -1417,6 +1422,7 @@ async def load_all_deadlines_from_supabase():
                                         break
                             if g_id:
                                 break
+                    dl_id = f"dl_{g_id}_{t_id}_{rnd_int}"
                     if dl_id not in scheduled_deadlines:
                         dt_raw = row.get("Deadline_Time")
                         dt_obj = datetime.datetime.fromisoformat(str(dt_raw)) if dt_raw else datetime.datetime.utcnow()
@@ -1529,7 +1535,10 @@ def delete_scheduled_deadline(dl_id: str) -> bool:
                 t_id = t_name
             rnd_int = parse_round_to_int(dl_data.get('round', 1))
             try:
-                supabase_client.table("Deadlines").delete().eq("Tournament_ID", str(t_id)).eq("Round", rnd_int).execute()
+                delete_query = supabase_client.table("Deadlines").delete().eq("Tournament_ID", str(t_id)).eq("Round", rnd_int)
+                if g_id:
+                    delete_query = delete_query.eq("Guild_ID", g_id)
+                delete_query.execute()
             except Exception:
                 if g_id:
                     supabase_client.table("Deadlines").delete().eq("Guild_ID", g_id).eq("Round", rnd_int).execute()
@@ -2278,6 +2287,131 @@ async def update_results_embed_with_links(guild: discord.Guild, ev_data: dict):
     except Exception as e:
         print(f"Error updating result embed with links: {e}")
 
+
+# ===========================================================================================
+# BANNED PLAYERS DATABASE (SUPABASE + LOCAL JSON CACHE)
+# ===========================================================================================
+
+BANNED_PLAYERS_FILE = os.path.join(BASE_DIR, "banned_players.json")
+BANNED_PLAYERS_CACHE: dict = {}
+
+def load_banned_players() -> dict:
+    global BANNED_PLAYERS_CACHE
+    if os.path.exists(BANNED_PLAYERS_FILE):
+        try:
+            with open(BANNED_PLAYERS_FILE, "r", encoding="utf-8") as f:
+                BANNED_PLAYERS_CACHE = json.load(f)
+        except Exception as e:
+            print(f"Error loading banned_players.json: {e}")
+            BANNED_PLAYERS_CACHE = {}
+    return BANNED_PLAYERS_CACHE
+
+def save_banned_players(data: Optional[dict] = None):
+    global BANNED_PLAYERS_CACHE
+    if data is not None:
+        BANNED_PLAYERS_CACHE = data
+    try:
+        with open(BANNED_PLAYERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(BANNED_PLAYERS_CACHE, f, indent=4)
+    except Exception as e:
+        print(f"Error saving banned_players.json: {e}")
+
+async def load_banned_players_from_supabase():
+    global BANNED_PLAYERS_CACHE
+    load_banned_players()
+    if not supabase_client:
+        return BANNED_PLAYERS_CACHE
+    try:
+        resp = await asyncio.to_thread(lambda: supabase_client.table('banned_players').select('*').execute())
+        if resp and resp.data:
+            for row in resp.data:
+                gid = str(row.get('game_id', '')).strip().lower()
+                if gid:
+                    BANNED_PLAYERS_CACHE[gid] = {
+                        'game_id': str(row.get('game_id')),
+                        'discord_user_id': row.get('discord_user_id'),
+                        'discord_username': row.get('discord_username'),
+                        'reason': row.get('reason', 'Tournament Ban'),
+                        'banned_by': row.get('banned_by'),
+                        'banned_at': row.get('banned_at'),
+                        'guild_id': row.get('guild_id')
+                    }
+            save_banned_players()
+            print(f"✅ Loaded {len(resp.data)} banned player(s) from Supabase.")
+    except Exception as e:
+        print(f"⚠️ Could not load banned players from Supabase: {e}")
+    return BANNED_PLAYERS_CACHE
+
+def get_banned_player(game_id: str) -> Optional[dict]:
+    load_banned_players()
+    gid = str(game_id).strip().lower()
+    return BANNED_PLAYERS_CACHE.get(gid)
+
+def is_game_id_banned(game_id: str) -> bool:
+    return get_banned_player(game_id) is not None
+
+async def add_banned_player(
+    game_id: str,
+    discord_user_id: Optional[int] = None,
+    discord_username: Optional[str] = None,
+    reason: Optional[str] = "Tournament Ban",
+    banned_by: Optional[int] = None,
+    guild_id: Optional[int] = None
+) -> dict:
+    load_banned_players()
+    gid_clean = str(game_id).strip()
+    gid_key = gid_clean.lower()
+    now_iso = datetime.datetime.utcnow().isoformat()
+
+    record = {
+        'game_id': gid_clean,
+        'discord_user_id': str(discord_user_id) if discord_user_id else None,
+        'discord_username': str(discord_username) if discord_username else None,
+        'reason': reason or "Tournament Ban",
+        'banned_by': str(banned_by) if banned_by else None,
+        'banned_at': now_iso,
+        'guild_id': str(guild_id) if guild_id else None
+    }
+    BANNED_PLAYERS_CACHE[gid_key] = record
+    save_banned_players()
+
+    if supabase_client:
+        def _sync_db():
+            supabase_safe_upsert('banned_players', record, on_conflict='game_id')
+        asyncio.create_task(asyncio.to_thread(_sync_db))
+
+    return record
+
+async def remove_banned_player(game_id: Optional[str] = None, discord_user_id: Optional[int] = None) -> Optional[dict]:
+    load_banned_players()
+    removed_record = None
+
+    if game_id:
+        gid_key = str(game_id).strip().lower()
+        if gid_key in BANNED_PLAYERS_CACHE:
+            removed_record = BANNED_PLAYERS_CACHE.pop(gid_key)
+
+    if not removed_record and discord_user_id:
+        d_id_str = str(discord_user_id)
+        for k, v in list(BANNED_PLAYERS_CACHE.items()):
+            if str(v.get('discord_user_id')) == d_id_str:
+                removed_record = BANNED_PLAYERS_CACHE.pop(k)
+                break
+
+    if removed_record:
+        save_banned_players()
+        if supabase_client:
+            def _sync_del():
+                try:
+                    if removed_record.get('game_id'):
+                        supabase_client.table('banned_players').delete().eq('game_id', removed_record['game_id']).execute()
+                    elif removed_record.get('discord_user_id'):
+                        supabase_client.table('banned_players').delete().eq('discord_user_id', removed_record['discord_user_id']).execute()
+                except Exception as del_err:
+                    print(f"Error removing ban from Supabase: {del_err}")
+            asyncio.create_task(asyncio.to_thread(_sync_del))
+
+    return removed_record
 
 
 

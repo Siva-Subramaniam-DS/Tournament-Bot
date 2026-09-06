@@ -32,6 +32,15 @@ EMOJI_IDS = {
     "cameraman_out": 1545321785388437584,
     "cameraman_add": 1545321783165587546,
     "cameraman_remove": 1545321785388437584,
+
+    # UI / Status emojis
+    "gear": 1545818334547677255,
+    "caution": 1545819305269264414,
+    "folder": 1545820514931441684,
+    "trashcan": 1545820784084254790,
+    "loading": 1545821237354172477,
+    "wrong": 1545821776037027870,
+    "dice": 1546005941722554418,
 }
 
 # Direct Discord emoji format strings (Application Emojis uploaded in Discord Dev Portal)
@@ -62,6 +71,15 @@ EMOJIS = {
     "cameraman_out": "<:Cameramanremove:1545321785388437584>",
     "cameraman_add": "<:CameramanAdd:1545321783165587546>",
     "cameraman_remove": "<:Cameramanremove:1545321785388437584>",
+
+    # UI / Status emojis
+    "gear": "<a:Gear:1545818334547677255>",
+    "caution": "<a:Caution:1545819305269264414>",
+    "folder": "<:Folder:1545820514931441684>",
+    "trashcan": "<:Trashcan:1545820784084254790>",
+    "loading": "<a:Loading:1545821237354172477>",
+    "wrong": "<:Wrong:1545821776037027870>",
+    "dice": "<a:Dice:1546005941722554418>",
 }
 
 # Dynamic cache for real resolved Discord emoji strings
@@ -95,6 +113,14 @@ NAME_TO_KEY = {
     "helper": "helpers",
     "cameramanadd": "cameraman_in",
     "cameramanremove": "cameraman_out",
+    # UI / Status emojis
+    "gear": "gear",
+    "caution": "caution",
+    "folder": "folder",
+    "trashcan": "trashcan",
+    "loading": "loading",
+    "wrong": "wrong",
+    "dice": "dice",
 }
 
 async def init_emojis_from_bot(bot):

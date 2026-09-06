@@ -38,7 +38,9 @@ ALTER TABLE "GuildConfig"
 
 -- 2. Table: Tournaments
 CREATE TABLE IF NOT EXISTS "Tournaments" (
-    "Tournament_ID" TEXT PRIMARY KEY
+    "Guild_ID" TEXT NOT NULL,
+    "Tournament_ID" TEXT NOT NULL,
+    PRIMARY KEY ("Guild_ID", "Tournament_ID")
 );
 
 ALTER TABLE "Tournaments"
@@ -77,6 +79,7 @@ ALTER TABLE "Tournaments"
 -- 3. Table: Matches
 CREATE TABLE IF NOT EXISTS "Matches" (
     "Match_ID" TEXT PRIMARY KEY,
+    "Guild_ID" TEXT,
     "Match_Name" TEXT,
     "Tournament_ID" TEXT,
     "Round" INTEGER,
@@ -104,6 +107,7 @@ CREATE TABLE IF NOT EXISTS "Matches" (
 );
 
 ALTER TABLE "Matches"
+    ADD COLUMN IF NOT EXISTS "Guild_ID" TEXT,
     ADD COLUMN IF NOT EXISTS "Match_Name" TEXT,
     ADD COLUMN IF NOT EXISTS "Tournament_ID" TEXT,
     ADD COLUMN IF NOT EXISTS "Round" INTEGER,

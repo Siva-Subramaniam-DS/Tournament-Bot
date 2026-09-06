@@ -56,6 +56,7 @@ DEFAULT_ROLE_IDS = {
     "recorder":       None,  # Recorder Role
     "staff":          None,  # Staff Role
     "players":        None,  # Players Role
+    "verification":   None,  # Verification Role (given to verified members)
     "challonge_role": None   # Challonge Role (legacy)
 }
 

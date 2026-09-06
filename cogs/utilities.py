@@ -18,6 +18,7 @@ from core.state import (
     category_monitors, save_category_monitors
 )
 from core.database import log_bot_activity
+from core.emojis import EMOJIS
 
 
 NOTION_HELP_URL = "https://elated-chartreuse-9a7.notion.site/Tournament-Bot-Help-Guide-37c8a2e4cbdf80af8e87d6a03b7db8e5"
@@ -1430,7 +1431,7 @@ class Utilities(commands.Cog):
         
         selected_maps = random.sample(maps_list, count)
         embed = discord.Embed(
-            title=f"🗺️ Random Map Selection {ORGANIZATION_NAME}",
+            title=f"{EMOJIS.get('dice', '🗺️')} Random Map Selection {ORGANIZATION_NAME}",
             description=f"**Randomly selected {count} map(s):**",
             color=discord.Color.green(),
             timestamp=discord.utils.utcnow()
@@ -1453,7 +1454,7 @@ class Utilities(commands.Cog):
             return
         chosen_option = random.choice(option_list)
         embed = discord.Embed(
-            title="🎲 Random Choice",
+            title=f"{EMOJIS.get('dice', '🎲')} Random Choice",
             description=f"**Selected:** {chosen_option}",
             color=discord.Color.gold(),
             timestamp=discord.utils.utcnow()

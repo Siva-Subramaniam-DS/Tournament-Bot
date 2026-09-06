@@ -4,7 +4,7 @@ import re
 import json
 import asyncio
 import datetime
-from typing import Optional
+from typing import Optional, Union
 
 import discord
 from discord.ext import commands
@@ -528,6 +528,67 @@ class Listeners(commands.Cog):
                 except Exception: pass
             except Exception as e:
                 print(f"Error renaming channel for prefix: {e}")
+
+    @commands.Cog.listener()
+    async def on_app_command_completion(self, interaction: discord.Interaction, command: Union[discord.app_commands.Command, discord.app_commands.ContextMenu]):
+        if not interaction.guild:
+            return
+
+        try:
+            cmd_name = command.qualified_name if hasattr(command, 'qualified_name') else command.name
+
+            # Extract parameter details from interaction.data
+            param_parts = []
+            if interaction.data and 'options' in interaction.data:
+                def extract_opts(opts):
+                    for o in opts:
+                        if 'options' in o:
+                            extract_opts(o['options'])
+                        else:
+                            val = o.get('value')
+                            param_parts.append(f"`{o.get('name')}`: `{val}`")
+                extract_opts(interaction.data.get('options', []))
+
+            params_text = ", ".join(param_parts) if param_parts else "*(None)*"
+
+            log_embed = discord.Embed(
+                title=f"🤖 Command Executed: /{cmd_name}",
+                description=(
+                    f"**User:** {interaction.user.mention} (`{interaction.user.id}`)\n"
+                    f"**Channel:** {interaction.channel.mention if interaction.channel else 'N/A'} (`{interaction.channel_id}`)\n"
+                    f"**Parameters:** {params_text}"
+                ),
+                color=discord.Color.blue(),
+                timestamp=discord.utils.utcnow()
+            )
+            log_embed.set_footer(text=f"{ORGANIZATION_NAME} • Bot Activity")
+            await log_bot_activity(interaction.guild, log_embed)
+        except Exception as e:
+            print(f"Error logging app command completion: {e}")
+
+    @commands.Cog.listener()
+    async def on_app_command_error(self, interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
+        if not interaction.guild:
+            return
+
+        try:
+            cmd = interaction.command
+            cmd_name = cmd.qualified_name if cmd and hasattr(cmd, 'qualified_name') else (cmd.name if cmd else "Unknown")
+
+            log_embed = discord.Embed(
+                title=f"⚠️ Command Error: /{cmd_name}",
+                description=(
+                    f"**User:** {interaction.user.mention} (`{interaction.user.id}`)\n"
+                    f"**Channel:** {interaction.channel.mention if interaction.channel else 'N/A'}\n"
+                    f"**Error Details:** ```{str(error)[:1000]}```"
+                ),
+                color=discord.Color.red(),
+                timestamp=discord.utils.utcnow()
+            )
+            log_embed.set_footer(text=f"{ORGANIZATION_NAME} • Bot Error Log")
+            await log_bot_activity(interaction.guild, log_embed)
+        except Exception as e:
+            print(f"Error logging app command error: {e}")
 
 
 async def setup(bot: commands.Bot):

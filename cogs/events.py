@@ -501,15 +501,13 @@ class Events(commands.Cog):
         month="Month of the event",
         round="Round label",
         tournament="Tournament name (e.g. King of the Seas, Summer Cup, etc.)",
-        game="Game for poster background (e.g. Modern Warship, BGMI, Valorant, Free Fire)",
-         team_1_name="Optional name of team 1",
+        team_1_name="Optional name of team 1",
         team_2_name="Optional name of team 2",
-        mode="Optional game mode (e.g. 5v5, 1v1, Battle Royale)",
         judge="Optional: Directly assign a Judge",
         recorder="Optional: Directly assign a Recorder",
         remarks="Optional: Remarks (e.g. starting soon, spot match)"
     )
-    @app_commands.autocomplete(tournament=tournament_autocomplete, game=game_autocomplete)
+    @app_commands.autocomplete(tournament=tournament_autocomplete)
     @app_commands.choices(
         round=[
             app_commands.Choice(name="R1", value="R1"),
@@ -554,11 +552,9 @@ class Events(commands.Cog):
         month: int,
         round: app_commands.Choice[str],
         tournament: str,
-        game: Optional[str] = None,
         group: app_commands.Choice[str] = None,
         team_1_name: str = None,
         team_2_name: str = None,
-        mode: str = None,
         judge: Optional[discord.Member] = None,
         recorder: Optional[discord.Member] = None,
         remarks: Optional[str] = None
@@ -604,7 +600,7 @@ class Events(commands.Cog):
             'group': group_label,
             'minutes_left': time_info['minutes_remaining'],
             'tournament': tournament,
-            'mode': mode,
+            'mode': None,
             'judge': judge,
             'recorder': recorder,
             'remarks': remarks,
@@ -665,13 +661,11 @@ class Events(commands.Cog):
             "Created_By_Name":   interaction.user.name
         }))
         
-        game_hint = game
-        if not game_hint and tournament and interaction.guild_id:
+        game_hint = None
+        if tournament and interaction.guild_id:
             t_configs = load_guild_tournaments(interaction.guild_id)
             t_data_hint = t_configs.get(tournament.lower(), {})
             game_hint = t_data_hint.get('game') or t_data_hint.get('name') or t_data_hint.get('mode') or tournament
-        if not game_hint:
-            game_hint = mode
             
         template_image = get_random_template(game_or_mode=game_hint)
         poster_image = None

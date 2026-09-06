@@ -787,7 +787,7 @@ async def staff_recruit(
         return
 
     embed = discord.Embed(
-        title="📋 Staff Recruitment Updated",
+        title=f"{EMOJIS.get('helpers', '📋')} Staff Recruitment Updated",
         description=f"Successfully assigned {len(roles_to_add)} staff role(s) to {member.mention}",
         color=discord.Color.green(),
         timestamp=discord.utils.utcnow()
@@ -801,7 +801,7 @@ async def staff_recruit(
     # Audit Log
     try:
         log_embed = discord.Embed(
-            title="📋 Staff Recruited",
+            title=f"{EMOJIS.get('helpers', '📋')} Staff Recruited",
             description=f"**Target Member:** {member.mention} (`{member.id}`)\n**Roles Added:** {assigned_role_text}\n**Recruited By:** {interaction.user.mention}",
             color=discord.Color.green(),
             timestamp=discord.utils.utcnow()
@@ -855,7 +855,7 @@ async def staff_fire(
         return
 
     embed = discord.Embed(
-        title="⚠️ Staff Removal Updated",
+        title=f"{EMOJIS.get('caution', '⚠️')} Staff Removal Updated",
         description=f"Successfully removed {len(roles_to_remove)} staff role(s) from {member.mention}",
         color=discord.Color.red(),
         timestamp=discord.utils.utcnow()
@@ -869,7 +869,7 @@ async def staff_fire(
     # Audit Log
     try:
         log_embed = discord.Embed(
-            title="⚠️ Staff Role(s) Removed",
+            title=f"{EMOJIS.get('caution', '⚠️')} Staff Role(s) Removed",
             description=f"**Target Member:** {member.mention} (`{member.id}`)\n**Roles Removed:** {removed_role_text}\n**Action By:** {interaction.user.mention}",
             color=discord.Color.red(),
             timestamp=discord.utils.utcnow()
@@ -1086,7 +1086,6 @@ async def render_staff_work_count(
 )
 @with_guild_context
 async def staff_work_cmd(
-
     interaction: discord.Interaction,
     tournament: Optional[str] = None,
     default_wins: Optional[app_commands.Choice[str]] = None,
@@ -1094,6 +1093,237 @@ async def staff_work_cmd(
 ):
     dw_val = default_wins.value if default_wins else "Including"
     await render_staff_work_count(interaction, tournament=tournament, default_wins=dw_val, member=member)
+
+
+# ===========================================================================================
+# PENDING SCHEDULES / RECORDINGS PAGINATED VIEW
+# ===========================================================================================
+
+class PendingSchedulesPaginationView(discord.ui.View):
+    def __init__(self, interaction: discord.Interaction, pending_list: list, org_name: str, logo_url: Optional[str] = None):
+        super().__init__(timeout=300)
+        self.interaction = interaction
+        self.pending_list = pending_list
+        self.org_name = org_name
+        self.logo_url = logo_url
+        self.current_page = 0
+        self.per_page = 5
+        self.total_pages = max(1, (len(pending_list) + self.per_page - 1) // self.per_page)
+        self._update_button_states()
+
+    def _update_button_states(self):
+        self.first_button.disabled = (self.current_page == 0)
+        self.prev_button.disabled = (self.current_page == 0)
+        self.next_button.disabled = (self.current_page >= self.total_pages - 1)
+        self.last_button.disabled = (self.current_page >= self.total_pages - 1)
+
+    def create_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="Pending Schedules",
+            color=0xE64A19,
+            timestamp=discord.utils.utcnow()
+        )
+        if self.logo_url:
+            embed.set_thumbnail(url=self.logo_url)
+
+        start_idx = self.current_page * self.per_page
+        end_idx = min(start_idx + self.per_page, len(self.pending_list))
+        page_items = self.pending_list[start_idx:end_idx]
+
+        if not page_items:
+            embed.description = "🎉 **No pending schedules found!** All matches have video recordings uploaded."
+        else:
+            desc_lines = []
+            for item in page_items:
+                desc_lines.append(
+                    f"{item['display_index']}. **[{item['tournament_tag']} {item['round_tag']}]{item['t1']} vs {item['t2']}**\n"
+                    f"Recorder - {item['date_display']} ({item['time_ago']}) - {item['channel_display']}\n"
+                    f"⏳ Recording not uploaded\n"
+                )
+            embed.description = "\n".join(desc_lines)
+
+        now_time = datetime.datetime.now().strftime("%H:%M")
+        embed.set_footer(text=f"MWTS - {self.org_name} | Page {self.current_page + 1}/{self.total_pages} • Today at {now_time}")
+        return embed
+
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary, emoji="◀", row=0)
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.interaction.user.id:
+            await interaction.response.send_message("❌ This pagination view is for the command caller only.", ephemeral=True)
+            return
+        if self.current_page > 0:
+            self.current_page -= 1
+            self._update_button_states()
+            await interaction.response.edit_message(embed=self.create_embed(), view=self)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.primary, emoji="▶", row=0)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.interaction.user.id:
+            await interaction.response.send_message("❌ This pagination view is for the command caller only.", ephemeral=True)
+            return
+        if self.current_page < self.total_pages - 1:
+            self.current_page += 1
+            self._update_button_states()
+            await interaction.response.edit_message(embed=self.create_embed(), view=self)
+
+    @discord.ui.button(label="First", style=discord.ButtonStyle.secondary, emoji="⏮", row=1)
+    async def first_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.interaction.user.id:
+            await interaction.response.send_message("❌ This pagination view is for the command caller only.", ephemeral=True)
+            return
+        if self.current_page != 0:
+            self.current_page = 0
+            self._update_button_states()
+            await interaction.response.edit_message(embed=self.create_embed(), view=self)
+
+    @discord.ui.button(label="Last", style=discord.ButtonStyle.primary, emoji="⏭", row=1)
+    async def last_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.interaction.user.id:
+            await interaction.response.send_message("❌ This pagination view is for the command caller only.", ephemeral=True)
+            return
+        if self.current_page != self.total_pages - 1:
+            self.current_page = self.total_pages - 1
+            self._update_button_states()
+            await interaction.response.edit_message(embed=self.create_embed(), view=self)
+
+    @discord.ui.button(label="Close", style=discord.ButtonStyle.danger, emoji="❌", row=2)
+    async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.interaction.user.id:
+            await interaction.response.send_message("❌ This pagination view is for the command caller only.", ephemeral=True)
+            return
+        self.stop()
+        try:
+            await interaction.message.delete()
+        except Exception:
+            await interaction.response.edit_message(content="*Pending schedules view closed.*", embed=None, view=None)
+
+
+@staff_group.command(name="pending_schedules", description="Display pending match schedules that need recording links uploaded")
+@app_commands.describe(
+    tournament="Optional tournament to filter pending schedules"
+)
+@app_commands.autocomplete(tournament=tournament_autocomplete)
+@with_guild_context
+async def staff_pending_schedules(
+    interaction: discord.Interaction,
+    tournament: Optional[str] = None
+):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    cfg = get_guild_config(interaction.guild.id)
+    org_name = cfg.get('organization_name') or interaction.guild.name
+
+    pending_items = []
+    now_utc = datetime.datetime.now(pytz.UTC)
+
+    # Filter events
+    for ev_id, ev_data in list(scheduled_events.items()):
+        if str(ev_data.get('guild_id')) != str(interaction.guild.id):
+            continue
+
+        # Skip if recordings already uploaded
+        if ev_data.get('recording_link') or ev_data.get('recorder_link'):
+            continue
+
+        ev_tournament = str(ev_data.get('tournament') or '')
+        if tournament and tournament.strip().lower() not in ev_tournament.lower():
+            continue
+
+        # Team names
+        t1_name = ev_data.get('team1_name')
+        if not t1_name:
+            t1_cap = ev_data.get('team1_captain')
+            t1_name = getattr(t1_cap, 'display_name', getattr(t1_cap, 'name', 'Team 1'))
+
+        t2_name = ev_data.get('team2_name')
+        if not t2_name:
+            t2_cap = ev_data.get('team2_captain')
+            t2_name = getattr(t2_cap, 'display_name', getattr(t2_cap, 'name', 'Team 2'))
+
+        # Datetime & relative time
+        dt = ev_data.get('datetime')
+        if isinstance(dt, str):
+            try:
+                dt = datetime.datetime.fromisoformat(dt)
+            except Exception:
+                dt = None
+
+        if isinstance(dt, datetime.datetime):
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=pytz.UTC)
+            date_display = dt.strftime("%d %B %Y %H:%M")
+            diff = now_utc - dt
+            days = diff.days
+            if days > 1:
+                time_ago = f"{days} days ago"
+            elif days == 1:
+                time_ago = "1 day ago"
+            elif days == 0:
+                hours = int(diff.total_seconds() // 3600)
+                if hours > 1:
+                    time_ago = f"{hours} hours ago"
+                elif hours == 1:
+                    time_ago = "1 hour ago"
+                else:
+                    time_ago = "today"
+            else:
+                time_ago = "upcoming"
+            sort_dt = dt
+        else:
+            date_str = ev_data.get('date_str', '')
+            time_str = ev_data.get('time_str', '')
+            date_display = f"{date_str} {time_str}".strip() or "Unknown Date"
+            time_ago = "recently"
+            sort_dt = datetime.datetime.min.replace(tzinfo=pytz.UTC)
+
+        # Channel resolution
+        ch_id = ev_data.get('channel_id')
+        if ch_id:
+            ch = interaction.guild.get_channel(int(ch_id))
+            if ch:
+                perms = ch.permissions_for(interaction.guild.me)
+                if perms.view_channel:
+                    channel_display = ch.mention
+                else:
+                    channel_display = "🔒 No Access"
+            else:
+                channel_display = "# unknown"
+        else:
+            channel_display = "# unknown"
+
+        round_tag = str(ev_data.get('round') or 'R:1')
+        grp = ev_data.get('group')
+        if grp:
+            round_tag = f"{round_tag} {grp}"
+
+        pending_items.append({
+            'sort_key': sort_dt,
+            'tournament_tag': ev_tournament or 'Tournament',
+            'round_tag': round_tag,
+            't1': t1_name,
+            't2': t2_name,
+            'date_display': date_display,
+            'time_ago': time_ago,
+            'channel_display': channel_display
+        })
+
+    # Sort so older matches come first
+    pending_items.sort(key=lambda x: x['sort_key'])
+
+    for idx, item in enumerate(pending_items, start=1):
+        item['display_index'] = idx
+
+    logo_url = None
+    if interaction.guild.icon:
+        logo_url = interaction.guild.icon.url
+
+    view = PendingSchedulesPaginationView(interaction, pending_items, org_name, logo_url=logo_url)
+    embed = view.create_embed()
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
 # ===========================================================================================
@@ -1452,12 +1682,12 @@ class Staff(commands.Cog):
     async def unassigned_cmd(self, interaction: discord.Interaction):
         await self._handle_available_events(interaction)
 
-    @app_commands.command(name="reassign", description="Resign from an event as Judge or Recorder and notify other staff to take it")
+    @app_commands.command(name="resign", description="Resign from an event as Judge or Recorder and notify other staff to take it")
     @with_guild_context
     async def reassign_cmd(self, interaction: discord.Interaction):
         permission_level = get_user_permission_level(interaction.user.roles, interaction.user.id)
         if permission_level not in ["judge", "recorder", "organizer", "owner", "helper"]:
-            await interaction.response.send_message("❌ You do not have permission to use /reassign.", ephemeral=False)
+            await interaction.response.send_message("❌ You do not have permission to use /resign.", ephemeral=False)
             return
 
         user_events = []
@@ -1607,7 +1837,7 @@ class Staff(commands.Cog):
                         value=f"**Tournament:** {event_data.get('tournament', 'N/A')}\n**Round:** {event_data.get('round', 'N/A')}\n**Date/Time:** {event_data.get('date_str', '')} at {event_data.get('time_str', '')}",
                         inline=False
                     )
-                    notify_embed.set_footer(text=f"{ORGANIZATION_NAME} • Reassign System")
+                    notify_embed.set_footer(text=f"{ORGANIZATION_NAME} • Resign System")
                     try:
                         content_str = f"⚠️ <@&{role_ping_id}> — A {role_type.lower()} is needed for this match!" if role_ping_id else f"⚠️ Attention Staff — A replacement {role_type.lower()} is needed for this match!"
                         await sched_channel.send(

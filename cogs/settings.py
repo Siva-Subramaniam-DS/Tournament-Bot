@@ -650,9 +650,15 @@ async def update_settings_logic(
     recorder_role: Optional[discord.Role] = None,
     staff_role: Optional[discord.Role] = None,
     players_role: Optional[discord.Role] = None,
+    verification_role: Optional[discord.Role] = None,
     server_name: Optional[str] = None,
     tournament_bot_name: Optional[str] = None,
-    server_logo: Optional[discord.Attachment] = None
+    server_logo: Optional[discord.Attachment] = None,
+    transcript_logs_channel: Optional[discord.TextChannel] = None,
+    closed_category: Optional[discord.CategoryChannel] = None,
+    schedule_channel: Optional[discord.TextChannel] = None,
+    results_channel: Optional[discord.TextChannel] = None,
+    bot_logs_channel: Optional[discord.TextChannel] = None
 ):
     if not interaction.guild:
         await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=False)
@@ -672,7 +678,8 @@ async def update_settings_logic(
         'judge': judge_role,
         'recorder': recorder_role,
         'staff': staff_role,
-        'players': players_role
+        'players': players_role,
+        'verification': verification_role,
     }
     
     for key, role_obj in role_mapping.items():
@@ -701,6 +708,23 @@ async def update_settings_logic(
         except Exception as logo_err:
             print(f"Error saving server logo: {logo_err}")
             updates.append(f"❌ **Server Logo:** Failed to save logo: {logo_err}")
+
+    # Channel & Category Mappings
+    if 'channel_ids' not in cfg:
+        cfg['channel_ids'] = {}
+
+    channel_mapping = {
+        'transcript_logs': (transcript_logs_channel, "Transcript Logs"),
+        'closed_tickets_category': (closed_category, "Closed Category"),
+        'take_schedule': (schedule_channel, "Schedule Channel"),
+        'results': (results_channel, "Results Channel"),
+        'bot_logs': (bot_logs_channel, "Bot Logs Channel"),
+    }
+
+    for key, (ch_obj, label) in channel_mapping.items():
+        if ch_obj is not None:
+            cfg['channel_ids'][key] = ch_obj.id
+            updates.append(f"• **{label}:** {ch_obj.mention}")
         
     if not updates:
         if interaction.response.is_done():
@@ -734,7 +758,7 @@ async def update_settings_logic(
         await interaction.response.send_message(embed=embed, ephemeral=False)
 
 
-@settings_group.command(name="add", description="Add server-wide settings: configure server roles and branding details")
+@settings_group.command(name="add", description="Add server-wide settings: roles, branding, and default channels")
 @app_commands.describe(
     admin_role="Admin / Head Organizer role",
     organizer_role="Organizer role",
@@ -743,9 +767,15 @@ async def update_settings_logic(
     recorder_role="Recorder role",
     staff_role="General staff role (fallback)",
     players_role="Players role",
+    verification_role="Verification role (given to verified members)",
     server_name="Name of your esports organization/server",
     tournament_bot_name="Branding name for the tournament system",
-    server_logo="Upload your server logo image"
+    server_logo="Upload your server logo image",
+    transcript_logs_channel="Channel for ticket transcripts",
+    closed_category="Category where closed tickets will be moved",
+    schedule_channel="Channel where match schedules are posted",
+    results_channel="Channel where match results are posted",
+    bot_logs_channel="Channel for bot activity and audit logs"
 )
 @with_guild_context
 async def settings_add(
@@ -757,9 +787,15 @@ async def settings_add(
     recorder_role: Optional[discord.Role] = None,
     staff_role: Optional[discord.Role] = None,
     players_role: Optional[discord.Role] = None,
+    verification_role: Optional[discord.Role] = None,
     server_name: Optional[str] = None,
     tournament_bot_name: Optional[str] = None,
-    server_logo: Optional[discord.Attachment] = None
+    server_logo: Optional[discord.Attachment] = None,
+    transcript_logs_channel: Optional[discord.TextChannel] = None,
+    closed_category: Optional[discord.CategoryChannel] = None,
+    schedule_channel: Optional[discord.TextChannel] = None,
+    results_channel: Optional[discord.TextChannel] = None,
+    bot_logs_channel: Optional[discord.TextChannel] = None
 ):
     await update_settings_logic(
         interaction=interaction,
@@ -770,13 +806,19 @@ async def settings_add(
         recorder_role=recorder_role,
         staff_role=staff_role,
         players_role=players_role,
+        verification_role=verification_role,
         server_name=server_name,
         tournament_bot_name=tournament_bot_name,
-        server_logo=server_logo
+        server_logo=server_logo,
+        transcript_logs_channel=transcript_logs_channel,
+        closed_category=closed_category,
+        schedule_channel=schedule_channel,
+        results_channel=results_channel,
+        bot_logs_channel=bot_logs_channel
     )
 
 
-@settings_group.command(name="edit", description="Edit server-wide settings: update server roles and branding details")
+@settings_group.command(name="edit", description="Edit server-wide settings: roles, branding, and default channels")
 @app_commands.describe(
     admin_role="Admin / Head Organizer role",
     organizer_role="Organizer role",
@@ -785,9 +827,15 @@ async def settings_add(
     recorder_role="Recorder role",
     staff_role="General staff role (fallback)",
     players_role="Players role",
+    verification_role="Verification role (given to verified members)",
     server_name="Name of your esports organization/server",
     tournament_bot_name="Branding name for the tournament system",
-    server_logo="Upload your server logo image"
+    server_logo="Upload your server logo image",
+    transcript_logs_channel="Channel for ticket transcripts",
+    closed_category="Category where closed tickets will be moved",
+    schedule_channel="Channel where match schedules are posted",
+    results_channel="Channel where match results are posted",
+    bot_logs_channel="Channel for bot activity and audit logs"
 )
 @with_guild_context
 async def settings_edit(
@@ -799,9 +847,15 @@ async def settings_edit(
     recorder_role: Optional[discord.Role] = None,
     staff_role: Optional[discord.Role] = None,
     players_role: Optional[discord.Role] = None,
+    verification_role: Optional[discord.Role] = None,
     server_name: Optional[str] = None,
     tournament_bot_name: Optional[str] = None,
-    server_logo: Optional[discord.Attachment] = None
+    server_logo: Optional[discord.Attachment] = None,
+    transcript_logs_channel: Optional[discord.TextChannel] = None,
+    closed_category: Optional[discord.CategoryChannel] = None,
+    schedule_channel: Optional[discord.TextChannel] = None,
+    results_channel: Optional[discord.TextChannel] = None,
+    bot_logs_channel: Optional[discord.TextChannel] = None
 ):
     await update_settings_logic(
         interaction=interaction,
@@ -812,9 +866,15 @@ async def settings_edit(
         recorder_role=recorder_role,
         staff_role=staff_role,
         players_role=players_role,
+        verification_role=verification_role,
         server_name=server_name,
         tournament_bot_name=tournament_bot_name,
-        server_logo=server_logo
+        server_logo=server_logo,
+        transcript_logs_channel=transcript_logs_channel,
+        closed_category=closed_category,
+        schedule_channel=schedule_channel,
+        results_channel=results_channel,
+        bot_logs_channel=bot_logs_channel
     )
 
 
@@ -827,6 +887,7 @@ async def settings_show(interaction: discord.Interaction):
 
     cfg = get_guild_config(interaction.guild.id)
     role_ids = cfg.get("role_ids", {})
+    channel_ids = cfg.get("channel_ids", {})
     guild = interaction.guild
 
     def get_role_str(key):
@@ -835,6 +896,13 @@ async def settings_show(interaction: discord.Interaction):
             return "`Not Set`"
         role = guild.get_role(int(rid))
         return role.mention if role else f"`ID: {rid}`"
+
+    def get_channel_str(key):
+        cid = channel_ids.get(key) or cfg.get(key)
+        if not cid:
+            return "`Not Set`"
+        ch = guild.get_channel(int(cid))
+        return ch.mention if ch else f"`ID: {cid}`"
 
     def get_setting_str(key, default="Not Set"):
         val = cfg.get(key)
@@ -846,7 +914,7 @@ async def settings_show(interaction: discord.Interaction):
 
     embed = discord.Embed(
         title="⚙️ Current Bot Settings",
-        description="Here are the configured roles, branding details, and links for this server.",
+        description="Here are the configured roles, channels, and branding details for this server.",
         color=discord.Color(BRAND_COLOR),
         timestamp=discord.utils.utcnow()
     )
@@ -858,9 +926,19 @@ async def settings_show(interaction: discord.Interaction):
         f"{EMOJIS['judge']} **Judge:** {get_role_str('judge')}\n"
         f"{EMOJIS['recorder']} **Recorder:** {get_role_str('recorder')}\n"
         f"📝 **Staff:** {get_role_str('staff')}\n"
-        f"🎮 **Players:** {get_role_str('players')}"
+        f"🎮 **Players:** {get_role_str('players')}\n"
+        f"{EMOJIS['verified']} **Verification:** {get_role_str('verification')}"
     )
     embed.add_field(name="👥 Roles", value=roles_value, inline=False)
+
+    channels_value = (
+        f"📜 **Transcript Logs:** {get_channel_str('transcript_logs')}\n"
+        f"📁 **Closed Category:** {get_channel_str('closed_tickets_category')}\n"
+        f"📅 **Schedule Channel:** {get_channel_str('take_schedule')}\n"
+        f"🏆 **Results Channel:** {get_channel_str('results')}\n"
+        f"🤖 **Bot Logs Channel:** {get_channel_str('bot_logs')}"
+    )
+    embed.add_field(name="📁 Channels & Categories", value=channels_value, inline=False)
 
     branding_value = (
         f"🏢 **Server Name:** {get_setting_str('organization_name', 'Tournament Server')}\n"
@@ -888,6 +966,77 @@ async def settings_show(interaction: discord.Interaction):
         await interaction.response.send_message(embed=embed, file=file, ephemeral=False)
     else:
         await interaction.response.send_message(embed=embed, ephemeral=False)
+
+
+@settings_group.command(name="remove", description="Remove / clear specific configured roles from server settings")
+@app_commands.describe(
+    role_to_remove="Which role setting to clear"
+)
+@app_commands.choices(
+    role_to_remove=[
+        app_commands.Choice(name="👑 Admin / Head Organizer",  value="head_organizer"),
+        app_commands.Choice(name="🛡️ Organizer",              value="organizer"),
+        app_commands.Choice(name="👥 Helper Team",             value="helper_team"),
+        app_commands.Choice(name="⚖️ Judge",                   value="judge"),
+        app_commands.Choice(name="🎥 Recorder",                value="recorder"),
+        app_commands.Choice(name="📝 Staff",                   value="staff"),
+        app_commands.Choice(name="🎮 Players",                 value="players"),
+        app_commands.Choice(name="✅ Verification",            value="verification"),
+    ]
+)
+@with_guild_context
+async def settings_remove(
+    interaction: discord.Interaction,
+    role_to_remove: app_commands.Choice[str]
+):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=False)
+        return
+
+    if not is_authorized_to_configure(interaction):
+        await interaction.response.send_message(
+            "❌ You do not have permission to manage settings. Only the **Bot Owner**, **Administrators**, or members with the **Head Organizer** role can use this.",
+            ephemeral=False
+        )
+        return
+
+    cfg = get_guild_config(interaction.guild.id)
+    key = role_to_remove.value
+    old_rid = cfg.get('role_ids', {}).get(key)
+
+    if not old_rid:
+        await interaction.response.send_message(
+            f"ℹ️ **{role_to_remove.name}** is already not set — nothing to remove.",
+            ephemeral=False
+        )
+        return
+
+    old_role = interaction.guild.get_role(int(old_rid))
+    old_role_str = old_role.mention if old_role else f"`ID: {old_rid}`"
+
+    cfg['role_ids'][key] = None
+    save_guild_config(interaction.guild.id, cfg)
+
+    log_embed = discord.Embed(
+        title="⚙️ Role Removed from Settings",
+        description=f"**{interaction.user.mention}** removed the **{role_to_remove.name}** role from server settings.",
+        color=discord.Color.orange(),
+        timestamp=discord.utils.utcnow()
+    )
+    log_embed.add_field(name="Role Cleared", value=f"{old_role_str} (`{key}`)", inline=False)
+    log_embed.set_footer(text=f"Removed by {interaction.user.display_name}")
+    await log_bot_activity(interaction.guild, log_embed)
+
+    embed = discord.Embed(
+        title="🗑️ Role Setting Removed",
+        description=f"Successfully cleared **{role_to_remove.name}** from server settings.",
+        color=discord.Color.orange(),
+        timestamp=discord.utils.utcnow()
+    )
+    embed.add_field(name="Removed Role", value=old_role_str, inline=True)
+    embed.add_field(name="Config Key", value=f"`{key}`", inline=True)
+    embed.set_footer(text=f"Removed by {interaction.user.display_name}")
+    await interaction.response.send_message(embed=embed, ephemeral=False)
 
 
 @settings_group.command(name="clean", description="Reset all bot configurations and data to defaults for this server")

@@ -62,8 +62,9 @@ CREATE TABLE "GuildConfig" (
 
 -- TABLE 2: Tournaments
 CREATE TABLE "Tournaments" (
-    "Guild_ID" text,
-    "Tournament_ID" text PRIMARY KEY,
+    "Guild_ID" text NOT NULL,
+    "Tournament_ID" text NOT NULL,
+    PRIMARY KEY ("Guild_ID", "Tournament_ID"),
     "Tournament_Name" text,
     "State" text,
     "Key" text,
@@ -354,8 +355,9 @@ CREATE TABLE "GuildConfig" (
 
 -- Tournaments
 CREATE TABLE "Tournaments" (
-    "Guild_ID" text,
-    "Tournament_ID" text PRIMARY KEY,
+    "Guild_ID" text NOT NULL,
+    "Tournament_ID" text NOT NULL,
+    PRIMARY KEY ("Guild_ID", "Tournament_ID"),
     "Tournament_Name" text,
     "State" text,
     "Key" text,

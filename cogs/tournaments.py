@@ -347,9 +347,11 @@ def mask_api_key(key: str) -> str:
 
 async def build_tournament_embed(interaction: discord.Interaction, t_data: dict, action_title: str) -> tuple[discord.Embed, Optional[discord.File]]:
     guild = interaction.guild
+    is_edit = "Edit" in action_title
+    title_emoji = EMOJIS.get('gear', '⚙️') if is_edit else EMOJIS.get('trophy', '🏆')
     embed = discord.Embed(
-        title=f"🏆 {action_title}: {t_data['name']}",
-        description="A tournament configuration has been updated/registered on this server." if "Edit" in action_title else "A new tournament has been registered on this server.",
+        title=f"{title_emoji} {action_title}: {t_data['name']}",
+        description="A tournament configuration has been updated/registered on this server." if is_edit else "A new tournament has been registered on this server.",
         color=discord.Color(BRAND_COLOR),
         timestamp=discord.utils.utcnow()
     )
@@ -472,14 +474,9 @@ tournament_group = app_commands.Group(name="tournament", description="Manage mul
     bracket_link="Challonge or tournament bracket URL",
     sheet_link="Google Sheet link for player roster / team info",
     attendance_channel="Channel for staff check-ins",
-    transcript_channel="Channel for ticket transcripts",
-    schedule_channel="Channel for posting match schedules",
     rules_channel="Channel for tournament rules",
-    result_channel="Channel for official match results",
     deadline_channel="Channel for round deadlines",
-    bot_logs="Channel for bot activity logs",
     challonge_logs="Channel for Challonge bracket logs",
-    closed_category="Category where closed tickets are stored",
     open_category_1="1st category for ticket opening (open tickets)",
     open_category_2="2nd category for ticket opening (open tickets)",
     open_category_3="3rd category for ticket opening (open tickets)",
@@ -496,14 +493,9 @@ async def tournament_add(
     bracket_link: Optional[str] = None,
     sheet_link: Optional[str] = None,
     attendance_channel: Optional[discord.TextChannel] = None,
-    transcript_channel: Optional[discord.TextChannel] = None,
-    schedule_channel: Optional[discord.TextChannel] = None,
     rules_channel: Optional[discord.TextChannel] = None,
-    result_channel: Optional[discord.TextChannel] = None,
     deadline_channel: Optional[discord.TextChannel] = None,
-    bot_logs: Optional[discord.TextChannel] = None,
     challonge_logs: Optional[discord.TextChannel] = None,
-    closed_category: Optional[discord.CategoryChannel] = None,
     open_category_1: Optional[discord.CategoryChannel] = None,
     open_category_2: Optional[discord.CategoryChannel] = None,
     open_category_3: Optional[discord.CategoryChannel] = None,
@@ -529,14 +521,9 @@ async def tournament_add(
     if bracket_link:        t_data["challonge_bracket_link"] = bracket_link.strip()
     if sheet_link:          t_data["google_sheet_link"] = sheet_link.strip()
     if attendance_channel:  t_data["attendance"] = attendance_channel.id
-    if transcript_channel:  t_data["transcript"] = transcript_channel.id
-    if schedule_channel:    t_data["schedule"] = schedule_channel.id
     if rules_channel:       t_data["rules"] = rules_channel.id
-    if result_channel:      t_data["result"] = result_channel.id
     if deadline_channel:    t_data["deadline"] = deadline_channel.id
-    if bot_logs:            t_data["bot_logs"] = bot_logs.id
     if challonge_logs:      t_data["challonge_logs"] = challonge_logs.id
-    if closed_category:     t_data["closed_ticket_1"] = closed_category.id
     if open_category_1:     t_data["ticket_open_category_1"] = open_category_1.id
     if open_category_2:     t_data["ticket_open_category_2"] = open_category_2.id
     if open_category_3:     t_data["ticket_open_category_3"] = open_category_3.id
@@ -562,14 +549,9 @@ async def tournament_add(
     bracket_link="Challonge bracket URL",
     sheet_link="Google Sheet link for player roster",
     attendance_channel="Attendance channel",
-    transcript_channel="Transcript channel",
-    schedule_channel="Schedule channel",
     rules_channel="Rules channel",
-    result_channel="Result channel",
     deadline_channel="Deadline channel",
-    bot_logs="Bot activity logs channel",
     challonge_logs="Challonge logs channel",
-    closed_category="Closed ticket category",
     open_category_1="1st category for ticket opening (open tickets)",
     open_category_2="2nd category for ticket opening (open tickets)",
     open_category_3="3rd category for ticket opening (open tickets)",
@@ -594,14 +576,9 @@ async def tournament_edit(
     bracket_link: Optional[str] = None,
     sheet_link: Optional[str] = None,
     attendance_channel: Optional[discord.TextChannel] = None,
-    transcript_channel: Optional[discord.TextChannel] = None,
-    schedule_channel: Optional[discord.TextChannel] = None,
     rules_channel: Optional[discord.TextChannel] = None,
-    result_channel: Optional[discord.TextChannel] = None,
     deadline_channel: Optional[discord.TextChannel] = None,
-    bot_logs: Optional[discord.TextChannel] = None,
     challonge_logs: Optional[discord.TextChannel] = None,
-    closed_category: Optional[discord.CategoryChannel] = None,
     open_category_1: Optional[discord.CategoryChannel] = None,
     open_category_2: Optional[discord.CategoryChannel] = None,
     open_category_3: Optional[discord.CategoryChannel] = None,
@@ -626,14 +603,9 @@ async def tournament_edit(
     if bracket_link:       t_data["challonge_bracket_link"] = bracket_link.strip()
     if sheet_link:         t_data["google_sheet_link"] = sheet_link.strip()
     if attendance_channel: t_data["attendance"] = attendance_channel.id
-    if transcript_channel: t_data["transcript"] = transcript_channel.id
-    if schedule_channel:   t_data["schedule"] = schedule_channel.id
     if rules_channel:      t_data["rules"] = rules_channel.id
-    if result_channel:     t_data["result"] = result_channel.id
     if deadline_channel:   t_data["deadline"] = deadline_channel.id
-    if bot_logs:           t_data["bot_logs"] = bot_logs.id
     if challonge_logs:     t_data["challonge_logs"] = challonge_logs.id
-    if closed_category:    t_data["closed_ticket_1"] = closed_category.id
     if open_category_1:    t_data["ticket_open_category_1"] = open_category_1.id
     if open_category_2:    t_data["ticket_open_category_2"] = open_category_2.id
     if open_category_3:    t_data["ticket_open_category_3"] = open_category_3.id
@@ -695,8 +667,8 @@ async def tournament_delete(interaction: discord.Interaction, tournament: str):
 
     if supabase_client:
         try:
-            supabase_client.table("Matches").delete().eq("Tournament_ID", t_id_clean).execute()
-            supabase_client.table("Tournaments").delete().eq("Tournament_ID", t_id_clean).execute()
+            supabase_client.table("Matches").delete().eq("Guild_ID", str(interaction.guild_id)).eq("Tournament_ID", t_id_clean).execute()
+            supabase_client.table("Tournaments").delete().eq("Guild_ID", str(interaction.guild_id)).eq("Tournament_ID", t_id_clean).execute()
         except Exception as e:
             print(f"[Supabase] Error deleting tournament '{t_id_clean}': {e}")
 
@@ -756,7 +728,7 @@ async def tournament_list(interaction: discord.Interaction):
         return
 
     embed = discord.Embed(
-        title=f"🏆 Server Tournaments [{len(tournaments)}]",
+        title=f"{EMOJIS.get('trophy', '🏆')} Server Tournaments [{len(tournaments)}]",
         description="List of registered tournaments for this server:",
         color=discord.Color.blue(),
         timestamp=discord.utils.utcnow()
@@ -1993,7 +1965,13 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
         cfg = get_guild_config(guild.id)
         bracket_link = t_cfg.get('challonge_bracket_link') or t_cfg.get('id')
         api_key = t_cfg.get('key') or get_bracket_api_key(guild.id)
-        sheet_link = t_cfg.get('captains_sheet_link') or t_cfg.get('sheet_link') or cfg.get('player_info_link') or cfg.get('google_sheet_link')
+        sheet_link = (
+            t_cfg.get('google_sheet_link')
+            or t_cfg.get('captains_sheet_link')
+            or t_cfg.get('sheet_link')
+            or cfg.get('player_info_link')
+            or cfg.get('google_sheet_link')
+        )
         
         missing_fields = []
         if not bracket_link or not bracket_link.strip():
@@ -2489,7 +2467,7 @@ async def auto_room_toggle_cmd(
 
     status_str = "ENABLED ✅" if new_val else "DISABLED ❌"
     embed = discord.Embed(
-        title="⚙️ Automatic Room Creation",
+        title=f"{EMOJIS.get('gear', '⚙️')} Automatic Room Creation",
         description=f"Auto room creation for **{target_cfg.get('name')}** is now **{status_str}**.",
         color=discord.Color.green() if new_val else discord.Color.red(),
         timestamp=discord.utils.utcnow()
@@ -2552,7 +2530,7 @@ async def auto_room_run_cmd(interaction: discord.Interaction, tournament: Option
         return
 
     embed = discord.Embed(
-        title="🎫 Auto Room Sweep Complete",
+        title=f"{EMOJIS.get('loading', '🎫')} Auto Room Sweep Complete",
         description=f"Created **{created_count}** new match room ticket(s) for **{target_cfg.get('name')}**.",
         color=discord.Color.green() if created_count > 0 else discord.Color.blue(),
         timestamp=discord.utils.utcnow()
@@ -2677,7 +2655,7 @@ async def auto_room_status_cmd(interaction: discord.Interaction, tournament: Opt
     is_loop_running = guild_id in auto_room_loops and not auto_room_loops[guild_id].done()
 
     embed = discord.Embed(
-        title="⚙️ Auto Room Creation Status",
+        title=f"{EMOJIS.get('gear', '⚙️')} Auto Room Creation Status",
         description=f"Server: **{interaction.guild.name}**\nBackground Loop Running: **{'Yes ✅' if is_loop_running else 'No ❌'}**",
         color=discord.Color.blue(),
         timestamp=discord.utils.utcnow()
@@ -2691,7 +2669,7 @@ async def auto_room_status_cmd(interaction: discord.Interaction, tournament: Opt
         t_name = t.get('name', k)
         auto_enabled = "Enabled ✅" if t.get('auto_room_creation') else "Disabled ❌"
         bracket = t.get('challonge_bracket_link') or "Not Set"
-        sheet = t.get('captains_sheet_link') or t.get('sheet_link') or "Not Set"
+        sheet = t.get('google_sheet_link') or t.get('captains_sheet_link') or t.get('sheet_link') or "Not Set"
         
         cats = []
         for i in range(1, 5):
@@ -2773,7 +2751,7 @@ async def clear_category_cmd(
         return
 
     embed = discord.Embed(
-        title="⚠️ Bulk Delete Category Channels Confirmation",
+        title=f"{EMOJIS.get('caution', '⚠️')} Bulk Delete Category Channels Confirmation",
         description=(
             f"Are you sure you want to delete **all {len(channels_to_delete)} channel(s)** in category **{category.name}**?\n\n"
             f"⚠️ **Warning:** This action is permanent and cannot be undone! Any chat logs or open match tickets in these channels will be removed."
@@ -2781,7 +2759,7 @@ async def clear_category_cmd(
         color=discord.Color.red(),
         timestamp=discord.utils.utcnow()
     )
-    embed.add_field(name="📁 Target Category", value=f"{category.name} (`{category.id}`)", inline=True)
+    embed.add_field(name=f"{EMOJIS.get('folder', '📁')} Target Category", value=f"{category.name} (`{category.id}`)", inline=True)
     embed.add_field(name="📊 Channels to Delete", value=f"**{len(channels_to_delete)}** channel(s)", inline=True)
     embed.set_footer(text=f"Requested by {interaction.user.display_name}")
 
@@ -2823,7 +2801,7 @@ async def clear_category_cmd(
             print(f"Error deleting category itself: {e}")
 
     log_embed = discord.Embed(
-        title="🗑️ Category Channels Bulk Deleted",
+        title=f"{EMOJIS.get('trashcan', '🗑️')} Category Channels Bulk Deleted",
         description=f"**{interaction.user.mention}** bulk deleted **{deleted_count}** channel(s) from category **{category.name}**.",
         color=discord.Color.red(),
         timestamp=discord.utils.utcnow()
@@ -2833,7 +2811,7 @@ async def clear_category_cmd(
     await log_bot_activity(interaction.guild, log_embed)
 
     result_embed = discord.Embed(
-        title="✅ Category Cleared",
+        title=f"{EMOJIS.get('wrong', '✅')} Category Cleared",
         description=f"Successfully deleted **{deleted_count}** channel(s) in category **{category.name}**.",
         color=discord.Color.green(),
         timestamp=discord.utils.utcnow()
@@ -3452,7 +3430,13 @@ class Tournaments(commands.Cog):
             return
 
         cfg = get_guild_config(guild_id)
-        sheet_link = target_t.get('captains_sheet_link') or target_t.get('sheet_link') or cfg.get('player_info_link') or cfg.get('google_sheet_link')
+        sheet_link = (
+            target_t.get('google_sheet_link')
+            or target_t.get('captains_sheet_link')
+            or target_t.get('sheet_link')
+            or cfg.get('player_info_link')
+            or cfg.get('google_sheet_link')
+        )
         if not sheet_link:
             await interaction.followup.send(f"❌ No Google Sheet configured for **{target_t.get('name')}**.")
             return
@@ -3682,6 +3666,4 @@ async def setup(bot: commands.Bot):
     bot.tree.add_command(auto_room_group)
     bot.tree.add_command(clear_group)
     await bot.add_cog(Tournaments(bot))
-
-
 
