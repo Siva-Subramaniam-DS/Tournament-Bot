@@ -804,7 +804,7 @@ def save_scheduled_events(event_id: Optional[str] = None):
     try:
         data_to_save = {}
         for ev_id, ev_data in scheduled_events.items():
-            event_copy = event_data.copy()
+            event_copy = ev_data.copy()
             if 'datetime' in event_copy and isinstance(event_copy['datetime'], datetime.datetime):
                 event_copy['datetime'] = event_copy['datetime'].isoformat()
             if 'team1_captain' in event_copy and hasattr(event_copy['team1_captain'], 'id'):
