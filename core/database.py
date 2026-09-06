@@ -78,6 +78,18 @@ def supabase_safe_upsert(table_name: str, payload: dict, on_conflict: Optional[s
                     row[matched_key] = None
                     continue
 
+            # Unique / exclusion constraint mismatch (42P10)
+            if "no unique or exclusion constraint matching the ON CONFLICT" in err_msg or "42P10" in err_msg:
+                if on_conflict and "," in on_conflict:
+                    fallback_conflict = on_conflict.split(",")[-1].strip()
+                    print(f"[Supabase] Composite unique constraint '{on_conflict}' not found on '{table_name}'. Falling back to on_conflict='{fallback_conflict}'...")
+                    on_conflict = fallback_conflict
+                    continue
+                elif on_conflict:
+                    print(f"[Supabase] No unique constraint on '{table_name}' for '{on_conflict}'. Retrying without on_conflict...")
+                    on_conflict = None
+                    continue
+
             # Relation error (e.g. table not found)
             if "does not exist" in err_msg and "relation" in err_msg:
                 print(f"[Supabase] Table '{table_name}' does not exist or access denied: {e}")
