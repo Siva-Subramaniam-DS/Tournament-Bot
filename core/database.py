@@ -90,6 +90,11 @@ def supabase_safe_upsert(table_name: str, payload: dict, on_conflict: Optional[s
                     on_conflict = None
                     continue
 
+            # Duplicate key violation (23505) - record already exists
+            if "duplicate key value violates unique constraint" in err_msg or "23505" in err_msg:
+                print(f"[Supabase] Note on '{table_name}': Record already exists or unique constraint satisfied. Continuing.")
+                return True
+
             # Relation error (e.g. table not found)
             if "does not exist" in err_msg and "relation" in err_msg:
                 print(f"[Supabase] Table '{table_name}' does not exist or access denied: {e}")
@@ -325,6 +330,17 @@ def load_guild_tournaments(guild_id: int) -> dict:
                 for row in resp.data:
                     t_id = row.get("Tournament_ID")
                     if t_id:
+                        # Clean/skip corrupted tournament IDs like "Name (id) [state]"
+                        if "(" in t_id and "[" in t_id:
+                            match = re.search(r'\(([^)]+)\)', t_id)
+                            if match:
+                                clean_extracted = match.group(1).strip()
+                                if clean_extracted in tournaments:
+                                    continue
+                                t_id = clean_extracted
+                            else:
+                                continue
+
                         existing = tournaments.get(t_id, get_default_tournament_data())
                         existing.update({
                             "name": row.get("Tournament_Name") or existing.get("name") or "",
@@ -1079,11 +1095,11 @@ def _json_serialize_clean(obj):
         return [_json_serialize_clean(x) for x in obj]
     return str(obj) if not isinstance(obj, (int, float, bool, type(None))) else obj
 
-def save_scheduled_events():
+def save_scheduled_events(event_id: Optional[str] = None):
     try:
         data_to_save = {}
-        for event_id, event_data in scheduled_events.items():
-            data_to_save[event_id] = _json_serialize_clean(event_data)
+        for ev_id, ev_data in scheduled_events.items():
+            data_to_save[ev_id] = _json_serialize_clean(ev_data)
         
         with open('scheduled_events.json', 'w', encoding='utf-8') as f:
             json.dump(data_to_save, f, indent=2, ensure_ascii=False)
@@ -1091,14 +1107,12 @@ def save_scheduled_events():
         if supabase_client:
             try:
                 loop = asyncio.get_running_loop()
-                async def _throttled_save_all_events():
-                    for ev_id, ev_data in list(scheduled_events.items()):
-                        try:
-                            await save_event_to_supabase(ev_id, ev_data)
-                        except Exception as _e:
-                            print(f"[Supabase] Error saving event {ev_id}: {_e}")
-                        await asyncio.sleep(0.3)
-                loop.create_task(_throttled_save_all_events())
+                if event_id and event_id in scheduled_events:
+                    loop.create_task(save_event_to_supabase(event_id, scheduled_events[event_id]))
+                elif not event_id and scheduled_events:
+                    # Sync only the most recent event to avoid socket exhaustion and duplicate mass queries
+                    latest_id = list(scheduled_events.keys())[-1]
+                    loop.create_task(save_event_to_supabase(latest_id, scheduled_events[latest_id]))
             except RuntimeError:
                 pass
     except Exception as e:
@@ -1127,6 +1141,11 @@ async def save_event_to_supabase(event_id: str, event_data: dict):
         raw_tourney = event_data.get('tournament_id') or event_data.get('tournament') or ''
         resolved_t_id = None
         
+        if raw_tourney and "(" in str(raw_tourney) and "[" in str(raw_tourney):
+            m = re.search(r'\(([^)]+)\)', str(raw_tourney))
+            if m:
+                raw_tourney = m.group(1).strip()
+
         if guild_id and str(raw_tourney).strip():
             try:
                 tournaments = load_guild_tournaments(int(guild_id))
@@ -1148,28 +1167,31 @@ async def save_event_to_supabase(event_id: str, event_data: dict):
             resolved_t_id = str(resolved_t_id).strip()
         elif str(raw_tourney).strip():
             t_candidate = str(raw_tourney).strip()
-            # Verify if this tournament exists in Supabase Tournaments table
-            try:
-                t_check_query = supabase_client.table("Tournaments").select("Tournament_ID").eq("Tournament_ID", t_candidate)
-                if guild_id:
-                    t_check_query = t_check_query.eq("Guild_ID", str(guild_id))
-                t_check_res = t_check_query.execute()
-                if t_check_res and t_check_res.data and len(t_check_res.data) > 0:
-                    resolved_t_id = t_candidate
-                elif guild_id:
-                    # Upsert placeholder tournament so FK constraint is satisfied
-                    t_payload = {
-                        "Tournament_ID": t_candidate,
-                        "Guild_ID": str(guild_id),
-                        "Tournament_Name": t_candidate,
-                        "State": "active"
-                    }
-                    supabase_safe_upsert("Tournaments", t_payload, on_conflict="Guild_ID,Tournament_ID")
-                    resolved_t_id = t_candidate
-                else:
-                    resolved_t_id = None
-            except Exception:
+            # Do not create corrupted placeholder if it has brackets or parentheses
+            if "(" in t_candidate or "[" in t_candidate:
                 resolved_t_id = None
+            else:
+                try:
+                    t_check_query = supabase_client.table("Tournaments").select("Tournament_ID").eq("Tournament_ID", t_candidate)
+                    if guild_id:
+                        t_check_query = t_check_query.eq("Guild_ID", str(guild_id))
+                    t_check_res = t_check_query.execute()
+                    if t_check_res and t_check_res.data and len(t_check_res.data) > 0:
+                        resolved_t_id = t_candidate
+                    elif guild_id:
+                        # Upsert placeholder tournament so FK constraint is satisfied
+                        t_payload = {
+                            "Tournament_ID": t_candidate,
+                            "Guild_ID": str(guild_id),
+                            "Tournament_Name": t_candidate,
+                            "State": "active"
+                        }
+                        supabase_safe_upsert("Tournaments", t_payload, on_conflict="Guild_ID,Tournament_ID")
+                        resolved_t_id = t_candidate
+                    else:
+                        resolved_t_id = None
+                except Exception:
+                    resolved_t_id = None
         else:
             resolved_t_id = None
 
@@ -1217,23 +1239,50 @@ async def save_event_to_supabase(event_id: str, event_data: dict):
             }
 
             # Ensure Team1 and Team2 exist in Teams table so foreign key constraint (Matches_Team1_ID_fkey) is satisfied
-            if t1_id:
-                t1_row = {
-                    "Team_ID": str(t1_id),
-                    "Tournament_ID": resolved_t_id,
-                    "Team_Name": str(t1_name or f"Team {t1_id}"),
-                    "Captain_ID": str(t1_id)
-                }
-                await asyncio.to_thread(supabase_safe_upsert, "Teams", t1_row, "Team_ID")
+            if t1_id and resolved_t_id:
+                try:
+                    q = supabase_client.table("Teams").select("Team_ID").eq("Tournament_ID", str(resolved_t_id))
+                    if t1_name:
+                        q = q.eq("Team_Name", str(t1_name))
+                    else:
+                        q = q.eq("Captain_ID", str(t1_id))
+                    existing_t1 = await asyncio.to_thread(lambda: q.execute())
+                    if existing_t1 and existing_t1.data and len(existing_t1.data) > 0:
+                        t1_id = existing_t1.data[0]["Team_ID"]
+                    else:
+                        t1_row = {
+                            "Team_ID": str(t1_id),
+                            "Tournament_ID": resolved_t_id,
+                            "Team_Name": str(t1_name or f"Team {t1_id}"),
+                            "Captain_ID": str(t1_id)
+                        }
+                        await asyncio.to_thread(supabase_safe_upsert, "Teams", t1_row, "Team_ID")
+                except Exception as e:
+                    print(f"[Supabase] Note on Team1 sync: {e}")
 
-            if t2_id:
-                t2_row = {
-                    "Team_ID": str(t2_id),
-                    "Tournament_ID": resolved_t_id,
-                    "Team_Name": str(t2_name or f"Team {t2_id}"),
-                    "Captain_ID": str(t2_id)
-                }
-                await asyncio.to_thread(supabase_safe_upsert, "Teams", t2_row, "Team_ID")
+            if t2_id and resolved_t_id:
+                try:
+                    q = supabase_client.table("Teams").select("Team_ID").eq("Tournament_ID", str(resolved_t_id))
+                    if t2_name:
+                        q = q.eq("Team_Name", str(t2_name))
+                    else:
+                        q = q.eq("Captain_ID", str(t2_id))
+                    existing_t2 = await asyncio.to_thread(lambda: q.execute())
+                    if existing_t2 and existing_t2.data and len(existing_t2.data) > 0:
+                        t2_id = existing_t2.data[0]["Team_ID"]
+                    else:
+                        t2_row = {
+                            "Team_ID": str(t2_id),
+                            "Tournament_ID": resolved_t_id,
+                            "Team_Name": str(t2_name or f"Team {t2_id}"),
+                            "Captain_ID": str(t2_id)
+                        }
+                        await asyncio.to_thread(supabase_safe_upsert, "Teams", t2_row, "Team_ID")
+                except Exception as e:
+                    print(f"[Supabase] Note on Team2 sync: {e}")
+
+            match_row["Team1_ID"] = str(t1_id) if t1_id else None
+            match_row["Team2_ID"] = str(t2_id) if t2_id else None
 
             try:
                 await asyncio.to_thread(supabase_safe_upsert, "Matches", match_row, "Match_ID")
@@ -2232,11 +2281,13 @@ async def tournament_autocomplete(
         tournaments = load_guild_tournaments(interaction.guild_id)
         choices = []
         for t_id, t_cfg in tournaments.items():
+            if "(" in t_id and "[" in t_id:
+                continue
             name = t_cfg.get("name") or t_id
             state = t_cfg.get("state", "pending")
             display = f"{name} ({t_id}) [{state}]"
             if not current or current.lower() in display.lower() or current.lower() in name.lower() or current.lower() in t_id.lower():
-                choices.append(discord.app_commands.Choice(name=display[:100], value=name[:100]))
+                choices.append(discord.app_commands.Choice(name=display[:100], value=t_id[:100]))
         return choices[:25]
     except Exception as e:
         print(f"Error in tournament_autocomplete: {e}")

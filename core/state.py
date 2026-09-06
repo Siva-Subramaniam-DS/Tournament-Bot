@@ -794,7 +794,7 @@ def load_scheduled_events() -> dict:
             print(f"Error loading scheduled_events.json: {e}")
     return scheduled_events
 
-def save_scheduled_events():
+def save_scheduled_events(event_id: Optional[str] = None):
     """Save scheduled events to local JSON and trigger background Supabase synchronization."""
     import json
     import os
@@ -803,7 +803,7 @@ def save_scheduled_events():
     from core.config import BASE_DIR
     try:
         data_to_save = {}
-        for event_id, event_data in scheduled_events.items():
+        for ev_id, ev_data in scheduled_events.items():
             event_copy = event_data.copy()
             if 'datetime' in event_copy and isinstance(event_copy['datetime'], datetime.datetime):
                 event_copy['datetime'] = event_copy['datetime'].isoformat()
@@ -815,7 +815,7 @@ def save_scheduled_events():
                 event_copy['judge'] = event_copy['judge'].id
             if 'recorder' in event_copy and hasattr(event_copy['recorder'], 'id'):
                 event_copy['recorder'] = event_copy['recorder'].id
-            data_to_save[event_id] = event_copy
+            data_to_save[ev_id] = event_copy
         path = os.path.join(BASE_DIR, 'scheduled_events.json')
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(data_to_save, f, indent=4, ensure_ascii=False)
@@ -825,13 +825,11 @@ def save_scheduled_events():
             from core.database import save_event_to_supabase, supabase_client
             if supabase_client:
                 loop = asyncio.get_running_loop()
-                async def _bg_save_all():
-                    for ev_id, ev_data in list(scheduled_events.items()):
-                        try:
-                            await save_event_to_supabase(ev_id, ev_data)
-                        except Exception:
-                            pass
-                loop.create_task(_bg_save_all())
+                if event_id and event_id in scheduled_events:
+                    loop.create_task(save_event_to_supabase(event_id, scheduled_events[event_id]))
+                elif not event_id and scheduled_events:
+                    latest_id = list(scheduled_events.keys())[-1]
+                    loop.create_task(save_event_to_supabase(latest_id, scheduled_events[latest_id]))
         except Exception:
             pass
     except Exception as e:

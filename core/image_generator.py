@@ -208,6 +208,8 @@ async def tournament_autocomplete(
         tournaments = load_guild_tournaments(interaction.guild_id)
         choices = []
         for t_id, t_cfg in tournaments.items():
+            if "(" in t_id and "[" in t_id:
+                continue
             name = t_cfg.get('name', t_id)
             if current.lower() in name.lower() or current.lower() in t_id.lower():
                 choices.append(app_commands.Choice(name=name, value=t_id))

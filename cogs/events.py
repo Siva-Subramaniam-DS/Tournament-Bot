@@ -590,237 +590,254 @@ class Events(commands.Cog):
         round_label = round.value if isinstance(round, app_commands.Choice) else str(round)
         group_label = group.value if group and isinstance(group, app_commands.Choice) else None
         
-        scheduled_events[event_id] = {
-            'guild_id': interaction.guild.id if interaction.guild else None,
-            'title': f"Round {round_label} Match",
-            'datetime': event_datetime,
-            'time_str': time_info['utc_time'],
-            'date_str': f"{date:02d}/{month:02d}",
-            'round': round_label,
-            'group': group_label,
-            'minutes_left': time_info['minutes_remaining'],
-            'tournament': tournament,
-            'mode': None,
-            'judge': judge,
-            'recorder': recorder,
-            'remarks': remarks,
-            'channel_id': interaction.channel.id,
-            'team1_captain': team_1_captain,
-            'team2_captain': team_2_captain,
-            'team1_name': team_1_name,
-            'team2_name': team_2_name
-        }
-        save_scheduled_events()
+        # Resolve tournament configurations (id, name, mode, game)
+        t_configs = load_guild_tournaments(interaction.guild_id) if interaction.guild_id else {}
+        clean_t_id = tournament.strip().lower()
+        t_data_hint = t_configs.get(clean_t_id, {})
+        if not t_data_hint:
+            for tid, cfg in t_configs.items():
+                if cfg.get('name', '').strip().lower() == clean_t_id or tid.strip().lower() == clean_t_id:
+                    t_data_hint = cfg
+                    clean_t_id = tid
+                    break
 
-        if judge:
-            add_judge_assignment(judge.id, event_id)
-            try:
-                await interaction.channel.set_permissions(
-                    judge,
-                    read_messages=True, send_messages=True, view_channel=True,
-                    embed_links=True, attach_files=True, read_message_history=True
-                )
-                j_emoji = get_staff_emoji(interaction.guild, "judge")
-                await interaction.channel.send(content=f"{judge.mention} assigned as **judge** {j_emoji}")
-            except Exception as e:
-                print(f"Error setting judge channel permissions: {e}")
+        mode = t_data_hint.get('mode')
+        game_hint = t_data_hint.get('game') or t_data_hint.get('name') or tournament
+        tournament_display = t_data_hint.get('name') or tournament
 
-        if recorder:
-            try:
-                await interaction.channel.set_permissions(
-                    recorder,
-                    read_messages=True, send_messages=True, view_channel=True,
-                    embed_links=True, attach_files=True, read_message_history=True
-                )
-                r_emoji = get_staff_emoji(interaction.guild, "recorder")
-                await interaction.channel.send(content=f"{recorder.mention} assigned as **recorder** {r_emoji}")
-            except Exception as e:
-                print(f"Error setting recorder channel permissions: {e}")
-
-        asyncio.create_task(sheetdb_post("Events", {
-            "Guild_ID":          str(interaction.guild.id) if interaction.guild else "",
-            "Timestamp":         datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-            "Event_ID":          event_id,
-            "Tournament":        tournament,
-            "Round":             round_label,
-            "Group":             group_label or "",
-            "Date":              f"{date:02d}/{month:02d}",
-            "UTC_Time":          time_info['utc_time'],
-            "Team1_Captain_ID":  str(team_1_captain.id),
-            "Team1_Captain_Name": team_1_name if team_1_name else team_1_captain.name,
-            "Team2_Captain_ID":  str(team_2_captain.id),
-            "Team2_Captain_Name": team_2_name if team_2_name else team_2_captain.name,
-            "Judge_ID":          str(judge.id) if judge else "",
-            "Judge_Name":        judge.name if judge else "",
-            "Recorder_ID":       str(recorder.id) if recorder else "",
-            "Recorder_Name":     recorder.name if recorder else "",
-            "Remarks":           remarks or "",
-            "Channel_ID":        str(interaction.channel.id),
-            "Status":            "Scheduled",
-            "Created_By_ID":     str(interaction.user.id),
-            "Created_By_Name":   interaction.user.name
-        }))
-        
-        game_hint = None
-        if tournament and interaction.guild_id:
-            t_configs = load_guild_tournaments(interaction.guild_id)
-            t_data_hint = t_configs.get(tournament.lower(), {})
-            game_hint = t_data_hint.get('game') or t_data_hint.get('name') or t_data_hint.get('mode') or tournament
-            
-        template_image = get_random_template(game_or_mode=game_hint)
-        poster_image = None
-        
-        if template_image:
-            try:
-                t1_poster = team_1_name if team_1_name else team_1_captain.name
-                t2_poster = team_2_name if team_2_name else team_2_captain.name
-                cfg = get_guild_config(interaction.guild.id) if interaction.guild else {}
-                org_name = cfg.get('organization_name') or (interaction.guild.name if interaction.guild else "Tournament Organizer")
-                server_logo = cfg.get('server_logo_path')
-                
-                poster_image = await asyncio.to_thread(
-                    create_event_poster,
-                    template_image, 
-                    round_label, 
-                    t1_poster, 
-                    t2_poster, 
-                    time_info['utc_time_simple'],
-                    f"{date:02d}/{month:02d}/{current_year}",
-                    server_name=org_name,
-                    server_logo_path=server_logo
-                )
-                if poster_image:
-                    scheduled_events[event_id]['poster_path'] = poster_image
-                    save_scheduled_events()
-            except Exception as e:
-                print(f"Error creating poster: {e}")
-
-        # Scheduled event in Discord
         try:
-            event_datetime_aware = event_datetime.replace(tzinfo=datetime.timezone.utc)
-            now_aware = datetime.datetime.now(datetime.timezone.utc)
-            if event_datetime_aware <= now_aware:
-                event_datetime_aware = now_aware + datetime.timedelta(seconds=15)
-            end_time_aware = event_datetime_aware + datetime.timedelta(minutes=45)
+            scheduled_events[event_id] = {
+                'guild_id': interaction.guild.id if interaction.guild else None,
+                'title': f"Round {round_label} Match",
+                'datetime': event_datetime,
+                'time_str': time_info['utc_time'],
+                'date_str': f"{date:02d}/{month:02d}",
+                'round': round_label,
+                'group': group_label,
+                'minutes_left': time_info['minutes_remaining'],
+                'tournament': clean_t_id,
+                'tournament_id': clean_t_id,
+                'mode': mode,
+                'game': game_hint,
+                'judge': judge,
+                'recorder': recorder,
+                'remarks': remarks,
+                'channel_id': interaction.channel.id,
+                'team1_captain': team_1_captain,
+                'team2_captain': team_2_captain,
+                'team1_name': team_1_name,
+                'team2_name': team_2_name
+            }
+            save_scheduled_events(event_id)
+
+            if judge:
+                add_judge_assignment(judge.id, event_id)
+                try:
+                    await interaction.channel.set_permissions(
+                        judge,
+                        read_messages=True, send_messages=True, view_channel=True,
+                        embed_links=True, attach_files=True, read_message_history=True
+                    )
+                    j_emoji = get_staff_emoji(interaction.guild, "judge")
+                    await interaction.channel.send(content=f"{judge.mention} assigned as **judge** {j_emoji}")
+                except Exception as e:
+                    print(f"Error setting judge channel permissions: {e}")
+
+            if recorder:
+                try:
+                    await interaction.channel.set_permissions(
+                        recorder,
+                        read_messages=True, send_messages=True, view_channel=True,
+                        embed_links=True, attach_files=True, read_message_history=True
+                    )
+                    r_emoji = get_staff_emoji(interaction.guild, "recorder")
+                    await interaction.channel.send(content=f"{recorder.mention} assigned as **recorder** {r_emoji}")
+                except Exception as e:
+                    print(f"Error setting recorder channel permissions: {e}")
+
+            asyncio.create_task(sheetdb_post("Events", {
+                "Guild_ID":          str(interaction.guild.id) if interaction.guild else "",
+                "Timestamp":         datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                "Event_ID":          event_id,
+                "Tournament":        tournament_display,
+                "Round":             round_label,
+                "Group":             group_label or "",
+                "Date":              f"{date:02d}/{month:02d}",
+                "UTC_Time":          time_info['utc_time'],
+                "Team1_Captain_ID":  str(team_1_captain.id),
+                "Team1_Captain_Name": team_1_name if team_1_name else team_1_captain.name,
+                "Team2_Captain_ID":  str(team_2_captain.id),
+                "Team2_Captain_Name": team_2_name if team_2_name else team_2_captain.name,
+                "Judge_ID":          str(judge.id) if judge else "",
+                "Judge_Name":        judge.name if judge else "",
+                "Recorder_ID":       str(recorder.id) if recorder else "",
+                "Recorder_Name":     recorder.name if recorder else "",
+                "Remarks":           remarks or "",
+                "Channel_ID":        str(interaction.channel.id),
+                "Status":            "Scheduled",
+                "Created_By_ID":     str(interaction.user.id),
+                "Created_By_Name":   interaction.user.name
+            }))
             
+            template_image = get_random_template(game_or_mode=game_hint)
+            poster_image = None
+            
+            if template_image:
+                try:
+                    t1_poster = team_1_name if team_1_name else team_1_captain.name
+                    t2_poster = team_2_name if team_2_name else team_2_captain.name
+                    cfg = get_guild_config(interaction.guild.id) if interaction.guild else {}
+                    org_name = cfg.get('organization_name') or (interaction.guild.name if interaction.guild else "Tournament Organizer")
+                    server_logo = cfg.get('server_logo_path')
+                    
+                    poster_image = await asyncio.to_thread(
+                        create_event_poster,
+                        template_image, 
+                        round_label, 
+                        t1_poster, 
+                        t2_poster, 
+                        time_info['utc_time_simple'],
+                        f"{date:02d}/{month:02d}/{current_year}",
+                        server_name=org_name,
+                        server_logo_path=server_logo
+                    )
+                    if poster_image:
+                        scheduled_events[event_id]['poster_path'] = poster_image
+                        save_scheduled_events(event_id)
+                except Exception as e:
+                    print(f"Error creating poster: {e}")
+
+            # Scheduled event in Discord
+            try:
+                event_datetime_aware = event_datetime.replace(tzinfo=datetime.timezone.utc)
+                now_aware = datetime.datetime.now(datetime.timezone.utc)
+                if event_datetime_aware <= now_aware:
+                    event_datetime_aware = now_aware + datetime.timedelta(seconds=15)
+                end_time_aware = event_datetime_aware + datetime.timedelta(minutes=45)
+                
+                t1_disp = team_1_name if team_1_name else team_1_captain.name
+                t2_disp = team_2_name if team_2_name else team_2_captain.name
+                
+                image_bytes = None
+                if poster_image and os.path.exists(poster_image):
+                    with open(poster_image, 'rb') as img_f:
+                        image_bytes = img_f.read()
+                        
+                scheduled_event = await interaction.guild.create_scheduled_event(
+                    name=f"{t1_disp} vs {t2_disp}",
+                    description=f"🏆 Tournament: {tournament_display}\n🔄 Round: {format_round_heading(round_label)}",
+                    start_time=event_datetime_aware,
+                    end_time=end_time_aware,
+                    entity_type=discord.EntityType.external,
+                    privacy_level=discord.PrivacyLevel.guild_only,
+                    location=interaction.guild.name,
+                    image=image_bytes
+                )
+                if scheduled_event:
+                    scheduled_events[event_id]['scheduled_event_id'] = scheduled_event.id
+                    save_scheduled_events(event_id)
+            except Exception as e:
+                print(f"Failed to create Discord scheduled event: {e}")
+
             t1_disp = team_1_name if team_1_name else team_1_captain.name
             t2_disp = team_2_name if team_2_name else team_2_captain.name
-            
-            image_bytes = None
-            if poster_image and os.path.exists(poster_image):
-                with open(poster_image, 'rb') as img_f:
-                    image_bytes = img_f.read()
-                    
-            scheduled_event = await interaction.guild.create_scheduled_event(
-                name=f"{t1_disp} vs {t2_disp}",
-                description=f"🏆 Tournament: {tournament}\n🔄 Round: {format_round_heading(round_label)}",
-                start_time=event_datetime_aware,
-                end_time=end_time_aware,
-                entity_type=discord.EntityType.external,
-                privacy_level=discord.PrivacyLevel.guild_only,
-                location=interaction.guild.name,
-                image=image_bytes
+            embed = discord.Embed(
+                title=f"🏆 {t1_disp} 🆚 {t2_disp}",
+                color=discord.Color.blue(),
+                timestamp=discord.utils.utcnow()
             )
-            if scheduled_event:
-                scheduled_events[event_id]['scheduled_event_id'] = scheduled_event.id
-                save_scheduled_events()
-        except Exception as e:
-            print(f"Failed to create Discord scheduled event: {e}")
+            thumb_file, is_local_thumb = await resolve_embed_thumbnail(interaction.guild_id, embed, fallback_to_captain_avatar=team_1_captain)
 
-        t1_disp = team_1_name if team_1_name else team_1_captain.name
-        t2_disp = team_2_name if team_2_name else team_2_captain.name
-        embed = discord.Embed(
-            title=f"🏆 {t1_disp} 🆚 {t2_disp}",
-            color=discord.Color.blue(),
-            timestamp=discord.utils.utcnow()
-        )
-        thumb_file, is_local_thumb = await resolve_embed_thumbnail(interaction.guild_id, embed, fallback_to_captain_avatar=team_1_captain)
-
-        timestamp = int(event_datetime.replace(tzinfo=datetime.timezone.utc).timestamp())
-        event_details = f"**Tournament:** {tournament}\n"
-        if mode: event_details += f"**Mode:** {mode}\n"
-        event_details += f"**UTC Time:** {time_info['utc_time']}\n"
-        event_details += f"**Local Time:** <t:{timestamp}:F> (<t:{timestamp}:R>)\n"
-        event_details += f"**Round:** {format_round_heading(round_label)}\n"
-        if group_label: event_details += f"**Group:** {group_label}\n"
-        event_details += f"**Channel:** {interaction.channel.mention}"
-        
-        embed.add_field(name="📋 Event Details", value=event_details, inline=False)
-        embed.add_field(name="\u200b", value="\u200b", inline=False)
-        
-        captains_text = f"**Captains**\n"
-        captains_text += f"- Team1 Captain: {team_1_captain.mention} ({team_1_captain.name})" + (f" (Team: **{team_1_name}**)\n" if team_1_name else "\n")
-        captains_text += f"- Team2 Captain: {team_2_captain.mention} ({team_2_captain.name})" + (f" (Team: **{team_2_name}**)" if team_2_name else "")
-        embed.add_field(name="👑 Team Captains", value=captains_text, inline=False)
-        embed.add_field(name="\u200b", value="\u200b", inline=False)
-
-        if judge or recorder:
-            staff_text = ""
-            if judge:
-                staff_text += f"- **Judge:** {judge.mention}\n"
-            if recorder:
-                staff_text += f"- **Recorder:** {recorder.mention}\n"
-            embed.add_field(name="⚖️ Assigned Staff", value=staff_text.strip(), inline=False)
-            embed.add_field(name="\u200b", value="\u200b", inline=False)
-
-        if remarks:
-            embed.add_field(name="💬 Remarks", value=remarks, inline=False)
-            embed.add_field(name="\u200b", value="\u200b", inline=False)
-
-        embed.add_field(name="👤 Created By", value=interaction.user.mention, inline=False)
-        
-        files_to_send = []
-        if poster_image and os.path.exists(poster_image):
-            try:
-                with open(poster_image, 'rb') as f:
-                    poster_data = f.read()
-                file_obj = discord.File(fp=io.BytesIO(poster_data), filename="event_poster.png")
-                embed.set_image(url="attachment://event_poster.png")
-                files_to_send.append(file_obj)
-            except Exception as e:
-                print(f"Error loading poster image: {e}")
-                
-        if is_local_thumb and thumb_file and not poster_image:
-            files_to_send.append(thumb_file)
-
-        embed.set_footer(text=f"Powered by • {ORGANIZATION_NAME}")
-        
-        take_schedule_view = TakeScheduleButton(event_id, team_1_captain, team_2_captain, interaction.channel)
-        await interaction.followup.send("✅ Event created and posted to both channels! Reminder will ping captains 10 minutes before start.", ephemeral=False)
-        
-        try:
-            schedule_channel = get_tournament_schedule_channel(interaction.guild, tournament) or interaction.channel
-            staff_role_id = ROLE_IDS.get('staff') or ROLE_IDS.get('judge')
-            staff_ping = f"<@&{staff_role_id}>" if staff_role_id else "@Staff"
+            timestamp = int(event_datetime.replace(tzinfo=datetime.timezone.utc).timestamp())
+            event_details = f"**Tournament:** {tournament_display}\n"
+            if mode: event_details += f"**Mode:** {mode}\n"
+            event_details += f"**UTC Time:** {time_info['utc_time']}\n"
+            event_details += f"**Local Time:** <t:{timestamp}:F> (<t:{timestamp}:R>)\n"
+            event_details += f"**Round:** {format_round_heading(round_label)}\n"
+            if group_label: event_details += f"**Group:** {group_label}\n"
+            event_details += f"**Channel:** {interaction.channel.mention}"
             
-            if files_to_send:
-                schedule_files = []
-                for file_obj in files_to_send:
-                    file_obj.fp.seek(0)
-                    schedule_files.append(discord.File(fp=io.BytesIO(file_obj.fp.read()), filename=file_obj.filename))
-                schedule_message = await schedule_channel.send(content=staff_ping, embed=embed, files=schedule_files, view=take_schedule_view)
-            else:
-                schedule_message = await schedule_channel.send(content=staff_ping, embed=embed, view=take_schedule_view)
+            embed.add_field(name="📋 Event Details", value=event_details, inline=False)
+            embed.add_field(name="\u200b", value="\u200b", inline=False)
+            
+            captains_text = f"**Captains**\n"
+            captains_text += f"- Team1 Captain: {team_1_captain.mention} ({team_1_captain.name})" + (f" (Team: **{team_1_name}**)\n" if team_1_name else "\n")
+            captains_text += f"- Team2 Captain: {team_2_captain.mention} ({team_2_captain.name})" + (f" (Team: **{team_2_name}**)" if team_2_name else "")
+            embed.add_field(name="👑 Team Captains", value=captains_text, inline=False)
+            embed.add_field(name="\u200b", value="\u200b", inline=False)
+
+            if judge or recorder:
+                staff_text = ""
+                if judge:
+                    staff_text += f"- **Judge:** {judge.mention}\n"
+                if recorder:
+                    staff_text += f"- **Recorder:** {recorder.mention}\n"
+                embed.add_field(name="⚖️ Assigned Staff", value=staff_text.strip(), inline=False)
+                embed.add_field(name="\u200b", value="\u200b", inline=False)
+
+            if remarks:
+                embed.add_field(name="💬 Remarks", value=remarks, inline=False)
+                embed.add_field(name="\u200b", value="\u200b", inline=False)
+
+            embed.add_field(name="👤 Created By", value=interaction.user.mention, inline=False)
+            
+            files_to_send = []
+            if poster_image and os.path.exists(poster_image):
+                try:
+                    with open(poster_image, 'rb') as f:
+                        poster_data = f.read()
+                    file_obj = discord.File(fp=io.BytesIO(poster_data), filename="event_poster.png")
+                    embed.set_image(url="attachment://event_poster.png")
+                    files_to_send.append(file_obj)
+                except Exception as e:
+                    print(f"Error loading poster image: {e}")
+                    
+            if is_local_thumb and thumb_file and not poster_image:
+                files_to_send.append(thumb_file)
+
+            embed.set_footer(text=f"Powered by • {ORGANIZATION_NAME}")
+            
+            take_schedule_view = TakeScheduleButton(event_id, team_1_captain, team_2_captain, interaction.channel)
+            await interaction.followup.send("✅ Event created and posted to both channels! Reminder will ping captains 10 minutes before start.", ephemeral=False)
+            
+            try:
+                schedule_channel = get_tournament_schedule_channel(interaction.guild, clean_t_id) or interaction.channel
+                staff_role_id = ROLE_IDS.get('staff') or ROLE_IDS.get('judge')
+                staff_ping = f"<@&{staff_role_id}>" if staff_role_id else "@Staff"
                 
-            scheduled_events[event_id]['schedule_message_id'] = schedule_message.id
-            scheduled_events[event_id]['schedule_channel_id'] = schedule_channel.id
-            save_scheduled_events()
-        except Exception as e:
-            print(f"Error posting in schedule channel: {e}")
+                if files_to_send:
+                    schedule_files = []
+                    for file_obj in files_to_send:
+                        file_obj.fp.seek(0)
+                        schedule_files.append(discord.File(fp=io.BytesIO(file_obj.fp.read()), filename=file_obj.filename))
+                    schedule_message = await schedule_channel.send(content=staff_ping, embed=embed, files=schedule_files, view=take_schedule_view)
+                else:
+                    schedule_message = await schedule_channel.send(content=staff_ping, embed=embed, view=take_schedule_view)
+                    
+                scheduled_events[event_id]['schedule_message_id'] = schedule_message.id
+                scheduled_events[event_id]['schedule_channel_id'] = schedule_channel.id
+                save_scheduled_events(event_id)
+            except Exception as e:
+                print(f"Error posting in schedule channel: {e}")
 
-        try:
-            if files_to_send:
-                current_files = []
-                for file_obj in files_to_send:
-                    file_obj.fp.seek(0)
-                    current_files.append(discord.File(fp=io.BytesIO(file_obj.fp.read()), filename=file_obj.filename))
-                await interaction.channel.send(embed=embed, files=current_files)
-            else:
-                await interaction.channel.send(embed=embed)
+            try:
+                if files_to_send:
+                    current_files = []
+                    for file_obj in files_to_send:
+                        file_obj.fp.seek(0)
+                        current_files.append(discord.File(fp=io.BytesIO(file_obj.fp.read()), filename=file_obj.filename))
+                    await interaction.channel.send(embed=embed, files=current_files)
+                else:
+                    await interaction.channel.send(embed=embed)
 
-            await schedule_ten_minute_reminder(event_id, team_1_captain, team_2_captain, None, interaction.channel, event_datetime)
+                await schedule_ten_minute_reminder(event_id, team_1_captain, team_2_captain, None, interaction.channel, event_datetime)
+            except Exception as e:
+                print(f"Error posting in current channel: {e}")
+
         except Exception as e:
-            print(f"Error posting in current channel: {e}")
+            print(f"Unhandled error in event_create: {e}")
+            import traceback
+            await interaction.followup.send(f"❌ An error occurred while creating the event: {e}", ephemeral=False)
 
     @app_commands.command(name="event-result", description="Add event results (Staff/Judge/Recorder/Helper)")
     @app_commands.describe(
