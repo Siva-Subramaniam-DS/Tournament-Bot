@@ -41,6 +41,10 @@ EMOJI_IDS = {
     "loading": 1545821237354172477,
     "wrong": 1545821776037027870,
     "dice": 1546005941722554418,
+
+    # Navigation / Button emojis
+    "left_side_button": 1546366579573526639,
+    "right_side_button": 1546366598355623999,
 }
 
 # Direct Discord emoji format strings (Application Emojis uploaded in Discord Dev Portal)
@@ -80,7 +84,15 @@ EMOJIS = {
     "loading": "<a:Loading:1545821237354172477>",
     "wrong": "<:Wrong:1545821776037027870>",
     "dice": "<a:Dice:1546005941722554418>",
+
+    # Navigation / Button emojis
+    "left_side_button": "<a:LeftSideButton:1546366579573526639>",
+    "right_side_button": "<a:RightSideButton:1546366598355623999>",
 }
+
+# PartialEmoji instances for direct use in discord.ui.Button
+LEFT_BUTTON_EMOJI = discord.PartialEmoji(name="LeftSideButton", id=1546366579573526639, animated=True)
+RIGHT_BUTTON_EMOJI = discord.PartialEmoji(name="RightSideButton", id=1546366598355623999, animated=True)
 
 # Dynamic cache for real resolved Discord emoji strings
 EMOJI_CACHE = {}

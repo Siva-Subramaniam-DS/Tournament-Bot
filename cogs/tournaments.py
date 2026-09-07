@@ -39,7 +39,7 @@ from core.database import (
     update_results_embed_with_links, save_scheduled_deadline, delete_scheduled_deadline,
     fetch_challonge_open_matches, fetch_google_sheet_captains, extract_discord_id_from_text
 )
-from core.emojis import EMOJIS
+from core.emojis import EMOJIS, LEFT_BUTTON_EMOJI, RIGHT_BUTTON_EMOJI
 
 
 
@@ -781,13 +781,13 @@ class LinkMissingView(discord.ui.View):
         self.current_page = 0
         await self.update_page(interaction)
 
-    @discord.ui.button(label="◀️", style=discord.ButtonStyle.primary)
+    @discord.ui.button(emoji=LEFT_BUTTON_EMOJI, style=discord.ButtonStyle.primary)
     async def prev_page(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.current_page > 0:
             self.current_page -= 1
         await self.update_page(interaction)
 
-    @discord.ui.button(label="▶️", style=discord.ButtonStyle.primary)
+    @discord.ui.button(emoji=RIGHT_BUTTON_EMOJI, style=discord.ButtonStyle.primary)
     async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.current_page < len(self.pages) - 1:
             self.current_page += 1

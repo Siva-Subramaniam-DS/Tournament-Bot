@@ -26,7 +26,7 @@ from core.database import (
     get_active_tournament_config, log_bot_activity, sheetdb_post,
     get_guild_staff_stats, save_guild_staff_stats, tournament_autocomplete
 )
-from core.emojis import EMOJIS, get_staff_emoji
+from core.emojis import EMOJIS, get_staff_emoji, LEFT_BUTTON_EMOJI, RIGHT_BUTTON_EMOJI
 
 
 
@@ -1146,7 +1146,7 @@ class PendingSchedulesPaginationView(discord.ui.View):
         embed.set_footer(text=f"MWTS - {self.org_name} | Page {self.current_page + 1}/{self.total_pages} • Today at {now_time}")
         return embed
 
-    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary, emoji="◀", row=0)
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary, emoji=LEFT_BUTTON_EMOJI, row=0)
     async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.interaction.user.id:
             await interaction.response.send_message("❌ This pagination view is for the command caller only.", ephemeral=True)
@@ -1156,7 +1156,7 @@ class PendingSchedulesPaginationView(discord.ui.View):
             self._update_button_states()
             await interaction.response.edit_message(embed=self.create_embed(), view=self)
 
-    @discord.ui.button(label="Next", style=discord.ButtonStyle.primary, emoji="▶", row=0)
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.primary, emoji=RIGHT_BUTTON_EMOJI, row=0)
     async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.interaction.user.id:
             await interaction.response.send_message("❌ This pagination view is for the command caller only.", ephemeral=True)
@@ -1330,6 +1330,31 @@ async def staff_pending_schedules(
 # AVAILABLE EVENTS INTERACTIVE CLAIM VIEW
 # ===========================================================================================
 
+def _add_chunked_embed_fields(embed: discord.Embed, base_name: str, lines: list, max_chars: int = 1000):
+    chunks = []
+    current_chunk = []
+    current_len = 0
+    for line in lines:
+        line_len = len(line) + 2
+        if current_chunk and (current_len + line_len > max_chars):
+            chunks.append("\n\n".join(current_chunk))
+            current_chunk = [line]
+            current_len = len(line)
+        else:
+            current_chunk.append(line)
+            current_len += line_len
+    if current_chunk:
+        chunks.append("\n\n".join(current_chunk))
+
+    if not chunks:
+        embed.add_field(name=base_name, value="No matches available.", inline=False)
+    elif len(chunks) == 1:
+        embed.add_field(name=base_name, value=chunks[0], inline=False)
+    else:
+        for idx, chunk in enumerate(chunks, 1):
+            embed.add_field(name=f"{base_name} (Part {idx})", value=chunk, inline=False)
+
+
 class AvailableEventsClaimSelect(discord.ui.Select):
     def __init__(self, unassigned_events: list, guild: discord.Guild):
         options = []
@@ -1481,7 +1506,7 @@ class AvailableEventsClaimSelect(discord.ui.Select):
                 else:
                     line = f"{idx}. {m_info} • {r_lbl} • {t_str}, {d_str}"
                 new_lines.append(line)
-            new_embed.add_field(name=f"Available ({len(remaining)})", value="\n\n".join(new_lines), inline=False)
+            _add_chunked_embed_fields(new_embed, f"Available ({len(remaining)})", new_lines)
             new_embed.set_footer(text="Select an open match from the dropdown below to claim it as Judge.")
             new_view = AvailableEventsClaimView(remaining, interaction.guild)
             await interaction.response.edit_message(embed=new_embed, view=new_view)
@@ -1594,6 +1619,7 @@ class Staff(commands.Cog):
             print(f"Error logging staff-update: {log_err}")
 
     async def _handle_available_events(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=False)
         try:
             is_owner = interaction.user.id == BOT_OWNER_ID if interaction.user else False
             is_admin = interaction.guild and interaction.user.guild_permissions.administrator if (interaction.user and interaction.guild) else False
@@ -1604,7 +1630,7 @@ class Staff(commands.Cog):
             staff_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["staff"]) if interaction.user else None
 
             if not (head_organizer_role or helper_team_role or judge_role or recorder_role or staff_role or is_owner or is_admin):
-                await interaction.response.send_message("❌ You need Organizer, Helper, Judge, or Staff role to view unassigned events.", ephemeral=False)
+                await interaction.followup.send("❌ You need Organizer, Helper, Judge, or Staff role to view unassigned events.", ephemeral=False)
                 return
 
             unassigned = []
@@ -1617,7 +1643,7 @@ class Staff(commands.Cog):
                     unassigned.append((event_id, data))
 
             if not unassigned:
-                await interaction.response.send_message("✅ All events currently have a judge assigned.", ephemeral=False)
+                await interaction.followup.send("✅ All events currently have a judge assigned.", ephemeral=False)
                 return
 
             try:
@@ -1658,26 +1684,24 @@ class Staff(commands.Cog):
                     line = f"{idx}. {match_info} • {round_label} • {time_str}, {date_str}"
                 lines.append(line)
 
-            embed.add_field(name=f"Available ({len(unassigned)})", value="\n\n".join(lines), inline=False)
+            _add_chunked_embed_fields(embed, f"Available ({len(unassigned)})", lines)
             embed.set_footer(text="Select an open match from the dropdown below to claim it as Judge instantly.")
             
             view = AvailableEventsClaimView(unassigned, interaction.guild)
-            await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
+            await interaction.followup.send(embed=embed, view=view, ephemeral=False)
         except Exception as e:
             print(f"Error in available_events: {e}")
-            await interaction.response.send_message("❌ An error occurred while fetching available events.", ephemeral=False)
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ An error occurred while fetching available events.", ephemeral=False)
+            else:
+                await interaction.response.send_message("❌ An error occurred while fetching available events.", ephemeral=False)
 
     @app_commands.command(name="available_events", description="List events without a judge assigned with interactive claim buttons (Judges/Organizers)")
     @with_guild_context
     async def available_events_cmd(self, interaction: discord.Interaction):
         await self._handle_available_events(interaction)
 
-    @app_commands.command(name="unassigned_schedule", description="List all scheduled matches needing a judge with interactive claim menu")
-    @with_guild_context
-    async def unassigned_schedule_cmd(self, interaction: discord.Interaction):
-        await self._handle_available_events(interaction)
-
-    @app_commands.command(name="unassigned", description="Shortcut to list unassigned tournament matches")
+    @app_commands.command(name="unassigned", description="List all scheduled matches needing a judge with interactive claim menu")
     @with_guild_context
     async def unassigned_cmd(self, interaction: discord.Interaction):
         await self._handle_available_events(interaction)

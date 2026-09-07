@@ -291,6 +291,79 @@ async def update_results_embed_with_links(guild: discord.Guild, ev_data: dict):
     except Exception as e:
         print(f"Error updating result embed with links: {e}")
 
+async def update_results_message_embed(guild: discord.Guild, ev_data: dict) -> bool:
+    res_msg_id = ev_data.get('results_message_id')
+    res_chan_id = ev_data.get('results_channel_id')
+    if not res_msg_id or not res_chan_id or not guild:
+        return False
+    try:
+        channel = guild.get_channel(int(res_chan_id))
+        if not channel:
+            channel = await guild.fetch_channel(int(res_chan_id))
+        msg = await channel.fetch_message(int(res_msg_id))
+        if not msg or not msg.embeds:
+            return False
+
+        orig_embed = msg.embeds[0]
+        w_name = ev_data.get('team1_name', 'Unknown')
+        l_name = ev_data.get('team2_name', 'Unknown')
+        w_score = ev_data.get('winner_score', 0)
+        l_score = ev_data.get('loser_score', 0)
+        dq_status = ev_data.get('disqualified')
+        remarks = ev_data.get('remarks', 'ggwp')
+
+        w_disp = f"{w_name} (Disqualified)" if dq_status in ("Winner", "Both") else w_name
+        l_disp = f"{l_name} (Disqualified)" if dq_status in ("Loser", "Both") else l_name
+
+        winner_badge = EMOJIS.get('winner', '🏆')
+        orig_embed.title = f"{winner_badge} {w_disp} 🆚 {l_disp}"
+
+        judge_val = ev_data.get('judge')
+        recorder_val = ev_data.get('recorder')
+
+        judge_mention = getattr(judge_val, 'mention', None) or (f"<@{judge_val}>" if str(judge_val).isdigit() else str(judge_val or "Unknown"))
+        judge_name = getattr(judge_val, 'name', None) or (ev_data.get('result_judge') or str(judge_val or "Unknown"))
+        staff_text = f"**Staffs**\n▪ {EMOJIS.get('judge', '⚖️')} Judge: {judge_mention}" + (f" ({judge_name})" if judge_name and judge_name not in judge_mention else "")
+
+        if recorder_val:
+            rec_mention = getattr(recorder_val, 'mention', None) or (f"<@{recorder_val}>" if str(recorder_val).isdigit() else str(recorder_val))
+            rec_name = getattr(recorder_val, 'name', None) or str(recorder_val)
+            staff_text += f"\n▪ {EMOJIS.get('recorder', '📹')} Recorder: {rec_mention}" + (f" ({rec_name})" if rec_name and rec_name not in rec_mention else "")
+
+        t1_cap = ev_data.get('team1_captain')
+        t2_cap = ev_data.get('team2_captain')
+        t1_cap_mention = getattr(t1_cap, 'mention', None) or (f"<@{t1_cap}>" if str(t1_cap).isdigit() else f"**{w_name}**")
+        t2_cap_mention = getattr(t2_cap, 'mention', None) or (f"<@{t2_cap}>" if str(t2_cap).isdigit() else f"**{l_name}**")
+        if dq_status in ("Winner", "Both"): t1_cap_mention += " (Disqualified)"
+        if dq_status in ("Loser", "Both"):  t2_cap_mention += " (Disqualified)"
+
+        captains_text = f"**Captains**\n- Team1 Captain: {t1_cap_mention}\n- Team2 Captain: {t2_cap_mention}"
+        results_text = f"**Results**\n{winner_badge} {w_name} ({w_score}) {EMOJIS.get('vs', 'vs')} ({l_score}) {l_name} {EMOJIS.get('skull', '💀')}"
+
+        ss_field = None
+        rec_field = None
+        for f in orig_embed.fields:
+            if "Screenshots of Result" in (f.value or "") or "Screenshots" in (f.name or ""):
+                ss_field = f
+            elif "Recordings / VODs" in (f.name or "") or "Recording Link" in (f.name or ""):
+                rec_field = f
+
+        orig_embed.clear_fields()
+        orig_embed.add_field(name="", value=captains_text, inline=False)
+        orig_embed.add_field(name="", value=results_text, inline=False)
+        orig_embed.add_field(name="", value=staff_text, inline=False)
+        orig_embed.add_field(name="📝 Remarks", value=remarks, inline=False)
+        if ss_field:
+            orig_embed.add_field(name=ss_field.name, value=ss_field.value, inline=ss_field.inline)
+        if rec_field:
+            orig_embed.add_field(name=rec_field.name, value=rec_field.value, inline=rec_field.inline)
+
+        await msg.edit(embed=orig_embed)
+        return True
+    except Exception as e:
+        print(f"Error updating result message embed: {e}")
+        return False
+
 async def send_ten_minute_reminder(event_id: str, team1_captain: discord.Member, team2_captain: discord.Member, judge: Optional[discord.Member], event_channel: discord.TextChannel, match_time: datetime.datetime):
     try:
         if not event_channel:
@@ -1257,55 +1330,215 @@ class Events(commands.Cog):
         await interaction.response.send_message(embed=embed)
 
 
+    @app_commands.command(name="event-result-edit", description="Edit a previously posted match result (Head Organizer/Judge/Staff)")
+    @app_commands.describe(
+        match="Select the match to edit (type name or ID to search)",
+        winner="Updated winner member (optional)",
+        winner_team_name="Updated winner team name (optional)",
+        loser="Updated loser member (optional)",
+        loser_team_name="Updated loser team name (optional)",
+        winner_score="Updated winner score (optional)",
+        loser_score="Updated loser score (optional)",
+        remarks="Updated match remarks (optional)",
+        disqualified="Update disqualification status (optional)",
+        judge="Updated judge member (optional)",
+        recorder="Updated recorder member (optional)"
+    )
+    @app_commands.choices(
+        disqualified=[
+            app_commands.Choice(name="Winner Disqualified", value="Winner"),
+            app_commands.Choice(name="Loser Disqualified", value="Loser"),
+            app_commands.Choice(name="Both Disqualified (0:0)", value="Both"),
+            app_commands.Choice(name="None (Clear DQ)", value="None"),
+        ]
+    )
+    @app_commands.autocomplete(match=match_autocomplete)
+    @with_guild_context
+    async def event_result_edit_cmd(
+        self,
+        interaction: discord.Interaction,
+        match: str,
+        winner: discord.Member = None,
+        winner_team_name: str = None,
+        loser: discord.Member = None,
+        loser_team_name: str = None,
+        winner_score: int = None,
+        loser_score: int = None,
+        remarks: str = None,
+        disqualified: app_commands.Choice[str] = None,
+        judge: discord.Member = None,
+        recorder: discord.Member = None
+    ):
+        await handle_event_result_edit(
+            interaction, match, winner, winner_team_name, loser, loser_team_name,
+            winner_score, loser_score, remarks, disqualified, judge, recorder
+        )
+
+
+async def handle_event_result_edit(
+    interaction: discord.Interaction,
+    match: str,
+    winner: discord.Member = None,
+    winner_team_name: str = None,
+    loser: discord.Member = None,
+    loser_team_name: str = None,
+    winner_score: int = None,
+    loser_score: int = None,
+    remarks: str = None,
+    disqualified: app_commands.Choice[str] = None,
+    judge: discord.Member = None,
+    recorder: discord.Member = None
+):
+    await interaction.response.defer(ephemeral=False)
+    if not has_event_result_permission(interaction):
+        await interaction.followup.send("❌ You need **Head Organizer**, **Judge**, **Recorder**, or **Helper/Staff** role to edit match results.", ephemeral=False)
+        return
+
+    ev_id, ev_data = find_event_by_name_or_id(interaction.guild.id, match)
+    if not ev_id or not ev_data:
+        await interaction.followup.send("❌ Match not found. Please select from the autocomplete dropdown or provide a valid Match ID/Name.", ephemeral=False)
+        return
+
+    if not any([winner, winner_team_name, loser, loser_team_name, winner_score is not None, loser_score is not None, remarks, disqualified, judge, recorder]):
+        await interaction.followup.send("❌ Please provide at least one field to update.", ephemeral=False)
+        return
+
+    changes = []
+    if winner:
+        ev_data['team1_captain'] = winner.id
+        ev_data['team1_name'] = winner.display_name
+        changes.append(f"Winner: {winner.mention}")
+    if winner_team_name:
+        ev_data['team1_name'] = winner_team_name
+        changes.append(f"Winner Team: `{winner_team_name}`")
+    if loser:
+        ev_data['team2_captain'] = loser.id
+        ev_data['team2_name'] = loser.display_name
+        changes.append(f"Loser: {loser.mention}")
+    if loser_team_name:
+        ev_data['team2_name'] = loser_team_name
+        changes.append(f"Loser Team: `{loser_team_name}`")
+    if winner_score is not None:
+        ev_data['winner_score'] = winner_score
+        changes.append(f"Winner Score: `{winner_score}`")
+    if loser_score is not None:
+        ev_data['loser_score'] = loser_score
+        changes.append(f"Loser Score: `{loser_score}`")
+    if remarks:
+        ev_data['remarks'] = remarks
+        changes.append(f"Remarks: `{remarks}`")
+    if disqualified:
+        if disqualified.value == "None":
+            ev_data.pop('disqualified', None)
+            changes.append("Disqualified: `Cleared`")
+        else:
+            ev_data['disqualified'] = disqualified.value
+            changes.append(f"Disqualified: `{disqualified.name}`")
+
+    guild_id = interaction.guild.id
+    if judge:
+        old_judge = ev_data.get('judge')
+        ev_data['judge'] = judge
+        ev_data['result_judge'] = judge.name
+        changes.append(f"Judge: {judge.mention}")
+        if old_judge and getattr(old_judge, 'id', old_judge) != judge.id:
+            old_j_id = str(getattr(old_judge, 'id', old_judge))
+            stats = get_guild_staff_stats(guild_id)
+            if old_j_id in stats:
+                stats[old_j_id]['judge_count'] = max(0, stats[old_j_id].get('judge_count', 1) - 1)
+                save_guild_staff_stats(guild_id, stats)
+            update_staff_stats(judge, "judge")
+
+    if recorder:
+        old_rec = ev_data.get('recorder')
+        ev_data['recorder'] = recorder
+        changes.append(f"Recorder: {recorder.mention}")
+        if old_rec and getattr(old_rec, 'id', old_rec) != recorder.id:
+            old_r_id = str(getattr(old_rec, 'id', old_rec))
+            stats = get_guild_staff_stats(guild_id)
+            if old_r_id in stats:
+                stats[old_r_id]['recorder_count'] = max(0, stats[old_r_id].get('recorder_count', 1) - 1)
+                save_guild_staff_stats(guild_id, stats)
+            update_staff_stats(recorder, "recorder")
+
+    t1_n = ev_data.get('team1_name') or 'Team 1'
+    t2_n = ev_data.get('team2_name') or 'Team 2'
+    ev_data['match_name'] = f"{t1_n} vs {t2_n}"
+
+    save_scheduled_events()
+    asyncio.create_task(save_event_to_supabase(ev_id, ev_data))
+
+    embed_note = ""
+    try:
+        updated = await update_results_message_embed(interaction.guild, ev_data)
+        if updated:
+            embed_note = "\n✅ Result message in results channel was automatically updated!"
+    except Exception as e:
+        print(f"Error updating result embed in event_result_edit: {e}")
+
+    result_embed = discord.Embed(
+        title=f"✅ Match Result Edited — `{ev_id}`",
+        description=f"**Match:** {ev_data.get('match_name')}\n\n" + "\n".join(f"• {c}" for c in changes) + embed_note,
+        color=discord.Color.green(),
+        timestamp=discord.utils.utcnow()
+    )
+    result_embed.set_footer(text=f"{ORGANIZATION_NAME} • Match Result Edit")
+    await interaction.followup.send(embed=result_embed, ephemeral=False)
+
+    log_embed = discord.Embed(
+        title="✏️ Match Result Edited",
+        description=f"**{interaction.user.display_name}** edited result for `{ev_id}` ({ev_data.get('match_name')}).\n\n" + "\n".join(f"• {c}" for c in changes),
+        color=discord.Color.orange(),
+        timestamp=discord.utils.utcnow()
+    )
+    log_embed.set_footer(text=f"Edited by {interaction.user.display_name}")
+    await log_bot_activity(interaction.guild, log_embed)
+
+
 result_group = app_commands.Group(name="result", description="Manage tournament match results")
 
-@result_group.command(name="edit", description="Edit a previously posted match result (Head Organizer/Judge only)")
+@result_group.command(name="edit", description="Edit a previously posted match result (Head Organizer/Judge/Staff)")
 @app_commands.describe(
-    match="Select the match to edit",
+    match="Select the match to edit (type name or ID to search)",
+    winner="Updated winner member (optional)",
     winner_team_name="Updated winner team name (optional)",
+    loser="Updated loser member (optional)",
     loser_team_name="Updated loser team name (optional)",
     winner_score="Updated winner score (optional)",
     loser_score="Updated loser score (optional)",
-    remarks="Updated remarks (optional)"
+    remarks="Updated match remarks (optional)",
+    disqualified="Update disqualification status (optional)",
+    judge="Updated judge member (optional)",
+    recorder="Updated recorder member (optional)"
+)
+@app_commands.choices(
+    disqualified=[
+        app_commands.Choice(name="Winner Disqualified", value="Winner"),
+        app_commands.Choice(name="Loser Disqualified", value="Loser"),
+        app_commands.Choice(name="Both Disqualified (0:0)", value="Both"),
+        app_commands.Choice(name="None (Clear DQ)", value="None"),
+    ]
 )
 @app_commands.autocomplete(match=match_autocomplete)
 @with_guild_context
 async def result_edit(
     interaction: discord.Interaction,
     match: str,
+    winner: discord.Member = None,
     winner_team_name: str = None,
+    loser: discord.Member = None,
     loser_team_name: str = None,
     winner_score: int = None,
     loser_score: int = None,
-    remarks: str = None
+    remarks: str = None,
+    disqualified: app_commands.Choice[str] = None,
+    judge: discord.Member = None,
+    recorder: discord.Member = None
 ):
-    await interaction.response.defer(ephemeral=False)
-    if not has_event_result_permission(interaction):
-        await interaction.followup.send("❌ Permission denied.", ephemeral=False)
-        return
-
-    ev_id, ev_data = find_event_by_name_or_id(interaction.guild.id, match)
-    if not ev_id or not ev_data:
-        await interaction.followup.send("❌ Match not found.", ephemeral=False)
-        return
-
-    if winner_team_name: ev_data['team1_name'] = winner_team_name
-    if loser_team_name:  ev_data['team2_name'] = loser_team_name
-    if winner_score is not None: ev_data['winner_score'] = winner_score
-    if loser_score is not None:  ev_data['loser_score'] = loser_score
-    if remarks: ev_data['remarks'] = remarks
-
-    save_scheduled_events()
-    asyncio.create_task(save_event_to_supabase(ev_id, ev_data))
-    await update_results_embed_with_links(interaction.guild, ev_data)
-
-    embed = discord.Embed(
-        title=f"✅ Match Result Edited — `{ev_id}`",
-        description=f"Match result updated for **{ev_data.get('match_name') or ev_id}**.",
-        color=discord.Color.green(),
-        timestamp=discord.utils.utcnow()
+    await handle_event_result_edit(
+        interaction, match, winner, winner_team_name, loser, loser_team_name,
+        winner_score, loser_score, remarks, disqualified, judge, recorder
     )
-    await interaction.followup.send(embed=embed, ephemeral=False)
 
 
 async def setup(bot: commands.Bot):
