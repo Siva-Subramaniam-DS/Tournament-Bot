@@ -168,6 +168,7 @@ def load_guild_config(guild_id: int) -> dict:
                     ('bracket', 'channel_bracket'),
                     ('bot_logs', 'Bot_Logs_Channel_ID'),
                     ('thumbnail', 'Thumbnail_Channel_ID'),
+                    ('staff_chat', 'Staff_Chat_Channel_ID'),
                 ]
                 for dict_key, col_name in channel_mappings:
                     db_val = db_data.get(col_name)
@@ -292,6 +293,7 @@ def _sync_save_guild_config_to_supabase(guild_id: int, cfg: dict):
         "channel_bracket": str(channels.get('bracket') or ""),
         "Bot_Logs_Channel_ID": str(channels.get('bot_logs') or ""),
         "Thumbnail_Channel_ID": str(channels.get('thumbnail') or ""),
+        "Staff_Chat_Channel_ID": str(channels.get('staff_chat') or ""),
         "Updated_At": updated_at
     }
     return supabase_safe_upsert("GuildConfig", row, on_conflict="Guild_ID")

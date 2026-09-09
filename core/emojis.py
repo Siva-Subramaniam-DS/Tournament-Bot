@@ -6,93 +6,116 @@ from typing import Optional
 # ===========================================================================================
 
 EMOJI_IDS = {
-    "vs": 1545045392515797042,
-    "verified": 1545045390452334602,
-    "trophy": 1545045388145205298,
-    "recorder": 1545045386199044106,
-    "not_verified": 1545045384274116669,
-    "not_in_server": 1545045381329457202,
-    "attendance_done": 1545045378657951744,
-    "match_done": 1545045378657951744,
-    "skull": 1545045375205773402,
-    "loser": 1545045375205773402,
-    "judge": 1545045372953559110,
-    "details": 1545045370961133668,
-    "player": 1545045370961133668,
-    "player_details": 1545045370961133668,
-    "captain": 1545045368218329208,
-    "captain_details": 1545045368218329208,
+    # Core Tournament & Roles
+    "vs": 1547124088449929247,
+    "verified": 1547124086084472912,
+    "trophy": 1547124059656167465,
+    "winner": 1547124059656167465,
+    "recorder": 1547124365684908092,
+    "not_verified": 1547124074805854239,
+    "not_in_server": 1547128818500902923,
+    "attendance_done": 1547124086084472912,
+    "match_done": 1547124086084472912,
+    "skull": 1547124357006888970,
+    "loser": 1547124357006888970,
+    "judge": 1547124067163963452,
+    "details": 1547124077385228338,
+    "player": 1547124077385228338,
+    "player_details": 1547124077385228338,
+    "captain": 1547124055025520761,
+    "captain_details": 1547124055025520761,
+    "helpers": 1547124062168551464,
+    "organizer": 1547124062168551464,
+    "rules": 1547124083626614854,
+    "clock": 1547124057504358480,
+    "announcement": 1547124072150999070,
 
-    # Newly added emojis
-    "winner": 1545271946223292426,
-    "helpers": 1545271188593320006,
+    # Staff Actions & Management
+    "staff_in": 1547128838998462465,
+    "staff_out": 1547128842618015806,
+    "cameraman_in": 1547128838998462465,
+    "cameraman_out": 1547128842618015806,
+    "cameraman_add": 1547128838998462465,
+    "cameraman_remove": 1547128842618015806,
+    "exchange_staff": 1547142285161009192,
 
-    # Staff replacement action fallbacks
-    "cameraman_in": 1545321783165587546,
-    "cameraman_out": 1545321785388437584,
-    "cameraman_add": 1545321783165587546,
-    "cameraman_remove": 1545321785388437584,
+    # UI / Status / System emojis
+    "gear": 1547124946407522384,
+    "caution": 1547128818500902923,
+    "folder": 1547128846288035930,
+    "trashcan": 1547128832040112188,
+    "loading": 1547124896285466684,
+    "wrong": 1547124074805854239,
+    "dice": 1547124064492199997,
 
-    # UI / Status emojis
-    "gear": 1545818334547677255,
-    "caution": 1545819305269264414,
-    "folder": 1545820514931441684,
-    "trashcan": 1545820784084254790,
-    "loading": 1545821237354172477,
-    "wrong": 1545821776037027870,
-    "dice": 1546005941722554418,
-
-    # Navigation / Button emojis
-    "left_side_button": 1546366579573526639,
-    "right_side_button": 1546366598355623999,
+    # Navigation & Interactive Button emojis
+    "left_side_button": 1547142290005561364,
+    "right_side_button": 1547142287497101342,
+    "take_schedule": 1547142298079334460,
+    "record_match": 1547142295541907536,
+    "confirm_presence": 1547142292589252608,
 }
 
 # Direct Discord emoji format strings (Application Emojis uploaded in Discord Dev Portal)
 EMOJIS = {
-    "vs": "<:Vs:1545045392515797042>",
-    "verified": "<:Verified:1545045390452334602>",
-    "trophy": "<:trophy:1545045388145205298>",
-    "recorder": "<:Recorder:1545045386199044106>",
-    "not_verified": "<:NotVerifed:1545045384274116669>",
-    "not_in_server": "<:NotInServer:1545045381329457202>",
-    "attendance_done": "<:MatchDone:1545045378657951744>",
-    "match_done": "<:MatchDone:1545045378657951744>",
-    "skull": "<:Loser:1545045375205773402>",
-    "loser": "<:Loser:1545045375205773402>",
-    "judge": "<:Judge:1545045372953559110>",
-    "details": "<:Details:1545045370961133668>",
-    "player": "<:Details:1545045370961133668>",
-    "player_details": "<:Details:1545045370961133668>",
-    "captain": "<:CaptainDetails:1545045368218329208>",
-    "captain_details": "<:CaptainDetails:1545045368218329208>",
+    # Core Tournament & Roles
+    "vs": "<:VS:1547124088449929247>",
+    "verified": "<:VerifiedCheckmark:1547124086084472912>",
+    "trophy": "<:GoldenTournamentTrophy:1547124059656167465>",
+    "winner": "<:GoldenTournamentTrophy:1547124059656167465>",
+    "recorder": "<:Recorder:1547124365684908092>",
+    "not_verified": "<:NotVerified:1547124074805854239>",
+    "not_in_server": "<:NotinServer:1547128818500902923>",
+    "attendance_done": "<:VerifiedCheckmark:1547124086084472912>",
+    "match_done": "<:VerifiedCheckmark:1547124086084472912>",
+    "skull": "<:Loser:1547124357006888970>",
+    "loser": "<:Loser:1547124357006888970>",
+    "judge": "<:JudgeGavel:1547124067163963452>",
+    "details": "<:Player:1547124077385228338>",
+    "player": "<:Player:1547124077385228338>",
+    "player_details": "<:Player:1547124077385228338>",
+    "captain": "<:CaptainBadge:1547124055025520761>",
+    "captain_details": "<:CaptainBadge:1547124055025520761>",
+    "helpers": "<:HelperOrganizer:1547124062168551464>",
+    "organizer": "<:HelperOrganizer:1547124062168551464>",
+    "rules": "<:TournamentRules:1547124083626614854>",
+    "clock": "<:Clock:1547124057504358480>",
+    "announcement": "<:MegaAnnouncement:1547124072150999070>",
 
-    # Newly added emojis
-    "winner": "<:winner:1545271946223292426>",
-    "helpers": "<:Helpers:1545271188593320006>",
-
-    # Cameraman replacement emojis
-    "cameraman_in": "<:CameramanAdd:1545321783165587546>",
-    "cameraman_out": "<:Cameramanremove:1545321785388437584>",
-    "cameraman_add": "<:CameramanAdd:1545321783165587546>",
-    "cameraman_remove": "<:Cameramanremove:1545321785388437584>",
+    # Staff Actions & Management
+    "staff_in": "<:StaffMemberIn:1547128838998462465>",
+    "staff_out": "<:StaffMemberOut:1547128842618015806>",
+    "cameraman_in": "<:StaffMemberIn:1547128838998462465>",
+    "cameraman_out": "<:StaffMemberOut:1547128842618015806>",
+    "cameraman_add": "<:StaffMemberIn:1547128838998462465>",
+    "cameraman_remove": "<:StaffMemberOut:1547128842618015806>",
+    "exchange_staff": "<:ExchangeStaff:1547142285161009192>",
 
     # UI / Status emojis
-    "gear": "<a:Gear:1545818334547677255>",
-    "caution": "<a:Caution:1545819305269264414>",
-    "folder": "<:Folder:1545820514931441684>",
-    "trashcan": "<:Trashcan:1545820784084254790>",
-    "loading": "<a:Loading:1545821237354172477>",
-    "wrong": "<:Wrong:1545821776037027870>",
-    "dice": "<a:Dice:1546005941722554418>",
+    "gear": "<:SettingsGear:1547124946407522384>",
+    "caution": "<:NotinServer:1547128818500902923>",
+    "folder": "<:TicketArchiveFolder:1547128846288035930>",
+    "trashcan": "<:RedCyberTrashcan:1547128832040112188>",
+    "loading": "<a:Loading:1547124896285466684>",
+    "wrong": "<:NotVerified:1547124074805854239>",
+    "dice": "<:HolographicDice:1547124064492199997>",
 
-    # Navigation / Button emojis
-    "left_side_button": "<a:LeftSideButton:1546366579573526639>",
-    "right_side_button": "<a:RightSideButton:1546366598355623999>",
+    # Navigation & Interactive Button emojis
+    "left_side_button": "<:PreviousPageArrow:1547142290005561364>",
+    "right_side_button": "<:NextPageArrow:1547142287497101342>",
+    "take_schedule": "<:TakeSchedule:1547142298079334460>",
+    "record_match": "<:RecordMatch:1547142295541907536>",
+    "confirm_presence": "<:ConfirmPresence:1547142292589252608>",
 }
 
 # PartialEmoji instances for direct use in discord.ui.Button
-LEFT_BUTTON_EMOJI = discord.PartialEmoji(name="LeftSideButton", id=1546366579573526639, animated=True)
-RIGHT_BUTTON_EMOJI = discord.PartialEmoji(name="RightSideButton", id=1546366598355623999, animated=True)
+LEFT_BUTTON_EMOJI = discord.PartialEmoji(name="PreviousPageArrow", id=1547142290005561364)
+RIGHT_BUTTON_EMOJI = discord.PartialEmoji(name="NextPageArrow", id=1547142287497101342)
+TAKE_SCHEDULE_BUTTON_EMOJI = discord.PartialEmoji(name="TakeSchedule", id=1547142298079334460)
+RECORD_BUTTON_EMOJI = discord.PartialEmoji(name="RecordMatch", id=1547142295541907536)
+CONFIRM_PRESENCE_BUTTON_EMOJI = discord.PartialEmoji(name="ConfirmPresence", id=1547142292589252608)
+EXCHANGE_STAFF_BUTTON_EMOJI = discord.PartialEmoji(name="ExchangeStaff", id=1547142285161009192)
+VERIFIED_BUTTON_EMOJI = discord.PartialEmoji(name="VerifiedCheckmark", id=1547124086084472912)
 
 # Dynamic cache for real resolved Discord emoji strings
 EMOJI_CACHE = {}
@@ -103,36 +126,59 @@ def _norm_name(n: str) -> str:
     return re.sub(r'[^a-zA-Z0-9]', '', str(n)).lower()
 
 NAME_TO_KEY = {
+    # Core Tournament & Roles
     "vs": "vs",
+    "verifiedcheckmark": "verified",
     "verified": "verified",
+    "goldentournamenttrophy": "trophy",
     "trophy": "trophy",
+    "winner": "winner",
     "recorder": "recorder",
-    "notverifed": "not_verified",
     "notverified": "not_verified",
     "notinserver": "not_in_server",
-    "matchdone": "attendance_done",
-    "attendancedone": "attendance_done",
     "loser": "loser",
     "skull": "skull",
+    "judgegavel": "judge",
     "judge": "judge",
-    "details": "details",
     "player": "player",
     "playerdetails": "player_details",
+    "captainbadge": "captain",
     "captain": "captain",
     "captaindetails": "captain_details",
-    "winner": "winner",
+    "helperorganizer": "helpers",
     "helpers": "helpers",
     "helper": "helpers",
+    "organizer": "organizer",
+    "tournamentrules": "rules",
+    "rules": "rules",
+    "clock": "clock",
+    "megaannouncement": "announcement",
+    "announcement": "announcement",
+
+    # Staff Actions
+    "staffmemberin": "staff_in",
+    "staffmemberout": "staff_out",
     "cameramanadd": "cameraman_in",
     "cameramanremove": "cameraman_out",
-    # UI / Status emojis
+    "exchangestaff": "exchange_staff",
+
+    # UI / Status
+    "settingsgear": "gear",
     "gear": "gear",
-    "caution": "caution",
+    "ticketarchivefolder": "folder",
     "folder": "folder",
+    "redcybertrashcan": "trashcan",
     "trashcan": "trashcan",
     "loading": "loading",
-    "wrong": "wrong",
+    "holographicdice": "dice",
     "dice": "dice",
+
+    # Buttons
+    "previouspagearrow": "left_side_button",
+    "nextpagearrow": "right_side_button",
+    "takeschedule": "take_schedule",
+    "recordmatch": "record_match",
+    "confirmpresence": "confirm_presence",
 }
 
 async def init_emojis_from_bot(bot):

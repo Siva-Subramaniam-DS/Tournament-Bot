@@ -39,7 +39,10 @@ from core.database import (
     update_results_embed_with_links, save_scheduled_deadline, delete_scheduled_deadline,
     fetch_challonge_open_matches, fetch_google_sheet_captains, extract_discord_id_from_text
 )
-from core.emojis import EMOJIS, LEFT_BUTTON_EMOJI, RIGHT_BUTTON_EMOJI
+from core.emojis import (
+    EMOJIS, LEFT_BUTTON_EMOJI, RIGHT_BUTTON_EMOJI,
+    CONFIRM_PRESENCE_BUTTON_EMOJI, VERIFIED_BUTTON_EMOJI
+)
 
 
 
@@ -474,7 +477,6 @@ tournament_group = app_commands.Group(name="tournament", description="Manage mul
     game="Game for this tournament (e.g. Modern Warship, BGMI, Valorant)",
     challonge_key="Challonge API Key or Bracket Identifier",
     bracket_link="Challonge or tournament bracket URL",
-    sheet_link="Google Sheet link for player roster / team info",
     attendance_channel="Channel for staff check-ins",
     rules_channel="Channel for tournament rules",
     deadline_channel="Channel for round deadlines",
@@ -493,7 +495,6 @@ async def tournament_add(
     game: Optional[str] = None,
     challonge_key: Optional[str] = None,
     bracket_link: Optional[str] = None,
-    sheet_link: Optional[str] = None,
     attendance_channel: Optional[discord.TextChannel] = None,
     rules_channel: Optional[discord.TextChannel] = None,
     deadline_channel: Optional[discord.TextChannel] = None,
@@ -521,7 +522,6 @@ async def tournament_add(
     if game:                t_data["game"] = game.strip()
     if challonge_key:       t_data["key"] = challonge_key.strip()
     if bracket_link:        t_data["challonge_bracket_link"] = bracket_link.strip()
-    if sheet_link:          t_data["google_sheet_link"] = sheet_link.strip()
     if attendance_channel:  t_data["attendance"] = attendance_channel.id
     if rules_channel:       t_data["rules"] = rules_channel.id
     if deadline_channel:    t_data["deadline"] = deadline_channel.id
@@ -549,7 +549,6 @@ async def tournament_add(
     game="Updated game for template posters (e.g. Modern Warship, BGMI, Valorant)",
     challonge_key="Challonge API Key or Identifier",
     bracket_link="Challonge bracket URL",
-    sheet_link="Google Sheet link for player roster",
     attendance_channel="Attendance channel",
     rules_channel="Rules channel",
     deadline_channel="Deadline channel",
@@ -576,7 +575,6 @@ async def tournament_edit(
     game: Optional[str] = None,
     challonge_key: Optional[str] = None,
     bracket_link: Optional[str] = None,
-    sheet_link: Optional[str] = None,
     attendance_channel: Optional[discord.TextChannel] = None,
     rules_channel: Optional[discord.TextChannel] = None,
     deadline_channel: Optional[discord.TextChannel] = None,
@@ -603,7 +601,6 @@ async def tournament_edit(
     if game:               t_data["game"] = game.strip()
     if challonge_key:      t_data["key"] = challonge_key.strip()
     if bracket_link:       t_data["challonge_bracket_link"] = bracket_link.strip()
-    if sheet_link:         t_data["google_sheet_link"] = sheet_link.strip()
     if attendance_channel: t_data["attendance"] = attendance_channel.id
     if rules_channel:      t_data["rules"] = rules_channel.id
     if deadline_channel:   t_data["deadline"] = deadline_channel.id
@@ -1724,7 +1721,7 @@ class MatchReadyView(discord.ui.View):
         self.team1_ready = False
         self.team2_ready = False
 
-    @discord.ui.button(label="⚔️ Team 1 Ready", style=discord.ButtonStyle.primary, custom_id="match_ready_btn_t1")
+    @discord.ui.button(label="Team 1 Ready", emoji=CONFIRM_PRESENCE_BUTTON_EMOJI, style=discord.ButtonStyle.primary, custom_id="match_ready_btn_t1")
     async def team1_ready_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         is_admin = interaction.guild and interaction.user.guild_permissions.administrator
         is_cap1 = (self.captain1_id and interaction.user.id == self.captain1_id)
@@ -1735,11 +1732,13 @@ class MatchReadyView(discord.ui.View):
         self.team1_ready = not self.team1_ready
         if self.team1_ready:
             button.style = discord.ButtonStyle.success
-            button.label = f"✅ {self.team1_name[:15]} Ready"
+            button.emoji = VERIFIED_BUTTON_EMOJI
+            button.label = f"{self.team1_name[:15]} Ready"
             status_text = f"🟢 **{self.team1_name}** ({interaction.user.mention}) is **READY**!"
         else:
             button.style = discord.ButtonStyle.primary
-            button.label = f"⚔️ {self.team1_name[:15]} Ready"
+            button.emoji = CONFIRM_PRESENCE_BUTTON_EMOJI
+            button.label = f"{self.team1_name[:15]} Ready"
             status_text = f"⚪ **{self.team1_name}** is no longer marked ready."
 
         await interaction.response.edit_message(view=self)
@@ -1748,7 +1747,7 @@ class MatchReadyView(discord.ui.View):
         if self.team1_ready and self.team2_ready:
             await interaction.channel.send("🎉 **BOTH TEAMS ARE READY!** Good luck with your match! ⚔️")
 
-    @discord.ui.button(label="⚔️ Team 2 Ready", style=discord.ButtonStyle.primary, custom_id="match_ready_btn_t2")
+    @discord.ui.button(label="Team 2 Ready", emoji=CONFIRM_PRESENCE_BUTTON_EMOJI, style=discord.ButtonStyle.primary, custom_id="match_ready_btn_t2")
     async def team2_ready_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         is_admin = interaction.guild and interaction.user.guild_permissions.administrator
         is_cap2 = (self.captain2_id and interaction.user.id == self.captain2_id)
@@ -1759,11 +1758,13 @@ class MatchReadyView(discord.ui.View):
         self.team2_ready = not self.team2_ready
         if self.team2_ready:
             button.style = discord.ButtonStyle.success
-            button.label = f"✅ {self.team2_name[:15]} Ready"
+            button.emoji = VERIFIED_BUTTON_EMOJI
+            button.label = f"{self.team2_name[:15]} Ready"
             status_text = f"🟢 **{self.team2_name}** ({interaction.user.mention}) is **READY**!"
         else:
             button.style = discord.ButtonStyle.primary
-            button.label = f"⚔️ {self.team2_name[:15]} Ready"
+            button.emoji = CONFIRM_PRESENCE_BUTTON_EMOJI
+            button.label = f"{self.team2_name[:15]} Ready"
             status_text = f"⚪ **{self.team2_name}** is no longer marked ready."
 
         await interaction.response.edit_message(view=self)
@@ -2835,11 +2836,12 @@ async def clear_cache_cmd(interaction: discord.Interaction):
         await interaction.response.send_message("❌ You do not have permission to clear cache.", ephemeral=True)
         return
 
-    from core.state import GUILD_CONFIG_CACHE, RULES_CACHE, STAFF_STATS_CACHE, TOURNAMENTS_CACHE
+    from core.state import GUILD_CONFIG_CACHE, RULES_CACHE, STAFF_STATS_CACHE, TOURNAMENTS_CACHE, CHALLONGE_MATCHES_CACHE
     GUILD_CONFIG_CACHE.clear()
     RULES_CACHE.clear()
     STAFF_STATS_CACHE.clear()
     TOURNAMENTS_CACHE.clear()
+    CHALLONGE_MATCHES_CACHE.clear()
 
     await interaction.response.send_message("✅ Successfully cleared all server configuration, tournament, bracket, and sheet caches!", ephemeral=False)
 

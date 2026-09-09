@@ -60,11 +60,12 @@ Use these commands during initial server onboarding or when updating server bran
   - `challonge_role` *(Role, Optional)*: Role permitted to sync Challonge scores.
   - `organization_name` *(String, Optional)*: Name displayed on posters and embed footers.
   - `bot_logs_channel` *(Channel, Optional)*: Channel for audit and bot operational logs.
+  - `staff_chat_channel` *(Channel, Optional)*: Staff chat channel for welcoming newly recruited staff.
   - `take_schedule_channel` *(Channel, Optional)*: Channel where match schedule claim posts are sent.
   - `results_channel` *(Channel, Optional)*: Channel where verified match results are published.
 
 ### `/settings edit`
-- **Description:** Selectively updates specific configuration fields without re-entering all settings.
+- **Description:** Selectively updates specific configuration fields (roles, channels, `staff_chat_channel`, branding) without re-entering all settings.
 - **Permission:** Head Organizer / Administrator
 
 ### `/settings clean`
@@ -89,7 +90,6 @@ Manage individual tournaments. The bot supports multiple simultaneous tournament
   - `game` *(String, Required)*: Game title (e.g., `Valorant`, `Mobile Legends`, `PUBG Mobile`).
   - `key` *(String, Optional)*: Challonge tournament URL subdomain or identifier.
   - `challonge_bracket_link` *(String, Optional)*: Direct public URL to Challonge bracket.
-  - `captains_sheet_link` *(String, Optional)*: Google Sheet CSV link containing captain Discord IDs and team names.
   - `schedule_channel` *(Channel, Optional)*: Tournament-specific `#schedule` channel.
   - `result_channel` *(Channel, Optional)*: Tournament-specific `#results` channel.
   - `attendance_channel` *(Channel, Optional)*: Channel for staff attendance records.
@@ -153,20 +153,12 @@ Automates match room ticket channel creation by monitoring open matches from Cha
 
 ## 5. Player & Roster System (`/player`, `/id-card`)
 
-Handles participant registration, roster verification, and player profile lookup via Google Sheets.
+Handles participant roster lookup and player identity cards via tournament database.
 
 ### `/player_information`
-- **Description:** Searches the configured tournament Google Sheet for a player or captain and formats their roster cleanly.
+- **Description:** Looks up a registered player or captain and formats their roster cleanly.
 - **Permission:** Everyone
 - **Parameters:** `query` *(String, Required)*: Discord ID, mention, or In-Game Name.
-
-### `/config_player_information`
-- **Description:** Configures the Google Sheet link and sets the `#participants` channel where roster cards are published.
-- **Permission:** Head Organizer / Administrator
-- **Parameters:**
-  - `sheet_link` *(String, Required)*: Google Sheet unauthenticated CSV export link.
-  - `participant_channel` *(Channel, Required)*: Target channel to post verified player cards.
-  - `format_type` *(Choice, Required)*: `1v1` or `Team (2v2 - 5v5)`.
 
 ### `/player edit`
 - **Description:** Edits a participant's details in the posted roster message, `players.json` / `teams.json`, and Supabase tables.
@@ -296,6 +288,22 @@ Handles match claiming, referee check-ins, result verification, and staff perfor
 - **Description:** Manually adds, subtracts, or sets match points on the staff leaderboard.
 - **Permission:** Head Organizer / Administrator
 - **Parameters:** `staff_member`, `role`, `action` (`add`, `subtract`, `set`), `amount`.
+
+### `/staff recruit`
+- **Description:** Recruits a member into tournament staff roles and automatically posts a welcome embed to `#staff-chat`.
+- **Permission:** Head Organizer / Administrator
+- **Allowed Tournament Roles (Only these trigger the staff chat welcome card):**
+  - ⚖️ **Judge**
+  - 🎥 **Recorder**
+  - 👥 **Helper** (`helper_team`)
+  - 🛡️ **Organizer / Admin** (`organizer`, Admin) — *excluding Head Organizer*
+  - **Role Combinations:** (e.g. `Judge + Recorder`, `Organizer + Helper`, `Admin + Helper`)
+- **Parameters:** `member` *(User, Required)*, `role` *(Role, Required)*, `role_2` to `role_5` *(Role, Optional)*.
+
+### `/staff fire`
+- **Description:** Removes one or more tournament staff roles from a member.
+- **Permission:** Head Organizer / Administrator
+- **Parameters:** `member` *(User, Required)*, `role` *(Role, Required)*, `role_2` to `role_5` *(Role, Optional)*.
 
 ---
 

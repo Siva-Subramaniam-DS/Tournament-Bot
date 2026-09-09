@@ -590,6 +590,19 @@ class Listeners(commands.Cog):
         except Exception as e:
             print(f"Error logging app command error: {e}")
 
+    @commands.Cog.listener()
+    async def on_member_update(self, before: discord.Member, after: discord.Member):
+        if before.bot:
+            return
+        if len(after.roles) > len(before.roles):
+            added_roles = [r for r in after.roles if r not in before.roles]
+            if added_roles:
+                try:
+                    from cogs.staff import notify_staff_hired
+                    await notify_staff_hired(after.guild, after, added_roles)
+                except Exception as e:
+                    print(f"Error in on_member_update staff welcome: {e}")
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Listeners(bot))

@@ -654,6 +654,7 @@ async def update_settings_logic(
     server_name: Optional[str] = None,
     tournament_bot_name: Optional[str] = None,
     server_logo: Optional[discord.Attachment] = None,
+    staff_chat_channel: Optional[discord.TextChannel] = None,
     transcript_logs_channel: Optional[discord.TextChannel] = None,
     closed_category: Optional[discord.CategoryChannel] = None,
     schedule_channel: Optional[discord.TextChannel] = None,
@@ -714,6 +715,7 @@ async def update_settings_logic(
         cfg['channel_ids'] = {}
 
     channel_mapping = {
+        'staff_chat': (staff_chat_channel, "Staff Chat Channel"),
         'transcript_logs': (transcript_logs_channel, "Transcript Logs"),
         'closed_tickets_category': (closed_category, "Closed Category"),
         'take_schedule': (schedule_channel, "Schedule Channel"),
@@ -771,6 +773,7 @@ async def update_settings_logic(
     server_name="Name of your esports organization/server",
     tournament_bot_name="Branding name for the tournament system",
     server_logo="Upload your server logo image",
+    staff_chat_channel="Staff chat channel for welcoming newly recruited staff",
     transcript_logs_channel="Channel for ticket transcripts",
     closed_category="Category where closed tickets will be moved",
     schedule_channel="Channel where match schedules are posted",
@@ -791,6 +794,7 @@ async def settings_add(
     server_name: Optional[str] = None,
     tournament_bot_name: Optional[str] = None,
     server_logo: Optional[discord.Attachment] = None,
+    staff_chat_channel: Optional[discord.TextChannel] = None,
     transcript_logs_channel: Optional[discord.TextChannel] = None,
     closed_category: Optional[discord.CategoryChannel] = None,
     schedule_channel: Optional[discord.TextChannel] = None,
@@ -810,6 +814,7 @@ async def settings_add(
         server_name=server_name,
         tournament_bot_name=tournament_bot_name,
         server_logo=server_logo,
+        staff_chat_channel=staff_chat_channel,
         transcript_logs_channel=transcript_logs_channel,
         closed_category=closed_category,
         schedule_channel=schedule_channel,
@@ -831,6 +836,7 @@ async def settings_add(
     server_name="Name of your esports organization/server",
     tournament_bot_name="Branding name for the tournament system",
     server_logo="Upload your server logo image",
+    staff_chat_channel="Staff chat channel for welcoming newly recruited staff",
     transcript_logs_channel="Channel for ticket transcripts",
     closed_category="Category where closed tickets will be moved",
     schedule_channel="Channel where match schedules are posted",
@@ -851,6 +857,7 @@ async def settings_edit(
     server_name: Optional[str] = None,
     tournament_bot_name: Optional[str] = None,
     server_logo: Optional[discord.Attachment] = None,
+    staff_chat_channel: Optional[discord.TextChannel] = None,
     transcript_logs_channel: Optional[discord.TextChannel] = None,
     closed_category: Optional[discord.CategoryChannel] = None,
     schedule_channel: Optional[discord.TextChannel] = None,
@@ -870,6 +877,7 @@ async def settings_edit(
         server_name=server_name,
         tournament_bot_name=tournament_bot_name,
         server_logo=server_logo,
+        staff_chat_channel=staff_chat_channel,
         transcript_logs_channel=transcript_logs_channel,
         closed_category=closed_category,
         schedule_channel=schedule_channel,
@@ -932,6 +940,7 @@ async def settings_show(interaction: discord.Interaction):
     embed.add_field(name="👥 Roles", value=roles_value, inline=False)
 
     channels_value = (
+        f"💬 **Staff Chat:** {get_channel_str('staff_chat')}\n"
         f"📜 **Transcript Logs:** {get_channel_str('transcript_logs')}\n"
         f"📁 **Closed Category:** {get_channel_str('closed_tickets_category')}\n"
         f"📅 **Schedule Channel:** {get_channel_str('take_schedule')}\n"
@@ -1122,66 +1131,7 @@ class Settings(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="config_player_information", description="Configure player information Google Sheet link, format, and participant channel")
-    @app_commands.describe(
-        sheet_link="Google Sheet link containing player or team details",
-        format="The tournament format (e.g. 1 vs 1, 5 vs 5)",
-        participant_channel="The channel where player/team information will be automatically posted and updated"
-    )
-    @app_commands.choices(
-        format=[
-            app_commands.Choice(name="1 vs 1", value="1 vs 1"),
-            app_commands.Choice(name="2 vs 2", value="2 vs 2"),
-            app_commands.Choice(name="3 vs 3", value="3 vs 3"),
-            app_commands.Choice(name="4 vs 4", value="4 vs 4"),
-            app_commands.Choice(name="5 vs 5", value="5 vs 5")
-        ]
-    )
-    @with_guild_context
-    async def config_player_info_command(
-        self,
-        interaction: discord.Interaction,
-        sheet_link: str,
-        format: app_commands.Choice[str],
-        participant_channel: discord.TextChannel
-    ):
-        if not interaction.guild:
-            await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=False)
-            return
-            
-        if not is_authorized_to_configure(interaction):
-            await interaction.response.send_message("❌ You do not have permission to configure player information.", ephemeral=False)
-            return
-            
-        await interaction.response.defer(ephemeral=False)
-        
-        cfg = get_guild_config(interaction.guild.id)
-        cfg['player_info_link'] = sheet_link.strip()
-        cfg['player_info_format'] = format.value
-        cfg['player_info_participant_channel_id'] = participant_channel.id
-        
-        save_guild_config(interaction.guild.id, cfg)
-        
-        log_embed = discord.Embed(
-            title="⚙️ Player Info Configured",
-            description=(
-                f"**Sheet Link:** [Link]({sheet_link.strip()})\n"
-                f"**Format:** {format.value}\n"
-                f"**Participant Channel:** {participant_channel.mention}"
-            ),
-            color=discord.Color.blue(),
-            timestamp=discord.utils.utcnow()
-        )
-        log_embed.set_footer(text=f"Configured by {interaction.user.display_name}")
-        await log_bot_activity(interaction.guild, log_embed)
-        
-        success, msg = await sync_player_info_to_channel(interaction.guild, sheet_link.strip(), format.value, participant_channel)
-        if success:
-            await interaction.followup.send(f"✅ Configuration saved!\n{msg}", ephemeral=False)
-        else:
-            await interaction.followup.send(f"⚠️ Configuration saved, but sync failed: {msg}", ephemeral=False)
-
-    @app_commands.command(name="player_information", description="Look up player or team info from the configured Google Sheet")
+    @app_commands.command(name="player_information", description="Look up player or team info from registered tournament rosters")
     @app_commands.describe(user="The player or team captain to look up")
     @with_guild_context
     async def player_information_command(self, interaction: discord.Interaction, user: discord.Member):

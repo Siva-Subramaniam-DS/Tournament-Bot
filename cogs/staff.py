@@ -26,7 +26,11 @@ from core.database import (
     get_active_tournament_config, log_bot_activity, sheetdb_post,
     get_guild_staff_stats, save_guild_staff_stats, tournament_autocomplete
 )
-from core.emojis import EMOJIS, get_staff_emoji, LEFT_BUTTON_EMOJI, RIGHT_BUTTON_EMOJI
+from core.emojis import (
+    EMOJIS, get_staff_emoji, LEFT_BUTTON_EMOJI, RIGHT_BUTTON_EMOJI,
+    TAKE_SCHEDULE_BUTTON_EMOJI, RECORD_BUTTON_EMOJI, CONFIRM_PRESENCE_BUTTON_EMOJI,
+    EXCHANGE_STAFF_BUTTON_EMOJI, VERIFIED_BUTTON_EMOJI
+)
 
 
 
@@ -129,7 +133,7 @@ class StaffConfirmationView(discord.ui.View):
             is_confirmed = ev.get('judge_confirmed', False)
             if is_confirmed:
                 btn_label = "Confirmed"
-                btn_emoji = discord.PartialEmoji(name="White_Verification", id=1544979996395970560, animated=True)
+                btn_emoji = VERIFIED_BUTTON_EMOJI
                 btn_style = discord.ButtonStyle.green
                 btn_disabled = True
             elif is_too_late:
@@ -139,7 +143,7 @@ class StaffConfirmationView(discord.ui.View):
                 btn_disabled = True
             else:
                 btn_label = "Confirm Presence"
-                btn_emoji = discord.PartialEmoji(name="judge", id=1544980903871127645)
+                btn_emoji = CONFIRM_PRESENCE_BUTTON_EMOJI
                 btn_style = discord.ButtonStyle.gray
                 btn_disabled = False
             
@@ -152,7 +156,7 @@ class StaffConfirmationView(discord.ui.View):
             is_confirmed = ev.get('recorder_confirmed', False)
             if is_confirmed:
                 btn_label = "Confirmed"
-                btn_emoji = discord.PartialEmoji(name="White_Verification", id=1544979996395970560, animated=True)
+                btn_emoji = VERIFIED_BUTTON_EMOJI
                 btn_style = discord.ButtonStyle.blurple
                 btn_disabled = True
             elif is_too_late:
@@ -162,7 +166,7 @@ class StaffConfirmationView(discord.ui.View):
                 btn_disabled = True
             else:
                 btn_label = "Confirm Presence"
-                btn_emoji = discord.PartialEmoji(name="camera", id=1544981791566331924)
+                btn_emoji = CONFIRM_PRESENCE_BUTTON_EMOJI
                 btn_style = discord.ButtonStyle.gray
                 btn_disabled = False
             
@@ -299,7 +303,7 @@ class StaffReplacementView(discord.ui.View):
         if self.replace_judge:
             is_replaced = ev.get('judge_replaced', False)
             btn_label = "Replaced" if is_replaced else "Replace Judge"
-            btn_emoji = discord.PartialEmoji(name="judge", id=1544980903871127645)
+            btn_emoji = VERIFIED_BUTTON_EMOJI if is_replaced else EXCHANGE_STAFF_BUTTON_EMOJI
             btn_style = discord.ButtonStyle.green if is_replaced else discord.ButtonStyle.primary
             btn = discord.ui.Button(label=btn_label, emoji=btn_emoji, style=btn_style, disabled=is_replaced, custom_id=f"replace_judge_{self.event_id}")
             btn.callback = self.replace_judge_callback
@@ -308,7 +312,7 @@ class StaffReplacementView(discord.ui.View):
         if self.replace_recorder:
             is_replaced = ev.get('recorder_replaced', False)
             btn_label = "Replaced" if is_replaced else "Replace Recorder"
-            btn_emoji = discord.PartialEmoji(name="Cameramanremove", id=1545321785388437584)
+            btn_emoji = VERIFIED_BUTTON_EMOJI if is_replaced else EXCHANGE_STAFF_BUTTON_EMOJI
             btn_style = discord.ButtonStyle.green if is_replaced else discord.ButtonStyle.primary
             btn = discord.ui.Button(label=btn_label, emoji=btn_emoji, style=btn_style, disabled=is_replaced, custom_id=f"replace_recorder_{self.event_id}")
             btn.callback = self.replace_recorder_callback
@@ -505,7 +509,7 @@ class TakeScheduleButton(discord.ui.View):
             dt = dt.replace(tzinfo=pytz.UTC)
         return datetime.datetime.now(pytz.UTC) >= dt
 
-    @discord.ui.button(label="Take Schedule", style=discord.ButtonStyle.green, emoji="📋", custom_id="take_schedule_btn")
+    @discord.ui.button(label="Take Schedule", style=discord.ButtonStyle.green, emoji=TAKE_SCHEDULE_BUTTON_EMOJI, custom_id="take_schedule_btn")
     @with_guild_context
     async def take_schedule(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self._is_event_started():
@@ -624,7 +628,7 @@ class TakeScheduleButton(discord.ui.View):
         finally:
             self._taking_schedule = False
 
-    @discord.ui.button(label="Record", style=discord.ButtonStyle.blurple, emoji=discord.PartialEmoji(name="camera", id=1544981791566331924), custom_id="record_btn")
+    @discord.ui.button(label="Record", style=discord.ButtonStyle.blurple, emoji=RECORD_BUTTON_EMOJI, custom_id="record_btn")
     @with_guild_context
     async def record_schedule(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self._is_event_started():
@@ -661,7 +665,7 @@ class TakeScheduleButton(discord.ui.View):
         button.label = "Assigned"
         button.style = discord.ButtonStyle.green
         button.disabled = True
-        button.emoji = discord.PartialEmoji(name="camera", id=1544981791566331924)
+        button.emoji = RECORD_BUTTON_EMOJI
 
         embed = interaction.message.embeds[0]
         remove_field_by_name(embed, "Recorder")
@@ -735,6 +739,179 @@ class ConfirmResetView(discord.ui.View):
 
 
 # ===========================================================================================
+# RECENT STAFF WELCOMES & WELCOME DISPATCHER
+# ===========================================================================================
+
+RECENT_STAFF_WELCOMES = {}
+
+async def notify_staff_hired(guild: discord.Guild, member: discord.Member, assigned_roles: List[discord.Role]) -> bool:
+    """
+    Welcomes a newly hired staff member in the configured staff chat channel.
+    Only triggers for Tournament roles (Judge, Recorder, Helper, Organizer/Admin).
+    """
+    if not guild or not member or not assigned_roles:
+        return False
+
+    # Debounce: prevent duplicate messages within 30 seconds for the same member
+    now = datetime.datetime.utcnow().timestamp()
+    cache_key = (guild.id, member.id)
+    last_time = RECENT_STAFF_WELCOMES.get(cache_key, 0)
+    if (now - last_time) < 30:
+        return False
+
+    cfg = get_guild_config(guild.id)
+    role_ids = cfg.get("role_ids", {})
+    channel_ids = cfg.get("channel_ids", {})
+
+    # Permitted Tournament Roles:
+    # ⚖️ Judge
+    # 🎥 Recorder
+    # 👥 Helper (helper_team)
+    # 🛡️ Organizer / Admin (organizer, Admin) — NOT head organizer!
+    head_org_id = role_ids.get("head_organizer")
+
+    matched_tournament_roles = []
+    matched_role_labels = []
+
+    for r in assigned_roles:
+        # Strictly exclude Head Organizer by ID or by name
+        if head_org_id and r.id == int(head_org_id):
+            continue
+        if "head" in r.name.lower():
+            continue
+
+        is_tourney_role = False
+        label = None
+
+        # 1. ⚖️ Judge
+        if (role_ids.get("judge") and r.id == int(role_ids["judge"])) or ("judge" in r.name.lower()):
+            is_tourney_role = True
+            label = f"{EMOJIS.get('judge', '⚖️')} Judge"
+        # 2. 🎥 Recorder
+        elif (role_ids.get("recorder") and r.id == int(role_ids["recorder"])) or ("recorder" in r.name.lower()):
+            is_tourney_role = True
+            label = f"{EMOJIS.get('recorder', '🎥')} Recorder"
+        # 3. 👥 Helper (helper_team)
+        elif (role_ids.get("helper_team") and r.id == int(role_ids["helper_team"])) or ("helper" in r.name.lower()):
+            is_tourney_role = True
+            label = f"{EMOJIS.get('helpers', '👥')} Helper"
+        # 4. 🛡️ Organizer / Admin (not head organizer)
+        elif (role_ids.get("organizer") and r.id == int(role_ids["organizer"])) or ("organizer" in r.name.lower()):
+            is_tourney_role = True
+            label = f"{EMOJIS.get('organizer', '🛡️')} Organizer"
+        elif "admin" in r.name.lower():
+            is_tourney_role = True
+            label = f"{EMOJIS.get('organizer', '🛡️')} Admin"
+
+        if is_tourney_role and label:
+            matched_tournament_roles.append(r)
+            if label not in matched_role_labels:
+                matched_role_labels.append(label)
+
+    # ONLY allowed tournament roles should post to staff chat!
+    if not matched_tournament_roles:
+        return False
+
+    # Check if staff chat channel is configured
+    staff_chat_id = channel_ids.get("staff_chat")
+    if not staff_chat_id:
+        return False
+
+    staff_chat = guild.get_channel(int(staff_chat_id))
+    if not staff_chat:
+        try:
+            staff_chat = await guild.fetch_channel(int(staff_chat_id))
+        except Exception:
+            staff_chat = None
+
+    if not staff_chat:
+        return False
+
+    # Mark as welcomed to prevent duplicate runs
+    RECENT_STAFF_WELCOMES[cache_key] = now
+
+    assigned_as_str = " + ".join(matched_role_labels)
+
+    # Build welcome embed matching Tourney Master's style
+    staff_in_emoji = EMOJIS.get('staff_in', '🎉')
+    embed = discord.Embed(
+        title=f"{staff_in_emoji} Welcome {member.display_name}!",
+        description=f"You've been assigned as: **{assigned_as_str}**\n",
+        color=discord.Color.from_rgb(235, 59, 90) if hasattr(discord.Color, 'from_rgb') else discord.Color.red(),
+        timestamp=discord.utils.utcnow()
+    )
+
+    if member.display_avatar:
+        embed.set_thumbnail(url=member.display_avatar.url)
+
+    # Collect important channels dynamically
+    important_channels = []
+
+    # Announcements
+    announcement_ch = None
+    for ch in guild.text_channels:
+        if any(w in ch.name.lower() for w in ["staff-announcement", "staff_announcement", "announcement"]):
+            announcement_ch = ch
+            break
+    if announcement_ch:
+        important_channels.append(f"• **Announcements:** {announcement_ch.mention}")
+
+    # Instructions / Rules
+    instructions_ch = None
+    for ch in guild.text_channels:
+        if any(w in ch.name.lower() for w in ["staff-rule", "staff_rule", "instruction"]):
+            instructions_ch = ch
+            break
+    if instructions_ch:
+        important_channels.append(f"• **Instructions:** {instructions_ch.mention}")
+
+    # Details Submission / Staff Info
+    info_ch = None
+    for ch in guild.text_channels:
+        if any(w in ch.name.lower() for w in ["staff-info", "staff_info", "staff-detail", "staff_detail"]):
+            info_ch = ch
+            break
+    if info_ch:
+        important_channels.append(f"• **Details Submission:** {info_ch.mention}")
+
+    # Event Rules
+    rules_ch_id = channel_ids.get("rules")
+    rules_ch = guild.get_channel(int(rules_ch_id)) if rules_ch_id else None
+    if not rules_ch:
+        for ch in guild.text_channels:
+            if ch.name.lower() in ["rules", "event-rules", "tournament-rules"]:
+                rules_ch = ch
+                break
+    if rules_ch:
+        important_channels.append(f"• **Event Rules:** {rules_ch.mention}")
+
+    # Schedule fallback if other channels not present
+    schedule_ch_id = channel_ids.get("take_schedule")
+    schedule_ch = guild.get_channel(int(schedule_ch_id)) if schedule_ch_id else None
+    if schedule_ch and not announcement_ch and not instructions_ch:
+        important_channels.append(f"• **Match Schedule:** {schedule_ch.mention}")
+
+    if important_channels:
+        embed.add_field(
+            name="Important Channels:",
+            value="\n".join(important_channels),
+            inline=False
+        )
+
+    embed.set_footer(
+        text="We're excited to have you on board! 🐸",
+        icon_url=guild.icon.url if guild.icon else None
+    )
+
+    try:
+        await staff_chat.send(content=f"Welcome {member.mention}! 🎉", embed=embed)
+        return True
+    except Exception as e:
+        print(f"Error sending staff welcome to staff chat: {e}")
+        return False
+
+
+# ===========================================================================================
 # STAFF COMMAND GROUP
 # ===========================================================================================
 
@@ -785,6 +962,12 @@ async def staff_recruit(
     except Exception as e:
         await interaction.followup.send(f"⚠️ Failed to add Discord role(s): {e}", ephemeral=False)
         return
+
+    # Post welcome card in staff chat channel if tournament roles were assigned
+    try:
+        await notify_staff_hired(interaction.guild, member, roles_to_add)
+    except Exception as welcome_err:
+        print(f"Error in notify_staff_hired: {welcome_err}")
 
     embed = discord.Embed(
         title=f"{EMOJIS.get('helpers', '📋')} Staff Recruitment Updated",

@@ -45,7 +45,8 @@ DEFAULT_CHANNEL_IDS = {
     "challonge_logs": None,  # Challonge Logs Channel
     "transcript_logs": None, # Transcript Logs Channel
     "bot_logs":     None,    # Bot Logs Channel
-    "thumbnail":    None     # Thumbnail Channel
+    "thumbnail":    None,    # Thumbnail Channel
+    "staff_chat":   None     # Staff Chat Channel (for welcoming hired staff)
 }
 
 DEFAULT_ROLE_IDS = {
