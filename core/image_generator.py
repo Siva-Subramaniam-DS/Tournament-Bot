@@ -1,6 +1,7 @@
 import os
 import io
 import re
+import math
 import random
 import glob
 import tempfile
@@ -12,7 +13,7 @@ from typing import Optional, Union, List
 import requests
 import discord
 from discord import app_commands
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
 
 from core.config import BASE_DIR, GAME_ALIASES, ORGANIZATION_NAME
 from core.database import load_guild_tournaments, get_thumbnail_url_from_channel
@@ -66,7 +67,20 @@ def get_font_with_fallbacks(font_name: str, size: int, font_style: str = "regula
     font_candidates = []
     
     # 1. Try local fonts FIRST (from Fonts/ folder)
-    if font_name in ("Geoform", "geoform", "DS-Digital"):
+    if font_name.lower() in ("rajdhani",):
+        if font_style == "bold":
+            local_fonts = [
+                str(Path(fonts_dir) / "rajdhani" / "Rajdhani-Bold.ttf"),
+                str(Path(fonts_dir) / "rajdhani" / "Rajdhani-SemiBold.ttf"),
+                str(Path(fonts_dir) / "geoform" / "Geoform-Bold.otf"),
+            ]
+        else:
+            local_fonts = [
+                str(Path(fonts_dir) / "rajdhani" / "Rajdhani-SemiBold.ttf"),
+                str(Path(fonts_dir) / "rajdhani" / "Rajdhani-Bold.ttf"),
+                str(Path(fonts_dir) / "geoform" / "Geoform.otf"),
+            ]
+    elif font_name in ("Geoform", "geoform", "DS-Digital"):
         if font_style == "bold":
             local_fonts = [
                 str(Path(fonts_dir) / "geoform" / "Geoform-Bold.otf"),
@@ -90,6 +104,7 @@ def get_font_with_fallbacks(font_name: str, size: int, font_style: str = "regula
             ])
             
         all_other_fonts = [
+            str(Path(fonts_dir) / "rajdhani" / "Rajdhani-Bold.ttf"),
             str(Path(fonts_dir) / "geoform" / "Geoform-Bold.otf"),
             str(Path(fonts_dir) / "geoform" / "Geoform.otf"),
             str(Path(fonts_dir) / "capture_it" / "Capture it.ttf"),
@@ -298,8 +313,427 @@ def get_random_template(game_or_mode: str = None) -> Optional[str]:
 
 
 # ===========================================================================================
-# MATCH BANNER / POSTER GENERATOR WITH TOP-RIGHT SERVER LOGO
+# PROCEDURAL GRAPHICS HELPERS (GRADIENTS, GLOWS, TEXT DRAWING)
 # ===========================================================================================
+
+def draw_vertical_gradient(width: int, height: int, top_color: tuple, bottom_color: tuple) -> Image.Image:
+    """Generate a vertical 2-color gradient RGBA image."""
+    base = Image.new('RGBA', (max(1, width), max(1, height)), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(base)
+    for y in range(height):
+        factor = y / max(1, height - 1)
+        r = int(top_color[0] + factor * (bottom_color[0] - top_color[0]))
+        g = int(top_color[1] + factor * (bottom_color[1] - top_color[1]))
+        b = int(top_color[2] + factor * (bottom_color[2] - top_color[2]))
+        a = int(top_color[3] + factor * (bottom_color[3] - top_color[3])) if len(top_color) > 3 and len(bottom_color) > 3 else 255
+        draw.line([(0, y), (width, y)], fill=(r, g, b, a))
+    return base
+
+def draw_gradient_text(canvas: Image.Image, text: str, font: ImageFont.FreeTypeFont, xy: tuple, top_color: tuple, bottom_color: tuple, shadow=True, shadow_offset=(3, 4), shadow_color=(0, 0, 0, 200), anchor=None):
+    """Render text with a smooth vertical linear gradient and optional soft drop shadow."""
+    x, y = xy
+    dummy = Image.new('RGBA', (1, 1))
+    dummy_draw = ImageDraw.Draw(dummy)
+    bbox = dummy_draw.textbbox((0, 0), text, font=font, anchor=anchor)
+    w = max(1, bbox[2] - bbox[0])
+    h = max(1, bbox[3] - bbox[1])
+    
+    pad = 12
+    mask_w = w + pad * 2
+    mask_h = h + pad * 2
+    text_mask = Image.new('L', (mask_w, mask_h), 0)
+    mask_draw = ImageDraw.Draw(text_mask)
+    
+    text_draw_x = pad - bbox[0]
+    text_draw_y = pad - bbox[1]
+    mask_draw.text((text_draw_x, text_draw_y), text, font=font, fill=255, anchor=anchor)
+    
+    if shadow:
+        shadow_mask = text_mask.filter(ImageFilter.GaussianBlur(3))
+        shadow_layer = Image.new('RGBA', (mask_w, mask_h), shadow_color)
+        canvas.paste(shadow_layer, (int(x + bbox[0] - pad + shadow_offset[0]), int(y + bbox[1] - pad + shadow_offset[1])), shadow_mask)
+
+    gradient = draw_vertical_gradient(mask_w, mask_h, top_color, bottom_color)
+    canvas.paste(gradient, (int(x + bbox[0] - pad), int(y + bbox[1] - pad)), text_mask)
+
+def format_display_date(date_str: Optional[str]) -> str:
+    """Format date string into clean 'DAY, DD-MM-YY' display string."""
+    if not date_str or not str(date_str).strip():
+        return datetime.datetime.now(datetime.timezone.utc).strftime("%A, %d-%m-%y").upper()
+    raw = str(date_str).strip()
+    try:
+        parts = re.split(r'[/.-]', raw)
+        if len(parts) == 3:
+            day, month, year = int(parts[0]), int(parts[1]), int(parts[2])
+            if year < 100:
+                year += 2000
+            dt = datetime.date(year, month, day)
+            return dt.strftime("%A, %d-%m-%y").upper()
+    except Exception:
+        pass
+    return raw.upper()
+
+# ===========================================================================================
+# MODERN ESPORTS MATCH POSTER GENERATOR (1920x1080)
+# ===========================================================================================
+
+def create_esports_match_poster(
+    template_path: str,
+    round_label: str,
+    team1_name: str,
+    team2_name: str,
+    utc_time: str,
+    date_str: Optional[str] = None,
+    server_name: str = "Tournament Organizer",
+    server_logo_path: Optional[str] = None,
+    tournament_title: Optional[str] = None
+) -> Optional[str]:
+    """
+    Create a 1920x1080 esports match thumbnail matching the modern competitive broadcast aesthetic:
+    - 16:9 cinematic background with vignette & ambient lighting
+    - Sci-Fi HUD reticles in the 4 corners
+    - Centered top tournament emblem with ambient halo
+    - Coral-to-gold gradient tournament championship title
+    - Translucent capsule badge for Group / Round info
+    - High-impact VS center section with forward-leaning parallel slashes and glowing baseline bars
+    - Glassmorphic bottom HUD card with 3-column partitioned layout (DATE | TIME | SERVER)
+    """
+    try:
+        if not template_path or not os.path.exists(template_path):
+            fallback = get_random_template()
+            if fallback and os.path.exists(fallback):
+                template_path = fallback
+            else:
+                print(f"Template image not found: {template_path}")
+                return None
+
+        target_w, target_h = 1920, 1080
+
+        # 1. Base background: load and cover crop to 1920x1080
+        with Image.open(template_path) as bg_raw:
+            bg = bg_raw.convert('RGBA')
+            bw, bh = bg.size
+            scale = max(target_w / bw, target_h / bh)
+            new_bw = int(bw * scale)
+            new_bh = int(bh * scale)
+            bg = bg.resize((new_bw, new_bh), Image.Resampling.LANCZOS)
+            crop_x = (new_bw - target_w) // 2
+            crop_y = (new_bh - target_h) // 2
+            bg = bg.crop((crop_x, crop_y, crop_x + target_w, crop_y + target_h))
+
+        # 2. Add cinematic vignette & darkening overlay for text contrast
+        dark_overlay = Image.new('RGBA', (target_w, target_h), (5, 8, 16, 115))
+        bg = Image.alpha_composite(bg, dark_overlay)
+
+        grad_layer = Image.new('RGBA', (target_w, target_h), (0, 0, 0, 0))
+        grad_draw = ImageDraw.Draw(grad_layer)
+        for y in range(260):
+            alpha = int(140 * (1 - y / 260))
+            grad_draw.line([(0, y), (target_w, y)], fill=(2, 4, 10, alpha))
+        for y in range(800, target_h):
+            alpha = int(160 * ((y - 800) / (target_h - 800)))
+            grad_draw.line([(0, y), (target_w, y)], fill=(2, 4, 10, alpha))
+        bg = Image.alpha_composite(bg, grad_layer)
+
+        draw = ImageDraw.Draw(bg)
+
+        # 3. Corner Reticle Brackets [ ]
+        corner_color = (235, 85, 75, 230)
+        c_margin = 48
+        c_len = 65
+        c_thick = 4
+
+        # Top-Left ┌
+        draw.line([(c_margin, c_margin), (c_margin + c_len, c_margin)], fill=corner_color, width=c_thick)
+        draw.line([(c_margin, c_margin), (c_margin, c_margin + c_len)], fill=corner_color, width=c_thick)
+        # Top-Right ┐
+        draw.line([(target_w - c_margin, c_margin), (target_w - c_margin - c_len, c_margin)], fill=corner_color, width=c_thick)
+        draw.line([(target_w - c_margin, c_margin), (target_w - c_margin, c_margin + c_len)], fill=corner_color, width=c_thick)
+        # Bottom-Left └
+        draw.line([(c_margin, target_h - c_margin), (c_margin + c_len, target_h - c_margin)], fill=corner_color, width=c_thick)
+        draw.line([(c_margin, target_h - c_margin), (c_margin, target_h - c_margin - c_len)], fill=corner_color, width=c_thick)
+        # Bottom-Right ┘
+        draw.line([(target_w - c_margin, target_h - c_margin), (target_w - c_margin - c_len, target_h - c_margin)], fill=corner_color, width=c_thick)
+        draw.line([(target_w - c_margin, target_h - c_margin), (target_w - c_margin, target_h - c_margin - c_len)], fill=corner_color, width=c_thick)
+
+        # 4. Top Centered Logo
+        logo_size = 110
+        logo_cx = target_w // 2
+        logo_cy = 88
+
+        # Fallback logo if not specified
+        effective_logo = server_logo_path
+        if not effective_logo or not os.path.exists(effective_logo):
+            for candidate in glob.glob(os.path.join(BASE_DIR, "server_logo_*.png")) + [os.path.join(BASE_DIR, "tournament_bot_logo.png")]:
+                if os.path.exists(candidate):
+                    effective_logo = candidate
+                    break
+
+        if effective_logo and os.path.exists(effective_logo):
+            try:
+                # Ambient cyan/blue outer glow halo
+                glow_radius = logo_size // 2 + 16
+                glow_layer = Image.new('RGBA', (target_w, target_h), (0, 0, 0, 0))
+                glow_draw = ImageDraw.Draw(glow_layer)
+                glow_draw.ellipse(
+                    [(logo_cx - glow_radius, logo_cy - glow_radius), (logo_cx + glow_radius, logo_cy + glow_radius)],
+                    fill=(0, 210, 255, 60)
+                )
+                glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(12))
+                bg = Image.alpha_composite(bg, glow_layer)
+                draw = ImageDraw.Draw(bg)
+
+                with Image.open(effective_logo) as s_logo:
+                    s_logo = s_logo.convert('RGBA')
+                    s_logo = s_logo.resize((logo_size, logo_size), Image.Resampling.LANCZOS)
+
+                    c_mask = Image.new('L', (logo_size * 2, logo_size * 2), 0)
+                    c_draw = ImageDraw.Draw(c_mask)
+                    c_draw.ellipse((0, 0, logo_size * 2, logo_size * 2), fill=255)
+                    c_mask = c_mask.resize((logo_size, logo_size), Image.Resampling.LANCZOS)
+
+                    logo_x = logo_cx - logo_size // 2
+                    logo_y = logo_cy - logo_size // 2
+                    bg.paste(s_logo, (logo_x, logo_y), c_mask)
+
+                    draw.ellipse(
+                        [(logo_x - 2, logo_y - 2), (logo_x + logo_size + 2, logo_y + logo_size + 2)],
+                        outline=(0, 220, 255, 230),
+                        width=3
+                    )
+            except Exception as e:
+                print(f"Error drawing logo: {e}")
+
+        # 5. Tournament Title (Below Logo)
+        raw_title = tournament_title if tournament_title else server_name
+        title_text = str(raw_title).strip().upper()
+        font_title = get_font_with_fallbacks("Rajdhani", 64, "bold")
+        title_bbox = draw.textbbox((0, 0), title_text, font=font_title)
+        title_w = title_bbox[2] - title_bbox[0]
+
+        current_title_size = 64
+        while title_w > 1500 and current_title_size > 30:
+            current_title_size -= 2
+            font_title = get_font_with_fallbacks("Rajdhani", current_title_size, "bold")
+            title_bbox = draw.textbbox((0, 0), title_text, font=font_title)
+            title_w = title_bbox[2] - title_bbox[0]
+
+        title_x = (target_w - title_w) // 2
+        title_y = 160
+
+        top_title_col = (255, 110, 115, 255)
+        bot_title_col = (255, 195, 95, 255)
+        draw_gradient_text(bg, title_text, font_title, (title_x, title_y), top_title_col, bot_title_col, shadow=True, shadow_offset=(2, 4), shadow_color=(0, 0, 0, 220))
+        draw = ImageDraw.Draw(bg)
+
+        # 6. Group / Round Pill Capsule
+        raw_capsule = str(round_label or "ROUND 1").strip().upper()
+        if "•" not in raw_capsule and "-" in raw_capsule:
+            capsule_text = raw_capsule.replace("-", " • ")
+        elif "ROUND" not in raw_capsule:
+            capsule_text = f"ROUND {raw_capsule}"
+        else:
+            capsule_text = raw_capsule
+
+        font_capsule = get_font_with_fallbacks("Rajdhani", 26, "bold")
+        cap_bbox = draw.textbbox((0, 0), capsule_text, font=font_capsule)
+        cap_tw = cap_bbox[2] - cap_bbox[0]
+        cap_th = cap_bbox[3] - cap_bbox[1]
+
+        cap_pad_x = 36
+        cap_h = 44
+        cap_w = cap_tw + cap_pad_x * 2
+        cap_x0 = (target_w - cap_w) // 2
+        cap_y0 = 244
+        cap_x1 = cap_x0 + cap_w
+        cap_y1 = cap_y0 + cap_h
+
+        pill_layer = Image.new('RGBA', (target_w, target_h), (0, 0, 0, 0))
+        pill_draw = ImageDraw.Draw(pill_layer)
+        pill_draw.rounded_rectangle([(cap_x0, cap_y0), (cap_x1, cap_y1)], radius=22, fill=(16, 22, 34, 220), outline=(200, 165, 110, 180), width=2)
+        bg = Image.alpha_composite(bg, pill_layer)
+        draw = ImageDraw.Draw(bg)
+
+        cap_tx = (target_w - cap_tw) // 2
+        cap_ty = cap_y0 + (cap_h - cap_th) // 2 - 2
+        draw.text((cap_tx, cap_ty), capsule_text, font=font_capsule, fill=(245, 240, 230, 255))
+
+        # 7. Versus Middle Block (Player 1  /  VS  /  Player 2)
+        vs_center_y = 510
+        font_vs = get_font_with_fallbacks("Rajdhani", 125, "bold")
+        font_names = get_font_with_fallbacks("Rajdhani", 72, "bold")
+
+        vs_text = "VS"
+        vs_bbox = draw.textbbox((0, 0), vs_text, font=font_vs)
+        vs_w = vs_bbox[2] - vs_bbox[0]
+        vs_h = vs_bbox[3] - vs_bbox[1]
+        vs_x = (target_w - vs_w) // 2
+        vs_y = vs_center_y - vs_h // 2 - 12
+
+        t1_clean = sanitize_username_for_poster(team1_name).upper()
+        t2_clean = sanitize_username_for_poster(team2_name).upper()
+
+        t1_bbox = draw.textbbox((0, 0), t1_clean, font=font_names)
+        t2_bbox = draw.textbbox((0, 0), t2_clean, font=font_names)
+        t1_w = t1_bbox[2] - t1_bbox[0]
+        t2_w = t2_bbox[2] - t2_bbox[0]
+
+        name_size = 72
+        while (t1_w > 560 or t2_w > 560) and name_size > 28:
+            name_size -= 2
+            font_names = get_font_with_fallbacks("Rajdhani", name_size, "bold")
+            t1_bbox = draw.textbbox((0, 0), t1_clean, font=font_names)
+            t2_bbox = draw.textbbox((0, 0), t2_clean, font=font_names)
+            t1_w = t1_bbox[2] - t1_bbox[0]
+            t2_w = t2_bbox[2] - t2_bbox[0]
+
+        slash_gap = 26
+        slash_h = 75
+
+        left_slash_x = vs_x - slash_gap
+        right_slash_x = vs_x + vs_w + slash_gap
+
+        t1_x = left_slash_x - slash_gap - t1_w
+        t1_y = vs_center_y - (t1_bbox[3] - t1_bbox[1]) // 2 - 8
+
+        t2_x = right_slash_x + slash_gap
+        t2_y = vs_center_y - (t2_bbox[3] - t2_bbox[1]) // 2 - 8
+
+        # Draw Player 1 Name
+        draw.text((t1_x + 3, t1_y + 3), t1_clean, font=font_names, fill=(0, 0, 0, 180))
+        draw.text((t1_x, t1_y), t1_clean, font=font_names, fill=(255, 255, 255, 255))
+
+        # Team 1 glowing underline fading to left
+        t1_line_y = vs_center_y + 44
+        for lx in range(int(t1_x), int(t1_x + t1_w)):
+            prog = (lx - t1_x) / max(1, t1_w)
+            alpha = int(220 * prog)
+            draw.line([(lx, t1_line_y), (lx, t1_line_y + 2)], fill=(255, 110, 110, alpha))
+
+        # Draw Player 2 Name
+        draw.text((t2_x + 3, t2_y + 3), t2_clean, font=font_names, fill=(0, 0, 0, 180))
+        draw.text((t2_x, t2_y), t2_clean, font=font_names, fill=(255, 255, 255, 255))
+
+        # Team 2 glowing underline fading to right
+        t2_line_y = vs_center_y + 44
+        for lx in range(int(t2_x), int(t2_x + t2_w)):
+            prog = 1.0 - ((lx - t2_x) / max(1, t2_w))
+            alpha = int(220 * prog)
+            draw.line([(lx, t2_line_y), (lx, t2_line_y + 2)], fill=(255, 185, 75, alpha))
+
+        # Slashes: Both leaning forward `/` with gradient
+        slash_layer = Image.new('RGBA', (target_w, target_h), (0, 0, 0, 0))
+        slash_draw = ImageDraw.Draw(slash_layer)
+
+        sy_top = vs_center_y - slash_h // 2
+        sy_bot = vs_center_y + slash_h // 2
+
+        # Left slash `/`
+        slash_draw.line([(left_slash_x - 12, sy_bot), (left_slash_x + 12, sy_top)], fill=(255, 130, 95, 240), width=4)
+        # Right slash `/`
+        slash_draw.line([(right_slash_x - 12, sy_bot), (right_slash_x + 12, sy_top)], fill=(255, 185, 80, 240), width=4)
+
+        bg = Image.alpha_composite(bg, slash_layer)
+        draw = ImageDraw.Draw(bg)
+
+        # VS Text
+        top_vs_col = (255, 115, 105, 255)
+        bot_vs_col = (255, 195, 70, 255)
+        draw_gradient_text(bg, vs_text, font_vs, (vs_x, vs_y), top_vs_col, bot_vs_col, shadow=True, shadow_offset=(3, 5), shadow_color=(0, 0, 0, 240))
+        draw = ImageDraw.Draw(bg)
+
+        # 8. Bottom Info Glassmorphic Card (DATE | TIME | SERVER)
+        card_w = 980
+        card_h = 145
+        card_x0 = (target_w - card_w) // 2
+        card_y0 = 745
+        card_x1 = card_x0 + card_w
+        card_y1 = card_y0 + card_h
+
+        card_surface = Image.new('RGBA', (target_w, target_h), (0, 0, 0, 0))
+        c_draw = ImageDraw.Draw(card_surface)
+        c_draw.rounded_rectangle([(card_x0, card_y0), (card_x1, card_y1)], radius=20, fill=(12, 18, 30, 215))
+
+        # Neon gradient border mask
+        border_mask = Image.new('L', (target_w, target_h), 0)
+        b_draw = ImageDraw.Draw(border_mask)
+        b_draw.rounded_rectangle([(card_x0, card_y0), (card_x1, card_y1)], radius=20, outline=255, width=2)
+
+        border_grad = Image.new('RGBA', (target_w, target_h), (0, 0, 0, 0))
+        bg_draw = ImageDraw.Draw(border_grad)
+        for gx in range(card_x0, card_x1):
+            f = (gx - card_x0) / max(1, card_w)
+            r = int(255 * (1 - f) + 245 * f)
+            g = int(90 * (1 - f) + 195 * f)
+            b = int(140 * (1 - f) + 90 * f)
+            bg_draw.line([(gx, card_y0), (gx, card_y1)], fill=(r, g, b, 190))
+
+        card_surface.paste(border_grad, (0, 0), border_mask)
+        bg = Image.alpha_composite(bg, card_surface)
+        draw = ImageDraw.Draw(bg)
+
+        col_w = card_w // 3
+        div1_x = card_x0 + col_w
+        div2_x = card_x0 + col_w * 2
+
+        div_y_pad = 22
+        for dy in range(card_y0 + div_y_pad, card_y1 - div_y_pad):
+            factor = math.sin((dy - (card_y0 + div_y_pad)) / (card_h - div_y_pad * 2) * math.pi)
+            alpha = int(90 * factor)
+            draw.line([(div1_x, dy), (div1_x, dy)], fill=(255, 255, 255, alpha))
+            draw.line([(div2_x, dy), (div2_x, dy)], fill=(255, 255, 255, alpha))
+
+        font_hud_label = get_font_with_fallbacks("Rajdhani", 19, "bold")
+        font_hud_val = get_font_with_fallbacks("Rajdhani", 28, "bold")
+        font_hud_server = get_font_with_fallbacks("Rajdhani", 23, "bold")
+
+        # Column 1: DATE
+        col1_cx = card_x0 + col_w // 2
+        lbl_date = "DATE"
+        b_l1 = draw.textbbox((0, 0), lbl_date, font=font_hud_label)
+        draw.text((col1_cx - (b_l1[2] - b_l1[0]) // 2, card_y0 + 30), lbl_date, font=font_hud_label, fill=(160, 175, 195, 255))
+
+        val_date = format_display_date(date_str)
+        b_v1 = draw.textbbox((0, 0), val_date, font=font_hud_val)
+        draw.text((col1_cx - (b_v1[2] - b_v1[0]) // 2, card_y0 + 72), val_date, font=font_hud_val, fill=(255, 255, 255, 255))
+
+        # Column 2: TIME
+        col2_cx = card_x0 + col_w + col_w // 2
+        lbl_time = "TIME"
+        b_l2 = draw.textbbox((0, 0), lbl_time, font=font_hud_label)
+        draw.text((col2_cx - (b_l2[2] - b_l2[0]) // 2, card_y0 + 30), lbl_time, font=font_hud_label, fill=(160, 175, 195, 255))
+
+        raw_time = str(utc_time or "00:00 UTC").strip().upper()
+        val_time = raw_time if "UTC" in raw_time or "GMT" in raw_time else f"{raw_time} UTC"
+        b_v2 = draw.textbbox((0, 0), val_time, font=font_hud_val)
+        draw.text((col2_cx - (b_v2[2] - b_v2[0]) // 2, card_y0 + 72), val_time, font=font_hud_val, fill=(255, 255, 255, 255))
+
+        # Column 3: SERVER
+        col3_cx = card_x0 + col_w * 2 + col_w // 2
+        lbl_server = "SERVER"
+        b_l3 = draw.textbbox((0, 0), lbl_server, font=font_hud_label)
+        draw.text((col3_cx - (b_l3[2] - b_l3[0]) // 2, card_y0 + 30), lbl_server, font=font_hud_label, fill=(160, 175, 195, 255))
+
+        val_server = str(server_name or "OFFICIAL SERVER").upper().strip()
+        b_v3 = draw.textbbox((0, 0), val_server, font=font_hud_server)
+        max_server_w = col_w - 40
+        curr_s_font = font_hud_server
+        if (b_v3[2] - b_v3[0]) > max_server_w:
+            while (b_v3[2] - b_v3[0]) > max_server_w and len(val_server) > 8:
+                val_server = val_server[:-4] + "..."
+                b_v3 = draw.textbbox((0, 0), val_server, font=curr_s_font)
+
+        draw.text((col3_cx - (b_v3[2] - b_v3[0]) // 2, card_y0 + 74), val_server, font=curr_s_font, fill=(255, 255, 255, 255))
+
+        # Save generated poster to temp file
+        output_path = os.path.join(BASE_DIR, f"temp_poster_{int(datetime.datetime.now().timestamp())}.png")
+        bg = bg.convert('RGB')
+        bg.save(output_path, "PNG")
+        return output_path
+
+    except Exception as e:
+        print(f"Critical error creating esports poster: {e}")
+        return None
 
 def create_event_poster(
     template_path: str, 
@@ -309,218 +743,21 @@ def create_event_poster(
     utc_time: str, 
     date_str: str = None, 
     server_name: str = "Tournament Organizer",
-    server_logo_path: Optional[str] = None
+    server_logo_path: Optional[str] = None,
+    tournament_title: Optional[str] = None
 ) -> Optional[str]:
-    """
-    Create event poster with text overlays and Top-Right Server Logo badge.
-    """
-    try:
-        if not os.path.exists(template_path):
-            print(f"Template file not found: {template_path}")
-            return None
-            
-        with Image.open(template_path) as img:
-            if img.mode != 'RGBA':
-                img = img.convert('RGBA')
-            
-            # Standard dimensions for crisp Discord display
-            max_width, max_height = 800, 600
-            width, height = img.size
-            
-            if width > max_width or height > max_height:
-                ratio = min(max_width / width, max_height / height)
-                new_width = int(width * ratio)
-                new_height = int(height * ratio)
-                img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-            
-            poster = img.copy()
-            draw = ImageDraw.Draw(poster)
-            width, height = poster.size
-            
-            # Proportional font sizes
-            title_size = int(height * 0.10)
-            round_size = int(height * 0.14)
-            vs_size = int(height * 0.09)
-            time_size = int(height * 0.07)
-            
-            try:
-                font_title = get_font_with_fallbacks("Capture it", title_size, "bold")
-                font_round = get_font_with_fallbacks("Geoform", round_size, "bold")
-                font_vs = get_font_with_fallbacks("Capture it", vs_size, "bold")
-                font_time = get_font_with_fallbacks("Geoform", time_size, "bold")
-            except Exception:
-                font_title = ImageFont.load_default()
-                font_round = ImageFont.load_default()
-                font_vs = ImageFont.load_default()
-                font_time = ImageFont.load_default()
-            
-            text_color = (255, 255, 255)
-            outline_color = (0, 0, 0)
-            yellow_color = (255, 255, 0)
-            
-            def draw_text_with_outline(text, x, y, font, text_color=text_color, use_yellow=False):
-                x, y = int(x), int(y)
-                final_text_color = yellow_color if use_yellow else text_color
-                outline_width = 4
-                for dx in range(-outline_width, outline_width + 1):
-                    for dy in range(-outline_width, outline_width + 1):
-                        if dx != 0 or dy != 0:
-                            try:
-                                draw.text((x + dx, y + dy), text, font=font, fill=outline_color)
-                            except Exception:
-                                pass
-                try:
-                    draw.text((x, y), text, font=font, fill=final_text_color)
-                except Exception:
-                    pass
-
-            # ----------------------------------------------------
-            # 1. OVERLAY SERVER LOGO IN TOP-RIGHT CORNER
-            # ----------------------------------------------------
-            logo_applied = False
-            if server_logo_path and os.path.exists(server_logo_path):
-                try:
-                    with Image.open(server_logo_path) as logo_img:
-                        if logo_img.mode != 'RGBA':
-                            logo_img = logo_img.convert('RGBA')
-                        
-                        badge_size = int(height * 0.16) # ~90-100px on 600px height
-                        logo_img = logo_img.resize((badge_size, badge_size), Image.Resampling.LANCZOS)
-                        
-                        # Create circular mask with anti-aliasing
-                        mask = Image.new('L', (badge_size * 2, badge_size * 2), 0)
-                        mask_draw = ImageDraw.Draw(mask)
-                        mask_draw.ellipse((0, 0, badge_size * 2, badge_size * 2), fill=255)
-                        mask = mask.resize((badge_size, badge_size), Image.Resampling.LANCZOS)
-                        
-                        # Paste circular logo in top-right
-                        logo_x = width - badge_size - int(width * 0.03)
-                        logo_y = int(height * 0.04)
-                        
-                        poster.paste(logo_img, (logo_x, logo_y), mask)
-                        
-                        # Draw gold/white circular badge border
-                        draw.ellipse(
-                            [(logo_x - 1, logo_y - 1), (logo_x + badge_size + 1, logo_y + badge_size + 1)],
-                            outline=(255, 215, 0, 230), # Gold ring
-                            width=3
-                        )
-                        logo_applied = True
-                except Exception as logo_err:
-                    print(f"Error applying top-right server logo on poster: {logo_err}")
-
-            # ----------------------------------------------------
-            # 2. SERVER NAME TEXT (Top Center)
-            # ----------------------------------------------------
-            try:
-                server_text = server_name
-                server_bbox = draw.textbbox((0, 0), server_text, font=font_title)
-                server_width = server_bbox[2] - server_bbox[0]
-                
-                # If logo is on top-right, leave safety margin on right side
-                max_text_width = width * 0.75 if logo_applied else width * 0.90
-                temp_font = font_title
-                temp_size = title_size
-                while server_width > max_text_width and temp_size > 10:
-                    temp_size -= 2
-                    try:
-                        temp_font = get_font_with_fallbacks("Capture it", temp_size, "bold")
-                    except Exception:
-                        temp_font = ImageFont.load_default()
-                    server_bbox = draw.textbbox((0, 0), server_text, font=temp_font)
-                    server_width = server_bbox[2] - server_bbox[0]
-                
-                font_title = temp_font
-                # Center within available header area
-                server_x = (width - server_width) // 2
-                server_y = int(height * 0.08)
-                draw_text_with_outline(server_text, server_x, server_y, font_title)
-            except Exception as e:
-                print(f"Error adding server name: {e}")
-
-            # ----------------------------------------------------
-            # 3. ROUND TEXT (Center Top - Yellow)
-            # ----------------------------------------------------
-            try:
-                round_text = f"ROUND {round_label}"
-                round_bbox = draw.textbbox((0, 0), round_text, font=font_round)
-                round_width = round_bbox[2] - round_bbox[0]
-                round_x = (width - round_width) // 2
-                round_y = int(height * 0.35)
-                draw_text_with_outline(round_text, round_x, round_y, font_round, use_yellow=True)
-            except Exception as e:
-                print(f"Error adding round text: {e}")
-
-            # ----------------------------------------------------
-            # 4. CAPTAIN VS CAPTAIN TEXT (Center)
-            # ----------------------------------------------------
-            try:
-                left_name_text = sanitize_username_for_poster(team1_captain)
-                vs_core = " VS "
-                right_name_text = sanitize_username_for_poster(team2_captain)
-
-                left_box = draw.textbbox((0, 0), left_name_text, font=font_vs)
-                vs_box = draw.textbbox((0, 0), vs_core, font=font_vs)
-                right_box = draw.textbbox((0, 0), right_name_text, font=font_vs)
-                total_width = (left_box[2] - left_box[0]) + (vs_box[2] - vs_box[0]) + (right_box[2] - right_box[0])
-                
-                temp_font_vs = font_vs
-                temp_vs_size = vs_size
-                while total_width > width * 0.95 and temp_vs_size > 10:
-                    temp_vs_size -= 2
-                    try:
-                        temp_font_vs = get_font_with_fallbacks("Capture it", temp_vs_size, "bold")
-                    except Exception:
-                        temp_font_vs = ImageFont.load_default()
-                    left_box = draw.textbbox((0, 0), left_name_text, font=temp_font_vs)
-                    vs_box = draw.textbbox((0, 0), vs_core, font=temp_font_vs)
-                    right_box = draw.textbbox((0, 0), right_name_text, font=temp_font_vs)
-                    total_width = (left_box[2] - left_box[0]) + (vs_box[2] - vs_box[0]) + (right_box[2] - right_box[0])
-                
-                font_vs = temp_font_vs
-                current_x = (width - total_width) // 2
-                vs_y = int(height * 0.55)
-
-                draw_text_with_outline(left_name_text, current_x, vs_y, font_vs)
-                current_x += (left_box[2] - left_box[0])
-                draw_text_with_outline(vs_core, current_x, vs_y, font_vs, use_yellow=False)
-                current_x += (vs_box[2] - vs_box[0])
-                draw_text_with_outline(right_name_text, current_x, vs_y, font_vs)
-            except Exception as e:
-                print(f"Error adding VS text: {e}")
-
-            # ----------------------------------------------------
-            # 5. DATE (Optional) & UTC TIME (Bottom)
-            # ----------------------------------------------------
-            if date_str:
-                try:
-                    date_text = f"DATE:  {date_str}"
-                    date_bbox = draw.textbbox((0, 0), date_text, font=font_time)
-                    date_width = date_bbox[2] - date_bbox[0]
-                    date_x = (width - date_width) // 2
-                    date_y = int(height * 0.72)
-                    draw_text_with_outline(date_text, date_x, date_y, font_time)
-                except Exception as e:
-                    print(f"Error adding date: {e}")
-
-            try:
-                time_text = f"TIME:  {utc_time}"
-                time_bbox = draw.textbbox((0, 0), time_text, font=font_time)
-                time_width = time_bbox[2] - time_bbox[0]
-                time_x = (width - time_width) // 2
-                time_y = int(height * 0.82) if date_str else int(height * 0.75)
-                draw_text_with_outline(time_text, time_x, time_y, font_time)
-            except Exception as e:
-                print(f"Error adding time: {e}")
-
-            # Save generated poster to temp file
-            output_path = os.path.join(BASE_DIR, f"temp_poster_{int(datetime.datetime.now().timestamp())}.png")
-            poster.save(output_path, "PNG")
-            return output_path
-
-    except Exception as e:
-        print(f"Critical error creating poster: {e}")
-        return None
+    """Backward-compatible wrapper routing directly to modern esports match poster generator."""
+    return create_esports_match_poster(
+        template_path=template_path,
+        round_label=round_label,
+        team1_name=team1_captain,
+        team2_name=team2_captain,
+        utc_time=utc_time,
+        date_str=date_str,
+        server_name=server_name,
+        server_logo_path=server_logo_path,
+        tournament_title=tournament_title
+    )
 
 
 # ===========================================================================================

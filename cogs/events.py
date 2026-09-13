@@ -37,7 +37,7 @@ from core.database import (
 )
 
 from core.image_generator import (
-    get_random_template, create_event_poster,
+    get_random_template, create_event_poster, create_esports_match_poster,
     get_thumbnail_url_from_channel
 )
 from core.emojis import EMOJIS
@@ -762,17 +762,19 @@ class Events(commands.Cog):
                     cfg = get_guild_config(interaction.guild.id) if interaction.guild else {}
                     org_name = cfg.get('organization_name') or (interaction.guild.name if interaction.guild else "Tournament Organizer")
                     server_logo = cfg.get('server_logo_path')
+                    stage_label = f"{group_label} • ROUND {round_label}" if group_label else f"ROUND {round_label}"
                     
                     poster_image = await asyncio.to_thread(
                         create_event_poster,
                         template_image, 
-                        round_label, 
+                        stage_label, 
                         t1_poster, 
                         t2_poster, 
                         time_info['utc_time_simple'],
                         f"{date:02d}/{month:02d}/{current_year}",
                         server_name=org_name,
-                        server_logo_path=server_logo
+                        server_logo_path=server_logo,
+                        tournament_title=tournament_display
                     )
                     if poster_image:
                         scheduled_events[event_id]['poster_path'] = poster_image
@@ -1239,7 +1241,8 @@ class Events(commands.Cog):
                     time_info['utc_time_simple'],
                     f"{new_datetime.day:02d}/{new_datetime.month:02d}/{new_datetime.year}",
                     server_name=cfg.get('organization_name', 'Organizer'),
-                    server_logo_path=server_logo
+                    server_logo_path=server_logo,
+                    tournament_title=tournament or event_to_edit.get('tournament')
                 )
                 if poster:
                     event_to_edit['poster_path'] = poster
@@ -1373,6 +1376,64 @@ class Events(commands.Cog):
             interaction, match, winner, winner_team_name, loser, loser_team_name,
             winner_score, loser_score, remarks, disqualified, judge, recorder
         )
+
+    @app_commands.command(name="thumbnail-create", description="Generate a high-end esports match thumbnail poster (1920x1080)")
+    @app_commands.describe(
+        tournament_title="Tournament Championship Title (e.g. ETERNAL FRIGATE CHAMPIONSHIP S3)",
+        stage_round="Stage & Round (e.g. GROUP B • ROUND 3)",
+        team1="Name of Team or Player 1 (e.g. TEASAN21)",
+        team2="Name of Team or Player 2 (e.g. HOKAGE_141)",
+        time="Match Time (e.g. 04:00 UTC)",
+        date="Match Date (e.g. 13/09/2026 or SUNDAY, 13-09-26)",
+        server="Server or Host Name (e.g. ETERNAL ESPORTS ASIA)",
+        game="Game Category for background artwork (e.g. Modern Warship)"
+    )
+    @app_commands.autocomplete(game=game_autocomplete)
+    @with_guild_context
+    async def thumbnail_create_cmd(
+        self,
+        interaction: discord.Interaction,
+        tournament_title: str,
+        stage_round: str,
+        team1: str,
+        team2: str,
+        time: str = "04:00 UTC",
+        date: str = None,
+        server: str = None,
+        game: str = "Modern Warship"
+    ):
+        await interaction.response.defer(ephemeral=False)
+        cfg = get_guild_config(interaction.guild.id) if interaction.guild else {}
+        server_name = server or cfg.get('organization_name') or (interaction.guild.name if interaction.guild else "Tournament Organizer")
+        server_logo = cfg.get('server_logo_path')
+        template_img = get_random_template(game_or_mode=game)
+        
+        poster_path = await asyncio.to_thread(
+            create_esports_match_poster,
+            template_path=template_img,
+            round_label=stage_round,
+            team1_name=team1,
+            team2_name=team2,
+            utc_time=time,
+            date_str=date,
+            server_name=server_name,
+            server_logo_path=server_logo,
+            tournament_title=tournament_title
+        )
+        
+        if not poster_path or not os.path.exists(poster_path):
+            await interaction.followup.send("❌ Failed to generate thumbnail poster.", ephemeral=True)
+            return
+            
+        file = discord.File(poster_path, filename="match_thumbnail.png")
+        embed = discord.Embed(
+            title=f"🎮 {tournament_title}",
+            description=f"**{team1}** vs **{team2}**\n🏆 **Stage:** `{stage_round}`\n⏰ **Time:** `{time}`\n📅 **Date:** `{date or 'Today'}`",
+            color=0x2ecc71
+        )
+        embed.set_image(url="attachment://match_thumbnail.png")
+        embed.set_footer(text=f"Resolution: 1920x1080 • Generated for {server_name}")
+        await interaction.followup.send(file=file, embed=embed)
 
 
 async def handle_event_result_edit(
