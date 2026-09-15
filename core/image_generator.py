@@ -13,7 +13,7 @@ from typing import Optional, Union, List
 import requests
 import discord
 from discord import app_commands
-from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter, ImageChops, ImageEnhance
 
 from core.config import BASE_DIR, GAME_ALIASES, ORGANIZATION_NAME
 from core.database import load_guild_tournaments, get_thumbnail_url_from_channel
@@ -233,8 +233,26 @@ async def tournament_autocomplete(
         print(f"Error in tournament_autocomplete: {e}")
         return []
 
+def get_thumbnail_layer_path() -> Optional[str]:
+    """Resolve the absolute path to Templates/Thumbnail Layer.png if available."""
+    base = get_templates_base_path()
+    candidates = [
+        os.path.join(base, "Thumbnail Layer.png"),
+        os.path.join(base, "thumbnail layer.png"),
+        os.path.join(BASE_DIR, "Templates", "Thumbnail Layer.png"),
+        os.path.join(BASE_DIR, "templates", "Thumbnail Layer.png"),
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return None
+
 def get_random_template(game_or_mode: str = None) -> Optional[str]:
     """Get a random template image from the Templates folder or a specific game subfolder."""
+    # If no game specified or generic match, prioritize Thumbnail Layer.png if present
+    thumb_layer = get_thumbnail_layer_path()
+    if not game_or_mode and thumb_layer:
+        return thumb_layer
     template_path = get_templates_base_path()
 
     if not os.path.exists(template_path):
@@ -389,77 +407,86 @@ def create_esports_match_poster(
     tournament_title: Optional[str] = None
 ) -> Optional[str]:
     """
-    Create a 1920x1080 esports match thumbnail matching the modern competitive broadcast aesthetic:
-    - 16:9 cinematic background with vignette & ambient lighting
-    - Sci-Fi HUD reticles in the 4 corners
-    - Centered top tournament emblem with ambient halo
-    - Coral-to-gold gradient tournament championship title
+    Create a 1920x1080 esports match thumbnail matching modern competitive broadcast aesthetics:
+    - Automatically incorporates Templates/Thumbnail Layer.png with cinematic arena spotlights & 3D metallic VS
+    - Composites game background seamlessly when game template is provided
+    - Illuminated left and right team spotlight zones with futuristic glow baselines
+    - Luminous top emblem & championship gradient typography
     - Translucent capsule badge for Group / Round info
-    - High-impact VS center section with forward-leaning parallel slashes and glowing baseline bars
     - Glassmorphic bottom HUD card with 3-column partitioned layout (DATE | TIME | SERVER)
     """
     try:
-        if not template_path or not os.path.exists(template_path):
-            fallback = get_random_template()
-            if fallback and os.path.exists(fallback):
-                template_path = fallback
-            else:
-                print(f"Template image not found: {template_path}")
-                return None
-
         target_w, target_h = 1920, 1080
+        thumb_layer = get_thumbnail_layer_path()
+        use_spotlight_layer = False
 
-        # 1. Base background: load and cover crop to 1920x1080
-        with Image.open(template_path) as bg_raw:
-            bg = bg_raw.convert('RGBA')
-            bw, bh = bg.size
-            scale = max(target_w / bw, target_h / bh)
-            new_bw = int(bw * scale)
-            new_bh = int(bh * scale)
-            bg = bg.resize((new_bw, new_bh), Image.Resampling.LANCZOS)
-            crop_x = (new_bw - target_w) // 2
-            crop_y = (new_bh - target_h) // 2
-            bg = bg.crop((crop_x, crop_y, crop_x + target_w, crop_y + target_h))
+        if thumb_layer and os.path.exists(thumb_layer):
+            # Sample 1: Pure Thumbnail Layer stage background
+            with Image.open(thumb_layer) as tl_raw:
+                bg = tl_raw.convert('RGBA').resize((target_w, target_h), Image.Resampling.LANCZOS)
+            use_spotlight_layer = True
 
-        # 2. Add cinematic vignette & darkening overlay for text contrast
-        dark_overlay = Image.new('RGBA', (target_w, target_h), (5, 8, 16, 115))
-        bg = Image.alpha_composite(bg, dark_overlay)
+        if not use_spotlight_layer:
+            if not template_path or not os.path.exists(template_path):
+                fallback = get_random_template()
+                if fallback and os.path.exists(fallback):
+                    template_path = fallback
+                else:
+                    print(f"Template image not found: {template_path}")
+                    return None
 
-        grad_layer = Image.new('RGBA', (target_w, target_h), (0, 0, 0, 0))
-        grad_draw = ImageDraw.Draw(grad_layer)
-        for y in range(260):
-            alpha = int(140 * (1 - y / 260))
-            grad_draw.line([(0, y), (target_w, y)], fill=(2, 4, 10, alpha))
-        for y in range(800, target_h):
-            alpha = int(160 * ((y - 800) / (target_h - 800)))
-            grad_draw.line([(0, y), (target_w, y)], fill=(2, 4, 10, alpha))
-        bg = Image.alpha_composite(bg, grad_layer)
+            # 1. Base background: load and cover crop to 1920x1080
+            with Image.open(template_path) as bg_raw:
+                bg = bg_raw.convert('RGBA')
+                bw, bh = bg.size
+                scale = max(target_w / bw, target_h / bh)
+                new_bw = int(bw * scale)
+                new_bh = int(bh * scale)
+                bg = bg.resize((new_bw, new_bh), Image.Resampling.LANCZOS)
+                crop_x = (new_bw - target_w) // 2
+                crop_y = (new_bh - target_h) // 2
+                bg = bg.crop((crop_x, crop_y, crop_x + target_w, crop_y + target_h))
+
+            # 2. Add cinematic vignette & darkening overlay for text contrast
+            dark_overlay = Image.new('RGBA', (target_w, target_h), (5, 8, 16, 115))
+            bg = Image.alpha_composite(bg, dark_overlay)
+
+            grad_layer = Image.new('RGBA', (target_w, target_h), (0, 0, 0, 0))
+            grad_draw = ImageDraw.Draw(grad_layer)
+            for y in range(260):
+                alpha = int(140 * (1 - y / 260))
+                grad_draw.line([(0, y), (target_w, y)], fill=(2, 4, 10, alpha))
+            for y in range(800, target_h):
+                alpha = int(160 * ((y - 800) / (target_h - 800)))
+                grad_draw.line([(0, y), (target_w, y)], fill=(2, 4, 10, alpha))
+            bg = Image.alpha_composite(bg, grad_layer)
 
         draw = ImageDraw.Draw(bg)
 
-        # 3. Corner Reticle Brackets [ ]
-        corner_color = (235, 85, 75, 230)
-        c_margin = 48
-        c_len = 65
-        c_thick = 4
+        # 3. Corner Reticle Brackets [ ] (Only for legacy fallback templates without spotlight stage)
+        if not use_spotlight_layer:
+            corner_color = (235, 85, 75, 230)
+            c_margin = 48
+            c_len = 65
+            c_thick = 4
 
-        # Top-Left ┌
-        draw.line([(c_margin, c_margin), (c_margin + c_len, c_margin)], fill=corner_color, width=c_thick)
-        draw.line([(c_margin, c_margin), (c_margin, c_margin + c_len)], fill=corner_color, width=c_thick)
-        # Top-Right ┐
-        draw.line([(target_w - c_margin, c_margin), (target_w - c_margin - c_len, c_margin)], fill=corner_color, width=c_thick)
-        draw.line([(target_w - c_margin, c_margin), (target_w - c_margin, c_margin + c_len)], fill=corner_color, width=c_thick)
-        # Bottom-Left └
-        draw.line([(c_margin, target_h - c_margin), (c_margin + c_len, target_h - c_margin)], fill=corner_color, width=c_thick)
-        draw.line([(c_margin, target_h - c_margin), (c_margin, target_h - c_margin - c_len)], fill=corner_color, width=c_thick)
-        # Bottom-Right ┘
-        draw.line([(target_w - c_margin, target_h - c_margin), (target_w - c_margin - c_len, target_h - c_margin)], fill=corner_color, width=c_thick)
-        draw.line([(target_w - c_margin, target_h - c_margin), (target_w - c_margin, target_h - c_margin - c_len)], fill=corner_color, width=c_thick)
+            # Top-Left ┌
+            draw.line([(c_margin, c_margin), (c_margin + c_len, c_margin)], fill=corner_color, width=c_thick)
+            draw.line([(c_margin, c_margin), (c_margin, c_margin + c_len)], fill=corner_color, width=c_thick)
+            # Top-Right ┐
+            draw.line([(target_w - c_margin, c_margin), (target_w - c_margin - c_len, c_margin)], fill=corner_color, width=c_thick)
+            draw.line([(target_w - c_margin, c_margin), (target_w - c_margin, c_margin + c_len)], fill=corner_color, width=c_thick)
+            # Bottom-Left └
+            draw.line([(c_margin, target_h - c_margin), (c_margin + c_len, target_h - c_margin)], fill=corner_color, width=c_thick)
+            draw.line([(c_margin, target_h - c_margin), (c_margin, target_h - c_margin - c_len)], fill=corner_color, width=c_thick)
+            # Bottom-Right ┘
+            draw.line([(target_w - c_margin, target_h - c_margin), (target_w - c_margin - c_len, target_h - c_margin)], fill=corner_color, width=c_thick)
+            draw.line([(target_w - c_margin, target_h - c_margin), (target_w - c_margin, target_h - c_margin - c_len)], fill=corner_color, width=c_thick)
 
         # 4. Top Centered Logo
-        logo_size = 110
+        logo_size = 100 if use_spotlight_layer else 110
         logo_cx = target_w // 2
-        logo_cy = 88
+        logo_cy = 85 if use_spotlight_layer else 88
 
         # Fallback logo if not specified
         effective_logo = server_logo_path
@@ -477,9 +504,9 @@ def create_esports_match_poster(
                 glow_draw = ImageDraw.Draw(glow_layer)
                 glow_draw.ellipse(
                     [(logo_cx - glow_radius, logo_cy - glow_radius), (logo_cx + glow_radius, logo_cy + glow_radius)],
-                    fill=(0, 210, 255, 60)
+                    fill=(0, 210, 255, 75)
                 )
-                glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(12))
+                glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(14))
                 bg = Image.alpha_composite(bg, glow_layer)
                 draw = ImageDraw.Draw(bg)
 
@@ -507,19 +534,20 @@ def create_esports_match_poster(
         # 5. Tournament Title (Below Logo)
         raw_title = tournament_title if tournament_title else server_name
         title_text = str(raw_title).strip().upper()
-        font_title = get_font_with_fallbacks("Rajdhani", 64, "bold")
+        init_title_size = 58 if use_spotlight_layer else 64
+        font_title = get_font_with_fallbacks("Rajdhani", init_title_size, "bold")
         title_bbox = draw.textbbox((0, 0), title_text, font=font_title)
         title_w = title_bbox[2] - title_bbox[0]
 
-        current_title_size = 64
-        while title_w > 1500 and current_title_size > 30:
+        current_title_size = init_title_size
+        while title_w > 1500 and current_title_size > 28:
             current_title_size -= 2
             font_title = get_font_with_fallbacks("Rajdhani", current_title_size, "bold")
             title_bbox = draw.textbbox((0, 0), title_text, font=font_title)
             title_w = title_bbox[2] - title_bbox[0]
 
         title_x = (target_w - title_w) // 2
-        title_y = 160
+        title_y = 152 if use_spotlight_layer else 160
 
         top_title_col = (255, 110, 115, 255)
         bot_title_col = (255, 195, 95, 255)
@@ -535,22 +563,22 @@ def create_esports_match_poster(
         else:
             capsule_text = raw_capsule
 
-        font_capsule = get_font_with_fallbacks("Rajdhani", 26, "bold")
+        font_capsule = get_font_with_fallbacks("Rajdhani", 24 if use_spotlight_layer else 26, "bold")
         cap_bbox = draw.textbbox((0, 0), capsule_text, font=font_capsule)
         cap_tw = cap_bbox[2] - cap_bbox[0]
         cap_th = cap_bbox[3] - cap_bbox[1]
 
-        cap_pad_x = 36
-        cap_h = 44
+        cap_pad_x = 32 if use_spotlight_layer else 36
+        cap_h = 38 if use_spotlight_layer else 44
         cap_w = cap_tw + cap_pad_x * 2
         cap_x0 = (target_w - cap_w) // 2
-        cap_y0 = 244
+        cap_y0 = 228 if use_spotlight_layer else 244
         cap_x1 = cap_x0 + cap_w
         cap_y1 = cap_y0 + cap_h
 
         pill_layer = Image.new('RGBA', (target_w, target_h), (0, 0, 0, 0))
         pill_draw = ImageDraw.Draw(pill_layer)
-        pill_draw.rounded_rectangle([(cap_x0, cap_y0), (cap_x1, cap_y1)], radius=22, fill=(16, 22, 34, 220), outline=(200, 165, 110, 180), width=2)
+        pill_draw.rounded_rectangle([(cap_x0, cap_y0), (cap_x1, cap_y1)], radius=cap_h // 2, fill=(12, 18, 30, 225), outline=(0, 210, 255, 180) if use_spotlight_layer else (200, 165, 110, 180), width=2)
         bg = Image.alpha_composite(bg, pill_layer)
         draw = ImageDraw.Draw(bg)
 
@@ -559,171 +587,286 @@ def create_esports_match_poster(
         draw.text((cap_tx, cap_ty), capsule_text, font=font_capsule, fill=(245, 240, 230, 255))
 
         # 7. Versus Middle Block (Player 1  /  VS  /  Player 2)
-        vs_center_y = 510
-        font_vs = get_font_with_fallbacks("Rajdhani", 125, "bold")
-        font_names = get_font_with_fallbacks("Rajdhani", 72, "bold")
-
-        vs_text = "VS"
-        vs_bbox = draw.textbbox((0, 0), vs_text, font=font_vs)
-        vs_w = vs_bbox[2] - vs_bbox[0]
-        vs_h = vs_bbox[3] - vs_bbox[1]
-        vs_x = (target_w - vs_w) // 2
-        vs_y = vs_center_y - vs_h // 2 - 12
-
         t1_clean = sanitize_username_for_poster(team1_name).upper()
         t2_clean = sanitize_username_for_poster(team2_name).upper()
 
-        t1_bbox = draw.textbbox((0, 0), t1_clean, font=font_names)
-        t2_bbox = draw.textbbox((0, 0), t2_clean, font=font_names)
-        t1_w = t1_bbox[2] - t1_bbox[0]
-        t2_w = t2_bbox[2] - t2_bbox[0]
+        if use_spotlight_layer:
+            # Spotlight Layout: Left Spotlight (x=450) and Right Spotlight (x=1460)
+            # The 3D metallic VS and light slash are already present in Thumbnail Layer.png!
+            font_names = get_font_with_fallbacks("Rajdhani", 76, "bold")
+            font_tag = get_font_with_fallbacks("Rajdhani", 22, "bold")
 
-        name_size = 72
-        while (t1_w > 560 or t2_w > 560) and name_size > 28:
-            name_size -= 2
-            font_names = get_font_with_fallbacks("Rajdhani", name_size, "bold")
+            # Fit team names inside spotlight width (~520px max)
+            name_size = 76
+            t1_b = draw.textbbox((0, 0), t1_clean, font=font_names)
+            t2_b = draw.textbbox((0, 0), t2_clean, font=font_names)
+            while ((t1_b[2] - t1_b[0]) > 520 or (t2_b[2] - t2_b[0]) > 520) and name_size > 28:
+                name_size -= 2
+                font_names = get_font_with_fallbacks("Rajdhani", name_size, "bold")
+                t1_b = draw.textbbox((0, 0), t1_clean, font=font_names)
+                t2_b = draw.textbbox((0, 0), t2_clean, font=font_names)
+
+            t1_w, t1_h = t1_b[2] - t1_b[0], t1_b[3] - t1_b[1]
+            t2_w, t2_h = t2_b[2] - t2_b[0], t2_b[3] - t2_b[1]
+
+            t1_cx = 450
+            t2_cx = 1460
+            vs_cy = 515
+
+            t1_x = t1_cx - t1_w // 2
+            t1_y = vs_cy - t1_h // 2
+            t2_x = t2_cx - t2_w // 2
+            t2_y = vs_cy - t2_h // 2
+
+            # Team 1 Tag & Name under Left Spotlight
+            tag1 = "TEAM ALPHA"
+            tb1 = draw.textbbox((0, 0), tag1, font=font_tag)
+            draw.text((t1_cx - (tb1[2] - tb1[0]) // 2, t1_y - 36), tag1, font=font_tag, fill=(0, 220, 255, 230))
+            draw.text((t1_x + 3, t1_y + 4), t1_clean, font=font_names, fill=(0, 0, 0, 220))
+            draw.text((t1_x, t1_y), t1_clean, font=font_names, fill=(255, 255, 255, 255))
+
+            # Team 1 Glowing Baseline Bar
+            b1_w = max(t1_w + 40, 280)
+            b1_x0 = t1_cx - b1_w // 2
+            b1_y = t1_y + t1_h + 14
+            for lx in range(int(b1_x0), int(b1_x0 + b1_w)):
+                p = 1.0 - abs(lx - t1_cx) / (b1_w / 2)
+                alpha = int(240 * max(0, p))
+                draw.line([(lx, b1_y), (lx, b1_y + 3)], fill=(0, 220, 255, alpha))
+
+            # Team 2 Tag & Name under Right Spotlight
+            tag2 = "TEAM BRAVO"
+            tb2 = draw.textbbox((0, 0), tag2, font=font_tag)
+            draw.text((t2_cx - (tb2[2] - tb2[0]) // 2, t2_y - 36), tag2, font=font_tag, fill=(255, 185, 75, 230))
+            draw.text((t2_x + 3, t2_y + 4), t2_clean, font=font_names, fill=(0, 0, 0, 220))
+            draw.text((t2_x, t2_y), t2_clean, font=font_names, fill=(255, 255, 255, 255))
+
+            # Team 2 Glowing Baseline Bar
+            b2_w = max(t2_w + 40, 280)
+            b2_x0 = t2_cx - b2_w // 2
+            b2_y = t2_y + t2_h + 14
+            for lx in range(int(b2_x0), int(b2_x0 + b2_w)):
+                p = 1.0 - abs(lx - t2_cx) / (b2_w / 2)
+                alpha = int(240 * max(0, p))
+                draw.line([(lx, b2_y), (lx, b2_y + 3)], fill=(255, 185, 75, alpha))
+
+        else:
+            # Standard procedural VS and slashes layout
+            vs_center_y = 510
+            font_vs = get_font_with_fallbacks("Rajdhani", 125, "bold")
+            font_names = get_font_with_fallbacks("Rajdhani", 72, "bold")
+
+            vs_text = "VS"
+            vs_bbox = draw.textbbox((0, 0), vs_text, font=font_vs)
+            vs_w = vs_bbox[2] - vs_bbox[0]
+            vs_h = vs_bbox[3] - vs_bbox[1]
+            vs_x = (target_w - vs_w) // 2
+            vs_y = vs_center_y - vs_h // 2 - 12
+
             t1_bbox = draw.textbbox((0, 0), t1_clean, font=font_names)
             t2_bbox = draw.textbbox((0, 0), t2_clean, font=font_names)
             t1_w = t1_bbox[2] - t1_bbox[0]
             t2_w = t2_bbox[2] - t2_bbox[0]
 
-        slash_gap = 26
-        slash_h = 75
+            name_size = 72
+            while (t1_w > 560 or t2_w > 560) and name_size > 28:
+                name_size -= 2
+                font_names = get_font_with_fallbacks("Rajdhani", name_size, "bold")
+                t1_bbox = draw.textbbox((0, 0), t1_clean, font=font_names)
+                t2_bbox = draw.textbbox((0, 0), t2_clean, font=font_names)
+                t1_w = t1_bbox[2] - t1_bbox[0]
+                t2_w = t2_bbox[2] - t2_bbox[0]
 
-        left_slash_x = vs_x - slash_gap
-        right_slash_x = vs_x + vs_w + slash_gap
+            slash_gap = 26
+            slash_h = 75
 
-        t1_x = left_slash_x - slash_gap - t1_w
-        t1_y = vs_center_y - (t1_bbox[3] - t1_bbox[1]) // 2 - 8
+            left_slash_x = vs_x - slash_gap
+            right_slash_x = vs_x + vs_w + slash_gap
 
-        t2_x = right_slash_x + slash_gap
-        t2_y = vs_center_y - (t2_bbox[3] - t2_bbox[1]) // 2 - 8
+            t1_x = left_slash_x - slash_gap - t1_w
+            t1_y = vs_center_y - (t1_bbox[3] - t1_bbox[1]) // 2 - 8
 
-        # Draw Player 1 Name
-        draw.text((t1_x + 3, t1_y + 3), t1_clean, font=font_names, fill=(0, 0, 0, 180))
-        draw.text((t1_x, t1_y), t1_clean, font=font_names, fill=(255, 255, 255, 255))
+            t2_x = right_slash_x + slash_gap
+            t2_y = vs_center_y - (t2_bbox[3] - t2_bbox[1]) // 2 - 8
 
-        # Team 1 glowing underline fading to left
-        t1_line_y = vs_center_y + 44
-        for lx in range(int(t1_x), int(t1_x + t1_w)):
-            prog = (lx - t1_x) / max(1, t1_w)
-            alpha = int(220 * prog)
-            draw.line([(lx, t1_line_y), (lx, t1_line_y + 2)], fill=(255, 110, 110, alpha))
+            # Draw Player 1 Name
+            draw.text((t1_x + 3, t1_y + 3), t1_clean, font=font_names, fill=(0, 0, 0, 180))
+            draw.text((t1_x, t1_y), t1_clean, font=font_names, fill=(255, 255, 255, 255))
 
-        # Draw Player 2 Name
-        draw.text((t2_x + 3, t2_y + 3), t2_clean, font=font_names, fill=(0, 0, 0, 180))
-        draw.text((t2_x, t2_y), t2_clean, font=font_names, fill=(255, 255, 255, 255))
+            # Team 1 glowing underline fading to left
+            t1_line_y = vs_center_y + 44
+            for lx in range(int(t1_x), int(t1_x + t1_w)):
+                prog = (lx - t1_x) / max(1, t1_w)
+                alpha = int(220 * prog)
+                draw.line([(lx, t1_line_y), (lx, t1_line_y + 2)], fill=(255, 110, 110, alpha))
 
-        # Team 2 glowing underline fading to right
-        t2_line_y = vs_center_y + 44
-        for lx in range(int(t2_x), int(t2_x + t2_w)):
-            prog = 1.0 - ((lx - t2_x) / max(1, t2_w))
-            alpha = int(220 * prog)
-            draw.line([(lx, t2_line_y), (lx, t2_line_y + 2)], fill=(255, 185, 75, alpha))
+            # Draw Player 2 Name
+            draw.text((t2_x + 3, t2_y + 3), t2_clean, font=font_names, fill=(0, 0, 0, 180))
+            draw.text((t2_x, t2_y), t2_clean, font=font_names, fill=(255, 255, 255, 255))
 
-        # Slashes: Both leaning forward `/` with gradient
-        slash_layer = Image.new('RGBA', (target_w, target_h), (0, 0, 0, 0))
-        slash_draw = ImageDraw.Draw(slash_layer)
+            # Team 2 glowing underline fading to right
+            t2_line_y = vs_center_y + 44
+            for lx in range(int(t2_x), int(t2_x + t2_w)):
+                prog = 1.0 - ((lx - t2_x) / max(1, t2_w))
+                alpha = int(220 * prog)
+                draw.line([(lx, t2_line_y), (lx, t2_line_y + 2)], fill=(255, 185, 75, alpha))
 
-        sy_top = vs_center_y - slash_h // 2
-        sy_bot = vs_center_y + slash_h // 2
+            # Slashes: Both leaning forward `/` with gradient
+            slash_layer = Image.new('RGBA', (target_w, target_h), (0, 0, 0, 0))
+            slash_draw = ImageDraw.Draw(slash_layer)
 
-        # Left slash `/`
-        slash_draw.line([(left_slash_x - 12, sy_bot), (left_slash_x + 12, sy_top)], fill=(255, 130, 95, 240), width=4)
-        # Right slash `/`
-        slash_draw.line([(right_slash_x - 12, sy_bot), (right_slash_x + 12, sy_top)], fill=(255, 185, 80, 240), width=4)
+            sy_top = vs_center_y - slash_h // 2
+            sy_bot = vs_center_y + slash_h // 2
 
-        bg = Image.alpha_composite(bg, slash_layer)
-        draw = ImageDraw.Draw(bg)
+            slash_draw.line([(left_slash_x - 12, sy_bot), (left_slash_x + 12, sy_top)], fill=(255, 130, 95, 240), width=4)
+            slash_draw.line([(right_slash_x - 12, sy_bot), (right_slash_x + 12, sy_top)], fill=(255, 185, 80, 240), width=4)
 
-        # VS Text
-        top_vs_col = (255, 115, 105, 255)
-        bot_vs_col = (255, 195, 70, 255)
-        draw_gradient_text(bg, vs_text, font_vs, (vs_x, vs_y), top_vs_col, bot_vs_col, shadow=True, shadow_offset=(3, 5), shadow_color=(0, 0, 0, 240))
-        draw = ImageDraw.Draw(bg)
+            bg = Image.alpha_composite(bg, slash_layer)
+            draw = ImageDraw.Draw(bg)
 
-        # 8. Bottom Info Glassmorphic Card (DATE | TIME | SERVER)
-        card_w = 980
-        card_h = 145
-        card_x0 = (target_w - card_w) // 2
-        card_y0 = 745
-        card_x1 = card_x0 + card_w
-        card_y1 = card_y0 + card_h
+            # VS Text
+            top_vs_col = (255, 115, 105, 255)
+            bot_vs_col = (255, 195, 70, 255)
+            draw_gradient_text(bg, vs_text, font_vs, (vs_x, vs_y), top_vs_col, bot_vs_col, shadow=True, shadow_offset=(3, 5), shadow_color=(0, 0, 0, 240))
+            draw = ImageDraw.Draw(bg)
 
-        card_surface = Image.new('RGBA', (target_w, target_h), (0, 0, 0, 0))
-        c_draw = ImageDraw.Draw(card_surface)
-        c_draw.rounded_rectangle([(card_x0, card_y0), (card_x1, card_y1)], radius=20, fill=(12, 18, 30, 215))
+        # 8. Bottom Info Section
+        if use_spotlight_layer:
+            # Clean Aligned Bottom Timing Section (NO BOX - Big, high-impact esports typography)
+            col_cx = [450, 960, 1460]
+            bot_y = 818
+            div1_x = int((col_cx[0] + col_cx[1]) / 2)  # 705
+            div2_x = int((col_cx[1] + col_cx[2]) / 2)  # 1210
 
-        # Neon gradient border mask
-        border_mask = Image.new('L', (target_w, target_h), 0)
-        b_draw = ImageDraw.Draw(border_mask)
-        b_draw.rounded_rectangle([(card_x0, card_y0), (card_x1, card_y1)], radius=20, outline=255, width=2)
+            div_y_top = bot_y - 8
+            div_y_bot = bot_y + 88
+            for dx in [div1_x, div2_x]:
+                for dy in range(div_y_top, div_y_bot):
+                    prog = math.sin((dy - div_y_top) / (div_y_bot - div_y_top) * math.pi)
+                    alpha = int(120 * prog)
+                    draw.line([(dx, dy), (dx, dy)], fill=(255, 255, 255, alpha), width=1)
 
-        border_grad = Image.new('RGBA', (target_w, target_h), (0, 0, 0, 0))
-        bg_draw = ImageDraw.Draw(border_grad)
-        for gx in range(card_x0, card_x1):
-            f = (gx - card_x0) / max(1, card_w)
-            r = int(255 * (1 - f) + 245 * f)
-            g = int(90 * (1 - f) + 195 * f)
-            b = int(140 * (1 - f) + 90 * f)
-            bg_draw.line([(gx, card_y0), (gx, card_y1)], fill=(r, g, b, 190))
+            font_hud_label = get_font_with_fallbacks("Rajdhani", 24, "bold")
+            font_hud_val = get_font_with_fallbacks("Rajdhani", 46, "bold")
+            font_hud_server = get_font_with_fallbacks("Rajdhani", 34, "bold")
 
-        card_surface.paste(border_grad, (0, 0), border_mask)
-        bg = Image.alpha_composite(bg, card_surface)
-        draw = ImageDraw.Draw(bg)
+            # Column 1: DATE (aligned under Left Spotlight at x=450)
+            lbl_date = "DATE"
+            val_date = format_display_date(date_str)
+            b_l1 = draw.textbbox((0, 0), lbl_date, font=font_hud_label)
+            b_v1 = draw.textbbox((0, 0), val_date, font=font_hud_val)
+            draw.text((col_cx[0] - (b_l1[2] - b_l1[0]) // 2, bot_y), lbl_date, font=font_hud_label, fill=(0, 215, 255, 230))
+            draw.text((col_cx[0] - (b_v1[2] - b_v1[0]) // 2 + 3, bot_y + 32 + 3), val_date, font=font_hud_val, fill=(0, 0, 0, 230))
+            draw.text((col_cx[0] - (b_v1[2] - b_v1[0]) // 2, bot_y + 32), val_date, font=font_hud_val, fill=(255, 255, 255, 255))
 
-        col_w = card_w // 3
-        div1_x = card_x0 + col_w
-        div2_x = card_x0 + col_w * 2
+            # Column 2: TIME (aligned under Center VS at x=960)
+            lbl_time = "TIME"
+            raw_time = str(utc_time or "00:00 UTC").strip().upper()
+            val_time = raw_time if "UTC" in raw_time or "GMT" in raw_time else f"{raw_time} UTC"
+            b_l2 = draw.textbbox((0, 0), lbl_time, font=font_hud_label)
+            b_v2 = draw.textbbox((0, 0), val_time, font=font_hud_val)
+            draw.text((col_cx[1] - (b_l2[2] - b_l2[0]) // 2, bot_y), lbl_time, font=font_hud_label, fill=(0, 215, 255, 230))
+            draw.text((col_cx[1] - (b_v2[2] - b_v2[0]) // 2 + 3, bot_y + 32 + 3), val_time, font=font_hud_val, fill=(0, 0, 0, 230))
+            draw.text((col_cx[1] - (b_v2[2] - b_v2[0]) // 2, bot_y + 32), val_time, font=font_hud_val, fill=(255, 255, 255, 255))
 
-        div_y_pad = 22
-        for dy in range(card_y0 + div_y_pad, card_y1 - div_y_pad):
-            factor = math.sin((dy - (card_y0 + div_y_pad)) / (card_h - div_y_pad * 2) * math.pi)
-            alpha = int(90 * factor)
-            draw.line([(div1_x, dy), (div1_x, dy)], fill=(255, 255, 255, alpha))
-            draw.line([(div2_x, dy), (div2_x, dy)], fill=(255, 255, 255, alpha))
+            # Column 3: SERVER (aligned under Right Spotlight at x=1460)
+            lbl_server = "SERVER"
+            val_server = str(server_name or "OFFICIAL SERVER").upper().strip()
+            b_l3 = draw.textbbox((0, 0), lbl_server, font=font_hud_label)
+            b_v3 = draw.textbbox((0, 0), val_server, font=font_hud_server)
+            max_server_w = 420
+            curr_s_font = font_hud_server
+            if (b_v3[2] - b_v3[0]) > max_server_w:
+                while (b_v3[2] - b_v3[0]) > max_server_w and len(val_server) > 8:
+                    val_server = val_server[:-4] + "..."
+                    b_v3 = draw.textbbox((0, 0), val_server, font=curr_s_font)
 
-        font_hud_label = get_font_with_fallbacks("Rajdhani", 19, "bold")
-        font_hud_val = get_font_with_fallbacks("Rajdhani", 28, "bold")
-        font_hud_server = get_font_with_fallbacks("Rajdhani", 23, "bold")
+            draw.text((col_cx[2] - (b_l3[2] - b_l3[0]) // 2, bot_y), lbl_server, font=font_hud_label, fill=(0, 215, 255, 230))
+            draw.text((col_cx[2] - (b_v3[2] - b_v3[0]) // 2 + 3, bot_y + 36 + 3), val_server, font=font_hud_server, fill=(0, 0, 0, 230))
+            draw.text((col_cx[2] - (b_v3[2] - b_v3[0]) // 2, bot_y + 36), val_server, font=font_hud_server, fill=(255, 255, 255, 255))
 
-        # Column 1: DATE
-        col1_cx = card_x0 + col_w // 2
-        lbl_date = "DATE"
-        b_l1 = draw.textbbox((0, 0), lbl_date, font=font_hud_label)
-        draw.text((col1_cx - (b_l1[2] - b_l1[0]) // 2, card_y0 + 30), lbl_date, font=font_hud_label, fill=(160, 175, 195, 255))
+        else:
+            # Fallback legacy boxed card for templates without spotlights
+            card_w = 980
+            card_h = 145
+            card_x0 = (target_w - card_w) // 2
+            card_y0 = 745
+            card_x1 = card_x0 + card_w
+            card_y1 = card_y0 + card_h
 
-        val_date = format_display_date(date_str)
-        b_v1 = draw.textbbox((0, 0), val_date, font=font_hud_val)
-        draw.text((col1_cx - (b_v1[2] - b_v1[0]) // 2, card_y0 + 72), val_date, font=font_hud_val, fill=(255, 255, 255, 255))
+            card_surface = Image.new('RGBA', (target_w, target_h), (0, 0, 0, 0))
+            c_draw = ImageDraw.Draw(card_surface)
+            c_draw.rounded_rectangle([(card_x0, card_y0), (card_x1, card_y1)], radius=20, fill=(12, 18, 30, 215))
 
-        # Column 2: TIME
-        col2_cx = card_x0 + col_w + col_w // 2
-        lbl_time = "TIME"
-        b_l2 = draw.textbbox((0, 0), lbl_time, font=font_hud_label)
-        draw.text((col2_cx - (b_l2[2] - b_l2[0]) // 2, card_y0 + 30), lbl_time, font=font_hud_label, fill=(160, 175, 195, 255))
+            border_mask = Image.new('L', (target_w, target_h), 0)
+            b_draw = ImageDraw.Draw(border_mask)
+            b_draw.rounded_rectangle([(card_x0, card_y0), (card_x1, card_y1)], radius=20, outline=255, width=2)
 
-        raw_time = str(utc_time or "00:00 UTC").strip().upper()
-        val_time = raw_time if "UTC" in raw_time or "GMT" in raw_time else f"{raw_time} UTC"
-        b_v2 = draw.textbbox((0, 0), val_time, font=font_hud_val)
-        draw.text((col2_cx - (b_v2[2] - b_v2[0]) // 2, card_y0 + 72), val_time, font=font_hud_val, fill=(255, 255, 255, 255))
+            border_grad = Image.new('RGBA', (target_w, target_h), (0, 0, 0, 0))
+            bg_draw = ImageDraw.Draw(border_grad)
+            for gx in range(card_x0, card_x1):
+                f = (gx - card_x0) / max(1, card_w)
+                r = int(255 * (1 - f) + 245 * f)
+                g = int(90 * (1 - f) + 195 * f)
+                b = int(140 * (1 - f) + 90 * f)
+                bg_draw.line([(gx, card_y0), (gx, card_y1)], fill=(r, g, b, 190))
 
-        # Column 3: SERVER
-        col3_cx = card_x0 + col_w * 2 + col_w // 2
-        lbl_server = "SERVER"
-        b_l3 = draw.textbbox((0, 0), lbl_server, font=font_hud_label)
-        draw.text((col3_cx - (b_l3[2] - b_l3[0]) // 2, card_y0 + 30), lbl_server, font=font_hud_label, fill=(160, 175, 195, 255))
+            card_surface.paste(border_grad, (0, 0), border_mask)
+            bg = Image.alpha_composite(bg, card_surface)
+            draw = ImageDraw.Draw(bg)
 
-        val_server = str(server_name or "OFFICIAL SERVER").upper().strip()
-        b_v3 = draw.textbbox((0, 0), val_server, font=font_hud_server)
-        max_server_w = col_w - 40
-        curr_s_font = font_hud_server
-        if (b_v3[2] - b_v3[0]) > max_server_w:
-            while (b_v3[2] - b_v3[0]) > max_server_w and len(val_server) > 8:
-                val_server = val_server[:-4] + "..."
-                b_v3 = draw.textbbox((0, 0), val_server, font=curr_s_font)
+            col_w = card_w // 3
+            div1_x = card_x0 + col_w
+            div2_x = card_x0 + col_w * 2
 
-        draw.text((col3_cx - (b_v3[2] - b_v3[0]) // 2, card_y0 + 74), val_server, font=curr_s_font, fill=(255, 255, 255, 255))
+            div_y_pad = 22
+            for dy in range(card_y0 + div_y_pad, card_y1 - div_y_pad):
+                factor = math.sin((dy - (card_y0 + div_y_pad)) / (card_h - div_y_pad * 2) * math.pi)
+                alpha = int(90 * factor)
+                draw.line([(div1_x, dy), (div1_x, dy)], fill=(255, 255, 255, alpha))
+                draw.line([(div2_x, dy), (div2_x, dy)], fill=(255, 255, 255, alpha))
+
+            font_hud_label = get_font_with_fallbacks("Rajdhani", 19, "bold")
+            font_hud_val = get_font_with_fallbacks("Rajdhani", 28, "bold")
+            font_hud_server = get_font_with_fallbacks("Rajdhani", 23, "bold")
+
+            # Column 1: DATE
+            col1_cx = card_x0 + col_w // 2
+            lbl_date = "DATE"
+            b_l1 = draw.textbbox((0, 0), lbl_date, font=font_hud_label)
+            draw.text((col1_cx - (b_l1[2] - b_l1[0]) // 2, card_y0 + 30), lbl_date, font=font_hud_label, fill=(160, 175, 195, 255))
+
+            val_date = format_display_date(date_str)
+            b_v1 = draw.textbbox((0, 0), val_date, font=font_hud_val)
+            draw.text((col1_cx - (b_v1[2] - b_v1[0]) // 2, card_y0 + 72), val_date, font=font_hud_val, fill=(255, 255, 255, 255))
+
+            # Column 2: TIME
+            col2_cx = card_x0 + col_w + col_w // 2
+            lbl_time = "TIME"
+            b_l2 = draw.textbbox((0, 0), lbl_time, font=font_hud_label)
+            draw.text((col2_cx - (b_l2[2] - b_l2[0]) // 2, card_y0 + 30), lbl_time, font=font_hud_label, fill=(160, 175, 195, 255))
+
+            raw_time = str(utc_time or "00:00 UTC").strip().upper()
+            val_time = raw_time if "UTC" in raw_time or "GMT" in raw_time else f"{raw_time} UTC"
+            b_v2 = draw.textbbox((0, 0), val_time, font=font_hud_val)
+            draw.text((col2_cx - (b_v2[2] - b_v2[0]) // 2, card_y0 + 72), val_time, font=font_hud_val, fill=(255, 255, 255, 255))
+
+            # Column 3: SERVER
+            col3_cx = card_x0 + col_w * 2 + col_w // 2
+            lbl_server = "SERVER"
+            b_l3 = draw.textbbox((0, 0), lbl_server, font=font_hud_label)
+            draw.text((col3_cx - (b_l3[2] - b_l3[0]) // 2, card_y0 + 30), lbl_server, font=font_hud_label, fill=(160, 175, 195, 255))
+
+            val_server = str(server_name or "OFFICIAL SERVER").upper().strip()
+            b_v3 = draw.textbbox((0, 0), val_server, font=font_hud_server)
+            max_server_w = col_w - 40
+            curr_s_font = font_hud_server
+            if (b_v3[2] - b_v3[0]) > max_server_w:
+                while (b_v3[2] - b_v3[0]) > max_server_w and len(val_server) > 8:
+                    val_server = val_server[:-4] + "..."
+                    b_v3 = draw.textbbox((0, 0), val_server, font=curr_s_font)
+
+            draw.text((col3_cx - (b_v3[2] - b_v3[0]) // 2, card_y0 + 74), val_server, font=curr_s_font, fill=(255, 255, 255, 255))
 
         # Save generated poster to temp file
         output_path = os.path.join(BASE_DIR, f"temp_poster_{int(datetime.datetime.now().timestamp())}.png")

@@ -38,7 +38,7 @@ from core.database import (
 
 from core.image_generator import (
     get_random_template, create_event_poster, create_esports_match_poster,
-    get_thumbnail_url_from_channel
+    get_thumbnail_url_from_channel, get_thumbnail_layer_path
 )
 from core.emojis import EMOJIS
 from cogs.staff import (
@@ -752,7 +752,7 @@ class Events(commands.Cog):
                 "Created_By_Name":   interaction.user.name
             }))
             
-            template_image = get_random_template(game_or_mode=game_hint)
+            template_image = get_thumbnail_layer_path() or get_random_template(game_or_mode=game_hint)
             poster_image = None
             
             if template_image:
@@ -1228,7 +1228,7 @@ class Events(commands.Cog):
 
         cfg = get_guild_config(interaction.guild.id) if interaction.guild else {}
         server_logo = cfg.get('server_logo_path')
-        template_image = get_random_template(game_or_mode=tournament)
+        template_image = get_thumbnail_layer_path() or get_random_template(game_or_mode=tournament)
         if template_image:
             try:
                 t1_poster = team_1_name or (team_1_captain.name if team_1_captain else "Team 1")
