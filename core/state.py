@@ -1,8 +1,11 @@
 import os
+import re
 import json
+import datetime
+import pytz
 import contextvars
 import functools
-from typing import Optional, Union, Any
+from typing import Optional, Union, Any, Tuple
 import discord
 from core.config import BASE_DIR, DEFAULT_CHANNEL_IDS, DEFAULT_ROLE_IDS, BOT_OWNER_ID
 
@@ -860,5 +863,90 @@ def set_rules_content(guild_id: int, content: str):
         rules = get_guild_rules(g_id)
         rules['content'] = content
         save_guild_rules(g_id, rules)
+
+def is_event_over(event_data: dict, grace_hours: float = 2.0) -> bool:
+    """Determine if a scheduled event is already completed, closed, or past its scheduled time window."""
+    if not isinstance(event_data, dict):
+        return True
+    
+    # 1. Check explicit status
+    status = str(event_data.get('status') or '').strip().lower()
+    if status in ('completed', 'closed', 'finished', 'done'):
+        return True
+
+    # 2. Check if match result was already recorded
+    if event_data.get('winner_score') is not None or event_data.get('winner_id') is not None:
+        return True
+    if event_data.get('results_message_id') or event_data.get('match_results_message_id'):
+        return True
+
+    # 3. Check scheduled datetime against current UTC time
+    dt = event_data.get('datetime')
+    if isinstance(dt, str):
+        try:
+            dt = datetime.datetime.fromisoformat(dt)
+        except Exception:
+            dt = None
+            
+    if dt:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=pytz.UTC)
+        now_utc = datetime.datetime.now(pytz.UTC)
+        # If the event started more than grace_hours ago, it's considered over
+        if dt + datetime.timedelta(hours=grace_hours) < now_utc:
+            return True
+            
+    return False
+
+def resolve_event_names(event_data: dict, guild: Optional[discord.Guild] = None) -> Tuple[str, str]:
+    """Resolve human-readable team / player names for a match, avoiding 'T1', 'T2' or 'Unknown'."""
+    if not isinstance(event_data, dict):
+        return ("Team 1", "Team 2")
+
+    t1_name = event_data.get('team1_name')
+    t2_name = event_data.get('team2_name')
+
+    # If t1_name is generic placeholder or missing, try fallback resolution
+    if not t1_name or str(t1_name).strip() in ("", "None", "T1", "Unknown"):
+        t1_name = event_data.get('team1_captain_name')
+        if not t1_name and guild:
+            cap1 = event_data.get('team1_captain')
+            if cap1:
+                try:
+                    c_id = int(getattr(cap1, 'id', cap1))
+                    member = guild.get_member(c_id)
+                    if member:
+                        t1_name = member.display_name or member.name
+                except Exception:
+                    pass
+
+    if not t2_name or str(t2_name).strip() in ("", "None", "T2", "Unknown"):
+        t2_name = event_data.get('team2_captain_name')
+        if not t2_name and guild:
+            cap2 = event_data.get('team2_captain')
+            if cap2:
+                try:
+                    c_id = int(getattr(cap2, 'id', cap2))
+                    member = guild.get_member(c_id)
+                    if member:
+                        t2_name = member.display_name or member.name
+                except Exception:
+                    pass
+
+    # If still missing, attempt to extract from match_name
+    match_name = str(event_data.get('match_name') or "")
+    if " vs " in match_name.lower():
+        parts = re.split(r'\s+vs\s+', match_name, flags=re.IGNORECASE, maxsplit=1)
+        if len(parts) == 2:
+            p1, p2 = parts[0].strip(), parts[1].strip()
+            if (not t1_name or str(t1_name).strip() in ("", "None", "T1", "Unknown")) and p1:
+                t1_name = p1
+            if (not t2_name or str(t2_name).strip() in ("", "None", "T2", "Unknown")) and p2:
+                t2_name = p2
+
+    final_t1 = str(t1_name).strip() if t1_name and str(t1_name).strip() not in ("None", "") else "Team 1"
+    final_t2 = str(t2_name).strip() if t2_name and str(t2_name).strip() not in ("None", "") else "Team 2"
+    return (final_t1, final_t2)
+
 
 

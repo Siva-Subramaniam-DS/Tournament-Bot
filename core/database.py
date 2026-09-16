@@ -988,6 +988,11 @@ async def load_scheduled_events_from_supabase():
                 if not event_datetime:
                     event_datetime = datetime.datetime.now()
                 
+                # Skip ancient matches older than 24 hours to keep active cache clean
+                now_cmp = datetime.datetime.now(event_datetime.tzinfo) if event_datetime.tzinfo else datetime.datetime.now()
+                if event_datetime < now_cmp - datetime.timedelta(hours=24):
+                    continue
+
                 def parse_int_safe(val):
                     if not val:
                         return None
@@ -1000,6 +1005,14 @@ async def load_scheduled_events_from_supabase():
                 t1_id = parse_int_safe(row.get("Team1_Captain_ID") or row.get("Team1_ID"))
                 t2_id = parse_int_safe(row.get("Team2_Captain_ID") or row.get("Team2_ID"))
                 j_id = parse_int_safe(row.get("Judge_ID"))
+
+                t1_n = row.get('Team1_Captain_Name') or row.get('Team1_Name')
+                t2_n = row.get('Team2_Captain_Name') or row.get('Team2_Name')
+                m_name = row.get('Match_Name') or ''
+                if (not t1_n or not t2_n) and ' vs ' in m_name:
+                    parts = m_name.split(' vs ', 1)
+                    if not t1_n and len(parts) == 2: t1_n = parts[0].strip()
+                    if not t2_n and len(parts) == 2: t2_n = parts[1].strip()
                 
                 if event_id not in scheduled_events:
                     scheduled_events[event_id] = {
@@ -1018,9 +1031,9 @@ async def load_scheduled_events_from_supabase():
                         'channel_id': parse_int_safe(row.get("Channel_ID")),
                         'team1_captain': t1_id,
                         'team2_captain': t2_id,
-                        'team1_name': row.get('Team1_Captain_Name') or row.get('Team1_Name'),
-                        'team2_name': row.get('Team2_Captain_Name') or row.get('Team2_Name'),
-                        'match_name': row.get('Match_Name') or f"{row.get('Team1_Captain_Name', '')} vs {row.get('Team2_Captain_Name', '')}",
+                        'team1_name': t1_n,
+                        'team2_name': t2_n,
+                        'match_name': m_name or f"{t1_n or 'Team 1'} vs {t2_n or 'Team 2'}",
                     }
                     loaded_count += 1
                 else:

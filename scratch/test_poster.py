@@ -24,7 +24,6 @@ if out and os.path.exists(out):
     dest = "sample_thumbnail.png"
     shutil.copyfile(out, dest)
     print(f"Copied to {dest}")
-    # Also copy to artifact dir for preview
-    art_dir = r"C:\Users\Sivap\.gemini\antigravity-ide\brain\fef263e0-4202-4fa9-bde6-31e6327ec141\sample_thumbnail.png"
-    shutil.copyfile(out, art_dir)
-    print("Copied to artifact directory.")
+    curr_art_dir = r"C:\Users\Sivap\.gemini\antigravity-ide\brain\aa4c1123-4a62-41c1-be37-c9ca20097361\sample_thumbnail.png"
+    shutil.copyfile(out, curr_art_dir)
+    print("Copied to current artifact directory.")

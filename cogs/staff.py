@@ -19,7 +19,8 @@ from core.state import (
     get_org_name, ROLE_IDS, CHANNEL_IDS, scheduled_events,
     save_scheduled_events, staff_stats, save_staff_stats,
     reset_staff_stats, judge_assignments,
-    tournament_rules, get_current_rules, set_rules_content
+    tournament_rules, get_current_rules, set_rules_content,
+    is_event_over, resolve_event_names
 )
 from core.database import (
     supabase_client, load_guild_tournaments, get_guild_config,
@@ -1542,16 +1543,19 @@ class AvailableEventsClaimSelect(discord.ui.Select):
     def __init__(self, unassigned_events: list, guild: discord.Guild):
         options = []
         for idx, (ev_id, data) in enumerate(unassigned_events[:25], start=1):
-            team1_name = data.get('team1_name') or "Team 1"
-            team2_name = data.get('team2_name') or "Team 2"
+            team1_name, team2_name = resolve_event_names(data, guild)
             round_label = data.get('round', 'Round')
-            time_str = data.get('time_str', 'N/A')
-            date_str = data.get('date_str', 'N/A')
+            time_str = data.get('time_str') or ''
+            date_str = data.get('date_str') or ''
+            if time_str and date_str:
+                timing = f"{time_str}, {date_str}"
+            else:
+                timing = time_str or date_str or "TBD"
             
             lbl = f"{idx}. {team1_name} vs {team2_name}"
             if len(lbl) > 100:
                 lbl = lbl[:97] + "..."
-            desc = f"{round_label} • {time_str}, {date_str}"
+            desc = f"{round_label} • {timing}"
             if len(desc) > 100:
                 desc = desc[:97] + "..."
                 
@@ -1820,13 +1824,20 @@ class Staff(commands.Cog):
             for event_id, data in scheduled_events.items():
                 if str(data.get('guild_id')) != str(interaction.guild.id):
                     continue
-                if data.get('status') == 'completed':
+                if is_event_over(data):
                     continue
-                if not data.get('judge'):
-                    unassigned.append((event_id, data))
+                if data.get('judge'):
+                    continue
+
+                ch_id = data.get('schedule_channel_id') or data.get('channel_id')
+                msg_id = data.get('schedule_message_id')
+                if not (ch_id and msg_id):
+                    continue
+
+                unassigned.append((event_id, data))
 
             if not unassigned:
-                await interaction.followup.send("✅ All events currently have a judge assigned.", ephemeral=False)
+                await interaction.followup.send("✅ No unassigned matches requiring a judge right now.", ephemeral=False)
                 return
 
             try:
@@ -1843,28 +1854,21 @@ class Staff(commands.Cog):
 
             lines = []
             for idx, (ev_id, data) in enumerate(unassigned[:25], start=1):
-                round_label = data.get('round', 'Round')
-                date_str = data.get('date_str', 'N/A')
-                time_str = data.get('time_str', 'N/A')
+                round_label = data.get('round') or 'Round'
+                time_str = data.get('time_str') or ''
+                date_str = data.get('date_str') or ''
+                if time_str and date_str:
+                    timing_display = f"{time_str}, {date_str}"
+                else:
+                    timing_display = time_str or date_str or "TBD"
+
                 ch_id = data.get('schedule_channel_id') or data.get('channel_id')
                 msg_id = data.get('schedule_message_id')
-                team1 = data.get('team1_captain')
-                team2 = data.get('team2_captain')
-                team1_name = data.get('team1_name') or (getattr(team1, 'name', 'Unknown') if team1 else 'Unknown')
-                team2_name = data.get('team2_name') or (getattr(team2, 'name', 'Unknown') if team2 else 'Unknown')
-
-                link = None
-                try:
-                    if interaction.guild and ch_id and msg_id:
-                        link = f"https://discord.com/channels/{interaction.guild.id}/{ch_id}/{msg_id}"
-                except Exception:
-                    link = None
+                team1_name, team2_name = resolve_event_names(data, interaction.guild)
+                link = f"https://discord.com/channels/{interaction.guild.id}/{ch_id}/{msg_id}"
 
                 match_info = f"**{team1_name}** vs **{team2_name}**"
-                if link:
-                    line = f"{idx}. {match_info} • {round_label} • {time_str}, {date_str}\n   [🔗 **Click here to jump to schedule**]({link})"
-                else:
-                    line = f"{idx}. {match_info} • {round_label} • {time_str}, {date_str}"
+                line = f"{idx}. {match_info} • {round_label} • {timing_display}\n   [🔗 **Click here to jump to schedule**]({link})"
                 lines.append(line)
 
             _add_chunked_embed_fields(embed, f"Available ({len(unassigned)})", lines)
@@ -1901,6 +1905,8 @@ class Staff(commands.Cog):
         for event_id, event_data in scheduled_events.items():
             if str(event_data.get('guild_id')) != str(interaction.guild.id):
                 continue
+            if is_event_over(event_data):
+                continue
             judge_val = event_data.get('judge')
             recorder_val = event_data.get('recorder')
             user_role = None
@@ -1927,7 +1933,7 @@ class Staff(commands.Cog):
                 user_events.append((event_id, event_data, user_role))
 
         if not user_events:
-            await interaction.response.send_message("❌ You are not assigned to any events as Judge or Recorder.", ephemeral=False)
+            await interaction.response.send_message("❌ You are not assigned to any active, upcoming events as Judge or Recorder.", ephemeral=False)
             return
 
         class EventReassignView(discord.ui.View):
@@ -1935,16 +1941,29 @@ class Staff(commands.Cog):
                 super().__init__(timeout=120)
                 self.parent_bot = parent_bot
 
+                options = []
+                for idx, (event_id, event_data, role) in enumerate(user_events[:25]):
+                    t1, t2 = resolve_event_names(event_data, interaction.guild)
+                    round_lbl = event_data.get('round') or 'Round'
+                    time_lbl = event_data.get('time_str') or event_data.get('date_str') or 'Scheduled'
+                    tourney_name = event_data.get('tournament') or ''
+                    
+                    lbl = f"{role}: {t1} vs {t2}"[:100]
+                    desc = f"{round_lbl} • {time_lbl}"
+                    if tourney_name:
+                        desc += f" | {tourney_name}"
+                    desc = desc[:100]
+
+                    options.append(discord.SelectOption(
+                        label=lbl,
+                        description=desc,
+                        value=f"{event_id}:{role}"
+                    ))
+                self.select_event.options = options
+
             @discord.ui.select(
                 placeholder="Select an event to resign from...",
-                options=[
-                    discord.SelectOption(
-                        label=f"{role}: {event_data.get('round', 'Round')} — {event_data.get('date_str', '')}",
-                        description=f"{event_data.get('time_str', 'Time')} | {event_data.get('tournament', '')}",
-                        value=f"{event_id}:{role}"
-                    )
-                    for idx, (event_id, event_data, role) in enumerate(user_events[:25])
-                ]
+                options=[discord.SelectOption(label="Placeholder", value="placeholder")]
             )
             async def select_event(self, select_interaction: discord.Interaction, select: discord.ui.Select):
                 if select_interaction.guild:

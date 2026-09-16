@@ -483,10 +483,12 @@ def create_esports_match_poster(
             draw.line([(target_w - c_margin, target_h - c_margin), (target_w - c_margin - c_len, target_h - c_margin)], fill=corner_color, width=c_thick)
             draw.line([(target_w - c_margin, target_h - c_margin), (target_w - c_margin, target_h - c_margin - c_len)], fill=corner_color, width=c_thick)
 
-        # 4. Top Centered Logo
-        logo_size = 100 if use_spotlight_layer else 110
-        logo_cx = target_w // 2
-        logo_cy = 85 if use_spotlight_layer else 88
+        # 4. Top-Right Corner Logo (Medium Size ~160px)
+        logo_size = 160
+        margin_right = 65
+        margin_top = 45
+        logo_cx = target_w - margin_right - logo_size // 2
+        logo_cy = margin_top + logo_size // 2
 
         # Fallback logo if not specified
         effective_logo = server_logo_path
@@ -499,14 +501,14 @@ def create_esports_match_poster(
         if effective_logo and os.path.exists(effective_logo):
             try:
                 # Ambient cyan/blue outer glow halo
-                glow_radius = logo_size // 2 + 16
+                glow_radius = logo_size // 2 + 20
                 glow_layer = Image.new('RGBA', (target_w, target_h), (0, 0, 0, 0))
                 glow_draw = ImageDraw.Draw(glow_layer)
                 glow_draw.ellipse(
                     [(logo_cx - glow_radius, logo_cy - glow_radius), (logo_cx + glow_radius, logo_cy + glow_radius)],
-                    fill=(0, 210, 255, 75)
+                    fill=(0, 210, 255, 80)
                 )
-                glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(14))
+                glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(16))
                 bg = Image.alpha_composite(bg, glow_layer)
                 draw = ImageDraw.Draw(bg)
 
@@ -531,23 +533,25 @@ def create_esports_match_poster(
             except Exception as e:
                 print(f"Error drawing logo: {e}")
 
-        # 5. Tournament Title (Below Logo)
+        # 5. Tournament Title (Upper Centered Header)
         raw_title = tournament_title if tournament_title else server_name
         title_text = str(raw_title).strip().upper()
         init_title_size = 58 if use_spotlight_layer else 64
         font_title = get_font_with_fallbacks("Rajdhani", init_title_size, "bold")
         title_bbox = draw.textbbox((0, 0), title_text, font=font_title)
         title_w = title_bbox[2] - title_bbox[0]
+        title_h = title_bbox[3] - title_bbox[1]
 
         current_title_size = init_title_size
-        while title_w > 1500 and current_title_size > 28:
+        while title_w > 1350 and current_title_size > 28:
             current_title_size -= 2
             font_title = get_font_with_fallbacks("Rajdhani", current_title_size, "bold")
             title_bbox = draw.textbbox((0, 0), title_text, font=font_title)
             title_w = title_bbox[2] - title_bbox[0]
+            title_h = title_bbox[3] - title_bbox[1]
 
         title_x = (target_w - title_w) // 2
-        title_y = 152 if use_spotlight_layer else 160
+        title_y = 90 if use_spotlight_layer else 100
 
         top_title_col = (255, 110, 115, 255)
         bot_title_col = (255, 195, 95, 255)
@@ -572,7 +576,7 @@ def create_esports_match_poster(
         cap_h = 38 if use_spotlight_layer else 44
         cap_w = cap_tw + cap_pad_x * 2
         cap_x0 = (target_w - cap_w) // 2
-        cap_y0 = 228 if use_spotlight_layer else 244
+        cap_y0 = title_y + title_h + 26
         cap_x1 = cap_x0 + cap_w
         cap_y1 = cap_y0 + cap_h
 
@@ -625,15 +629,6 @@ def create_esports_match_poster(
             draw.text((t1_x + 3, t1_y + 4), t1_clean, font=font_names, fill=(0, 0, 0, 220))
             draw.text((t1_x, t1_y), t1_clean, font=font_names, fill=(255, 255, 255, 255))
 
-            # Team 1 Glowing Baseline Bar
-            b1_w = max(t1_w + 40, 280)
-            b1_x0 = t1_cx - b1_w // 2
-            b1_y = t1_y + t1_h + 14
-            for lx in range(int(b1_x0), int(b1_x0 + b1_w)):
-                p = 1.0 - abs(lx - t1_cx) / (b1_w / 2)
-                alpha = int(240 * max(0, p))
-                draw.line([(lx, b1_y), (lx, b1_y + 3)], fill=(0, 220, 255, alpha))
-
             # Team 2 Tag & Name under Right Spotlight
             tag2 = "TEAM BRAVO"
             tb2 = draw.textbbox((0, 0), tag2, font=font_tag)
@@ -641,14 +636,6 @@ def create_esports_match_poster(
             draw.text((t2_x + 3, t2_y + 4), t2_clean, font=font_names, fill=(0, 0, 0, 220))
             draw.text((t2_x, t2_y), t2_clean, font=font_names, fill=(255, 255, 255, 255))
 
-            # Team 2 Glowing Baseline Bar
-            b2_w = max(t2_w + 40, 280)
-            b2_x0 = t2_cx - b2_w // 2
-            b2_y = t2_y + t2_h + 14
-            for lx in range(int(b2_x0), int(b2_x0 + b2_w)):
-                p = 1.0 - abs(lx - t2_cx) / (b2_w / 2)
-                alpha = int(240 * max(0, p))
-                draw.line([(lx, b2_y), (lx, b2_y + 3)], fill=(255, 185, 75, alpha))
 
         else:
             # Standard procedural VS and slashes layout

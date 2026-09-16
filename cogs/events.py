@@ -27,7 +27,8 @@ from core.state import (
     has_event_result_permission, get_user_permission_level, get_org_name,
     get_tournament_name, get_system_name, get_bracket_link,
     ROLE_IDS, CHANNEL_IDS, scheduled_events, save_scheduled_events,
-    scheduled_deadlines, reminder_tasks, cleanup_tasks
+    scheduled_deadlines, reminder_tasks, cleanup_tasks,
+    is_event_over, resolve_event_names
 )
 from core.database import (
     supabase_client, load_guild_tournaments, save_guild_tournaments,
@@ -678,6 +679,9 @@ class Events(commands.Cog):
         game_hint = t_data_hint.get('game') or t_data_hint.get('name') or tournament
         tournament_display = t_data_hint.get('name') or tournament
 
+        t1_final_name = team_1_name or (team_1_captain.display_name if hasattr(team_1_captain, 'display_name') else (team_1_captain.name if hasattr(team_1_captain, 'name') else str(team_1_captain)))
+        t2_final_name = team_2_name or (team_2_captain.display_name if hasattr(team_2_captain, 'display_name') else (team_2_captain.name if hasattr(team_2_captain, 'name') else str(team_2_captain)))
+
         try:
             scheduled_events[event_id] = {
                 'guild_id': interaction.guild.id if interaction.guild else None,
@@ -698,8 +702,12 @@ class Events(commands.Cog):
                 'channel_id': interaction.channel.id,
                 'team1_captain': team_1_captain,
                 'team2_captain': team_2_captain,
-                'team1_name': team_1_name,
-                'team2_name': team_2_name
+                'team1_name': t1_final_name,
+                'team2_name': t2_final_name,
+                'team1_captain_name': team_1_captain.display_name if hasattr(team_1_captain, 'display_name') else str(team_1_captain),
+                'team2_captain_name': team_2_captain.display_name if hasattr(team_2_captain, 'display_name') else str(team_2_captain),
+                'match_name': f"{t1_final_name} vs {t2_final_name}",
+                'status': 'scheduled'
             }
             save_scheduled_events(event_id)
 
@@ -1083,7 +1091,9 @@ class Events(commands.Cog):
             'judge': actual_judge,
             'result_judge': actual_judge.name,
             'recorder': recorder,
-            'match_name': f"{w_name} vs {l_name}"
+            'match_name': f"{w_name} vs {l_name}",
+            'status': 'completed',
+            'completed_at': datetime.datetime.utcnow().isoformat()
         })
 
         # Post in results channel and save message ID for VOD link updates
@@ -1259,18 +1269,26 @@ class Events(commands.Cog):
             await interaction.response.send_message("❌ Permission denied.", ephemeral=False)
             return
 
-        guild_events = [
-            discord.SelectOption(
-                label=f"{ev_data.get('team1_name') or 'T1'} vs {ev_data.get('team2_name') or 'T2'}",
-                description=f"{ev_data.get('round', 'R1')} - {ev_data.get('time_str', '')}",
-                value=ev_id
+        guild_events = []
+        for ev_id, ev_data in scheduled_events.items():
+            if str(ev_data.get('guild_id')) != str(interaction.guild.id):
+                continue
+            if is_event_over(ev_data):
+                continue
+            t1, t2 = resolve_event_names(ev_data, interaction.guild)
+            round_label = ev_data.get('round') or 'Round'
+            time_part = ev_data.get('time_str') or ev_data.get('date_str') or ""
+            desc = f"{round_label} • {time_part}" if time_part else f"{round_label}"
+            guild_events.append(
+                discord.SelectOption(
+                    label=f"{t1} vs {t2}"[:100],
+                    description=desc[:100],
+                    value=ev_id
+                )
             )
-            for ev_id, ev_data in scheduled_events.items()
-            if str(ev_data.get('guild_id')) == str(interaction.guild.id)
-        ]
 
         if not guild_events:
-            await interaction.response.send_message("❌ No scheduled events found for this server.", ephemeral=False)
+            await interaction.response.send_message("❌ No active scheduled events found to delete.", ephemeral=False)
             return
 
         class EventDeleteView(View):
@@ -1281,12 +1299,39 @@ class Events(commands.Cog):
             @discord.ui.select(placeholder="Select an event to delete...", options=guild_events[:25])
             async def select_event(self, select_interaction: discord.Interaction, select: discord.ui.Select):
                 selected_event_id = select.values[0]
+                ev_to_delete = scheduled_events.get(selected_event_id, {})
+                t1_d, t2_d = resolve_event_names(ev_to_delete, select_interaction.guild)
+                
+                # Cancel Discord scheduled event if present
+                disc_ev_id = ev_to_delete.get('scheduled_event_id')
+                if disc_ev_id and select_interaction.guild:
+                    try:
+                        disc_ev = select_interaction.guild.get_scheduled_event(int(disc_ev_id))
+                        if disc_ev:
+                            await disc_ev.delete()
+                    except Exception:
+                        pass
+
                 if selected_event_id in scheduled_events:
                     del scheduled_events[selected_event_id]
                     save_scheduled_events()
                 if selected_event_id in reminder_tasks:
                     reminder_tasks[selected_event_id].cancel()
-                await select_interaction.response.edit_message(content=f"✅ Event `{selected_event_id}` has been deleted.", embed=None, view=None)
+
+                # Also mark or delete in Supabase if client exists
+                if supabase_client:
+                    try:
+                        await asyncio.to_thread(
+                            lambda: supabase_client.table("Matches").update({"Status": "cancelled"}).eq("Match_ID", selected_event_id).execute()
+                        )
+                    except Exception:
+                        pass
+
+                await select_interaction.response.edit_message(
+                    content=f"✅ Event **{t1_d} vs {t2_d}** (`{selected_event_id}`) has been deleted.",
+                    embed=None,
+                    view=None
+                )
 
         await interaction.response.send_message("Select an event to delete:", view=EventDeleteView(), ephemeral=False)
 
