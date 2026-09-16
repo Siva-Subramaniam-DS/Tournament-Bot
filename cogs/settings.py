@@ -1131,6 +1131,74 @@ class Settings(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    @app_commands.command(name="config_player_information", description="Configure player information Google Sheet link, format, and participant channel")
+    @app_commands.describe(
+        sheet_link="Google Sheet link containing player or team details",
+        format="The tournament format (e.g. 1 vs 1, 5 vs 5)",
+        participant_channel="The channel where player/team information will be automatically posted and updated"
+    )
+    @app_commands.choices(
+        format=[
+            app_commands.Choice(name="1 vs 1", value="1 vs 1"),
+            app_commands.Choice(name="2 vs 2", value="2 vs 2"),
+            app_commands.Choice(name="3 vs 3", value="3 vs 3"),
+            app_commands.Choice(name="4 vs 4", value="4 vs 4"),
+            app_commands.Choice(name="5 vs 5", value="5 vs 5")
+        ]
+    )
+    @with_guild_context
+    async def config_player_information_command(
+        self,
+        interaction: discord.Interaction,
+        sheet_link: str,
+        format: app_commands.Choice[str],
+        participant_channel: discord.TextChannel
+    ):
+        if not interaction.guild:
+            await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+            return
+
+        if not is_authorized_to_configure(interaction) and not is_staff(interaction.user):
+            await interaction.response.send_message("❌ You do not have permission to configure player information.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=False)
+
+        clean_sheet_link = sheet_link.strip()
+        sheet_match = re.search(r'/d/([a-zA-Z0-9-_]+)', clean_sheet_link)
+        if not sheet_match:
+            await interaction.followup.send("❌ Invalid Google Sheet link. Please provide a valid Google Sheets URL.", ephemeral=True)
+            return
+
+        cfg = get_guild_config(interaction.guild.id)
+        cfg['player_info_link'] = clean_sheet_link
+        cfg['player_info_format'] = format.value
+        cfg['player_info_participant_channel_id'] = participant_channel.id
+
+        # Save the updated guild settings
+        save_guild_config(interaction.guild.id, cfg)
+
+        # Log bot activity
+        log_embed = discord.Embed(
+            title="⚙️ Player Info Configured",
+            description=(
+                f"**Sheet Link:** [Link]({clean_sheet_link})\n"
+                f"**Format:** {format.value}\n"
+                f"**Participant Channel:** {participant_channel.mention}"
+            ),
+            color=discord.Color.blue(),
+            timestamp=discord.utils.utcnow()
+        )
+        log_embed.set_footer(text=f"Configured by {interaction.user.display_name}")
+        await log_bot_activity(interaction.guild, log_embed)
+
+        # Sync details to participant channel
+        success, msg = await sync_player_info_to_channel(interaction.guild, clean_sheet_link, format.value, participant_channel)
+        if success:
+            await interaction.followup.send(f"✅ Configuration saved!\n{msg}", ephemeral=False)
+        else:
+            await interaction.followup.send(f"⚠️ Configuration saved, but sync failed: {msg}", ephemeral=False)
+
     @app_commands.command(name="player_information", description="Look up player or team info from registered tournament rosters")
     @app_commands.describe(user="The player or team captain to look up")
     @with_guild_context
@@ -1140,7 +1208,7 @@ class Settings(commands.Cog):
         link_str = str(PLAYER_INFO_LINK)
         if not link_str:
             await interaction.followup.send(
-                "❌ Player info sheet is not configured yet. Ask an organizer to configure it in `/settings`."
+                "❌ Player info sheet is not configured yet. Ask an organizer to configure it with `/config_player_information`."
             )
             return
 

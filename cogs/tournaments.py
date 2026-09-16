@@ -3389,10 +3389,11 @@ class Tournaments(commands.Cog):
         except Exception as e:
             await interaction.response.send_message(f"❌ Failed to remove member: {e}", ephemeral=True)
 
-    @app_commands.command(name="assign_role", description="Assign a role to all participants in a tournament")
+    @app_commands.command(name="assign_role", description="Assign a role to all participants from a tournament or Google Sheet")
     @app_commands.describe(
-        tournament="Tournament to assign roles for",
         role="The role to assign to participants",
+        tournament="Tournament to assign roles for (optional if sheet_link or server sheet is set)",
+        sheet_link="Optional direct Google Sheet link to read participants from",
         id_header="Optional sheet column header for Discord IDs (e.g., Discord ID, Developer ID, UID)",
         dry_run="If True, simulates role assignment without making actual changes"
     )
@@ -3401,8 +3402,9 @@ class Tournaments(commands.Cog):
     async def assign_role_cmd(
         self,
         interaction: discord.Interaction,
-        tournament: str,
         role: discord.Role,
+        tournament: Optional[str] = None,
+        sheet_link: Optional[str] = None,
         id_header: Optional[str] = None,
         dry_run: Optional[bool] = False
     ):
@@ -3414,52 +3416,89 @@ class Tournaments(commands.Cog):
             await interaction.response.send_message("❌ You do not have permission to assign tournament roles.", ephemeral=True)
             return
 
+        # Check Bot Permissions
+        if not interaction.guild.me.guild_permissions.manage_roles:
+            await interaction.response.send_message("❌ I do not have the **Manage Roles** permission in this server. Please grant me Manage Roles in server settings.", ephemeral=True)
+            return
+
         if interaction.guild.me.top_role <= role:
-            await interaction.response.send_message(f"❌ Cannot assign {role.mention} because it is higher than or equal to my highest role ({interaction.guild.me.top_role.mention}).", ephemeral=True)
+            await interaction.response.send_message(
+                f"❌ Cannot assign {role.mention} because it is higher than or equal to my highest role ({interaction.guild.me.top_role.mention}).\n"
+                f"Please move the bot's role above {role.name} in Server Settings > Roles.",
+                ephemeral=True
+            )
+            return
+
+        guild = interaction.guild
+        guild_id = guild.id
+        cfg = get_guild_config(guild_id)
+
+        target_t = None
+        target_sheet_link = sheet_link.strip() if sheet_link else None
+
+        if tournament:
+            tournaments = load_guild_tournaments(guild_id)
+            for k, v in tournaments.items():
+                if v.get('name', '').lower() == tournament.lower() or k.lower() == tournament.lower():
+                    target_t = v
+                    break
+            if not target_t:
+                await interaction.response.send_message(f"❌ Tournament `{tournament}` not found.", ephemeral=True)
+                return
+            if not target_sheet_link:
+                target_sheet_link = (
+                    target_t.get('google_sheet_link')
+                    or target_t.get('captains_sheet_link')
+                    or target_t.get('sheet_link')
+                )
+
+        if not target_sheet_link:
+            # Check active tournament config
+            active_t = get_active_tournament_config(guild_id)
+            if active_t:
+                target_sheet_link = (
+                    active_t.get('google_sheet_link')
+                    or active_t.get('captains_sheet_link')
+                    or active_t.get('sheet_link')
+                )
+                if not target_t:
+                    target_t = active_t
+
+        if not target_sheet_link:
+            # Fall back to global server player info sheet or google_sheet_link
+            target_sheet_link = cfg.get('player_info_link') or cfg.get('google_sheet_link')
+
+        if not target_sheet_link:
+            await interaction.response.send_message(
+                "❌ No Google Sheet found to read participants from.\n"
+                "Please specify `sheet_link`, select a `tournament` with a configured sheet, or configure the server sheet with `/config_player_information`.",
+                ephemeral=True
+            )
             return
 
         await interaction.response.defer(ephemeral=False)
-        guild = interaction.guild
-        guild_id = guild.id
 
-        tournaments = load_guild_tournaments(guild_id)
-        target_t = None
-        for k, v in tournaments.items():
-            if v.get('name', '').lower() == tournament.lower() or k.lower() == tournament.lower():
-                target_t = v
-                break
+        sheet_name_display = target_t.get('name') if target_t else "Participant Sheet"
+        msg = await interaction.followup.send(f"⏳ Reading Google Sheet for **{sheet_name_display}**...")
 
-        if not target_t:
-            await interaction.followup.send(f"❌ Tournament `{tournament}` not found.")
-            return
-
-        cfg = get_guild_config(guild_id)
-        sheet_link = (
-            target_t.get('google_sheet_link')
-            or target_t.get('captains_sheet_link')
-            or target_t.get('sheet_link')
-            or cfg.get('player_info_link')
-            or cfg.get('google_sheet_link')
-        )
-        if not sheet_link:
-            await interaction.followup.send(f"❌ No Google Sheet configured for **{target_t.get('name')}**.")
-            return
-
-        msg = await interaction.followup.send(f"⏳ Reading Google Sheet for **{target_t.get('name')}**...")
-
-        match = re.search(r'/d/([a-zA-Z0-9-_]+)', sheet_link)
+        match = re.search(r'/d/([a-zA-Z0-9-_]+)', target_sheet_link)
         if not match:
-            await msg.edit(content="❌ Invalid Google Sheet URL.")
+            await msg.edit(content="❌ Invalid Google Sheet URL. Make sure it is a valid Google Sheets link.")
             return
+
         sheet_id = match.group(1)
+        gid_match = re.search(r'[#&?]gid=([0-9]+)', target_sheet_link)
+        gid = gid_match.group(1) if gid_match else None
         url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+        if gid:
+            url += f"&gid={gid}"
 
         try:
             resp = await asyncio.to_thread(requests.get, url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
             resp.raise_for_status()
             reader = list(csv.reader(io.StringIO(resp.text)))
         except Exception as e:
-            await msg.edit(content=f"❌ Failed to fetch Google Sheet: {e}")
+            await msg.edit(content=f"❌ Failed to fetch Google Sheet: {e}\nMake sure the Google Sheet link sharing is set to **'Anyone with the link can view'**.")
             return
 
         if not reader:
@@ -3467,50 +3506,68 @@ class Tournaments(commands.Cog):
             return
 
         h_row = [h.strip().lower() for h in reader[0]]
-        val_col = -1
+        val_cols = []
 
         if id_header:
             clean_hdr = id_header.strip().lower()
             for i, h in enumerate(h_row):
                 if clean_hdr in h or h in clean_hdr:
-                    val_col = i
-                    break
+                    val_cols.append(i)
 
-        if val_col == -1:
+        if not val_cols:
+            id_keywords = [
+                'developer id', 'developers id', 'discord id', 'discord_id',
+                'discord uid', 'uid', 'user id', 'captain id', 'player id', 'discord'
+            ]
+            exclude_keywords = ['username', 'user name', 'display name', 'game id', 'ign']
             for i, h in enumerate(h_row):
-                if any(x in h for x in ['developer id', 'developers id', 'discord id', 'discord_id', 'discord uid', 'uid', 'user id', 'captain id']) and not any(x in h for x in ['username', 'user name', 'display name']):
-                    val_col = i
-                    break
-
-        if val_col == -1:
-            for i, h in enumerate(h_row):
-                if any(x in h for x in ['discord', 'player id', 'id', 'tag']):
-                    val_col = i
-                    break
-
-        if val_col == -1:
-            val_col = 1 if len(h_row) > 1 else 0
+                if any(x in h for x in id_keywords) and not any(x in h for x in exclude_keywords):
+                    val_cols.append(i)
 
         extracted_targets = []
-        for row in reader[1:]:
-            if len(row) > val_col:
-                raw_v = row[val_col].strip()
-                if raw_v:
-                    extracted_targets.append(raw_v)
+        seen_targets = set()
+
+        if val_cols:
+            for row in reader[1:]:
+                for col_idx in val_cols:
+                    if col_idx < len(row):
+                        raw_cell = row[col_idx].strip()
+                        if raw_cell:
+                            found_ids = re.findall(r'\b(\d{17,20})\b', raw_cell)
+                            if found_ids:
+                                for fid in found_ids:
+                                    if fid not in seen_targets:
+                                        seen_targets.add(fid)
+                                        extracted_targets.append(fid)
+                            else:
+                                clean_val = raw_cell.lstrip('@')
+                                if clean_val and clean_val.lower() not in seen_targets:
+                                    seen_targets.add(clean_val.lower())
+                                    extracted_targets.append(clean_val)
+        else:
+            # Fallback: search all cells in the sheet for Discord snowflake IDs
+            for row in reader[1:]:
+                for cell in row:
+                    found_ids = re.findall(r'\b(\d{17,20})\b', cell)
+                    for fid in found_ids:
+                        if fid not in seen_targets:
+                            seen_targets.add(fid)
+                            extracted_targets.append(fid)
 
         if not extracted_targets:
-            await msg.edit(content="❌ No participant entries found in the selected ID column.")
+            await msg.edit(content="❌ No participant entries or Discord IDs found in the sheet.\nMake sure the sheet contains Discord IDs or specify `id_header`.")
             return
 
-        await msg.edit(content=f"⏳ Processing **{len(extracted_targets)}** player entries...")
+        await msg.edit(content=f"⏳ Found **{len(extracted_targets)}** participant(s). Processing role assignment...")
 
         assigned_count = 0
         already_had_count = 0
         failed_count = 0
         not_found_count = 0
+        last_error = None
 
         for idx, raw_target in enumerate(extracted_targets):
-            clean_target = raw_target.strip().lstrip('@')
+            clean_target = str(raw_target).strip().lstrip('@')
             id_m = re.search(r'\b(\d{17,20})\b', clean_target)
             member = None
 
@@ -3520,6 +3577,8 @@ class Tournaments(commands.Cog):
                 if not member:
                     try:
                         member = await guild.fetch_member(uid)
+                    except discord.NotFound:
+                        member = None
                     except Exception:
                         pass
             else:
@@ -3547,10 +3606,12 @@ class Tournaments(commands.Cog):
 
             if not dry_run:
                 try:
-                    await member.add_roles(role, reason=f"Participant in {target_t.get('name')} assigned by {interaction.user.name}")
+                    reason_t = sheet_name_display
+                    await member.add_roles(role, reason=f"Participant in {reason_t} assigned by {interaction.user.name}")
                     assigned_count += 1
                     await asyncio.sleep(0.35)
                 except Exception as e:
+                    last_error = str(e)
                     print(f"Error adding role to {member.display_name}: {e}")
                     failed_count += 1
             else:
@@ -3564,7 +3625,7 @@ class Tournaments(commands.Cog):
 
         summary_embed = discord.Embed(
             title=f"👥 {'[DRY RUN] ' if dry_run else ''}Role Assignment Complete",
-            description=f"Assigned role {role.mention} for tournament **{target_t.get('name')}**.",
+            description=f"Assigned role {role.mention} for **{sheet_name_display}**.",
             color=discord.Color.green(),
             timestamp=discord.utils.utcnow()
         )
@@ -3574,7 +3635,10 @@ class Tournaments(commands.Cog):
         if not_found_count > 0:
             summary_embed.add_field(name="❓ Not Found in Server", value=f"`{not_found_count}`", inline=True)
         if failed_count > 0:
-            summary_embed.add_field(name="❌ Errors", value=f"`{failed_count}`", inline=True)
+            err_val = f"`{failed_count}`"
+            if last_error:
+                err_val += f"\n*(Last error: {last_error})*"
+            summary_embed.add_field(name="❌ Errors", value=err_val, inline=True)
 
         summary_embed.set_footer(text=f"{interaction.guild.name} • Participant Roles")
         await msg.edit(content=None, embed=summary_embed)
