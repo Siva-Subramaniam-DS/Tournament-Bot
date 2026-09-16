@@ -2299,9 +2299,8 @@ async def tournament_autocomplete(
             if "(" in t_id and "[" in t_id:
                 continue
             name = t_cfg.get("name") or t_id
-            state = t_cfg.get("state", "pending")
-            display = f"{name} ({t_id}) [{state}]"
-            if not current or current.lower() in display.lower() or current.lower() in name.lower() or current.lower() in t_id.lower():
+            display = name.strip()
+            if not current or current.lower() in display.lower() or current.lower() in t_id.lower():
                 choices.append(discord.app_commands.Choice(name=display[:100], value=t_id[:100]))
         return choices[:25]
     except Exception as e:

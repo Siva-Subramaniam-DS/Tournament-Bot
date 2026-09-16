@@ -1111,6 +1111,16 @@ async def render_staff_work_count(
     for ev_id, ev_data in scheduled_events.items():
         if ev_data.get('guild_id') and str(ev_data.get('guild_id')) != str(guild.id):
             continue
+
+        # Only take staff count from matches where the result is posted (not merely scheduled)
+        is_result_posted = (
+            ev_data.get('status') == 'completed' or
+            bool(ev_data.get('results_message_id')) or
+            bool(ev_data.get('completed_at')) or
+            'winner_score' in ev_data
+        )
+        if not is_result_posted:
+            continue
             
         if target_t_id and target_t_name != "All Active Tournaments":
             ev_t_id = str(ev_data.get('tournament_id') or '').lower()
@@ -1132,11 +1142,15 @@ async def render_staff_work_count(
         if dw_setting == "Excluded" and ev_data.get('disqualified'):
             continue
 
-            
         rnd = str(ev_data.get('round') or 'R1')
         
-        j_val = ev_data.get('judge') or ev_data.get('result_judge')
+        j_val = ev_data.get('result_judge') or ev_data.get('judge')
         r_val = ev_data.get('recorder')
+
+        # For Recorder: if video link is not submitted, do not count recorder
+        has_video_link = bool(ev_data.get('recording_link') or ev_data.get('recorder_link'))
+        if not has_video_link:
+            r_val = None
         
         j_uid = str(getattr(j_val, 'id', j_val)) if j_val else None
         r_uid = str(getattr(r_val, 'id', r_val)) if r_val else None

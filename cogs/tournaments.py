@@ -67,10 +67,9 @@ async def tournament_autocomplete(
         for t_id, t_cfg in tournaments.items():
             if "(" in t_id and "[" in t_id:
                 continue
-            name = t_cfg.get("name", t_id)
-            state = t_cfg.get("state", "pending")
-            display = f"{name} ({t_id}) [{state}]"
-            if not current or current.lower() in display.lower() or current.lower() in name.lower() or current.lower() in t_id.lower():
+            name = t_cfg.get("name") or t_id
+            display = name.strip()
+            if not current or current.lower() in display.lower() or current.lower() in t_id.lower():
                 choices.append(app_commands.Choice(name=display[:100], value=t_id))
         return choices[:25]
     except Exception as e:
@@ -140,14 +139,38 @@ async def match_autocomplete(
             if str(ev_data.get('guild_id')) != str(guild_id):
                 continue
 
+            # Don't show challonge id and show only whatever event is created
+            if ev_id.startswith("challonge_"):
+                continue
+
             if selected_tournament:
-                ev_t = ev_data.get('tournament')
-                t_cfg = load_guild_tournaments(guild_id).get(selected_tournament)
-                t_name = t_cfg.get('name') if t_cfg else None
-                if ev_t and selected_tournament.lower() not in ev_t.lower() and (not t_name or t_name.lower() not in ev_t.lower()):
+                ev_t = str(ev_data.get('tournament') or '').strip().lower()
+                ev_t_id = str(ev_data.get('tournament_id') or '').strip().lower()
+                sel = str(selected_tournament).strip().lower()
+
+                all_t = load_guild_tournaments(guild_id)
+                t_cfg = all_t.get(selected_tournament) or all_t.get(sel)
+                if not t_cfg:
+                    for tid, cfg in all_t.items():
+                        if cfg.get('name', '').strip().lower() == sel or tid.strip().lower() == sel:
+                            t_cfg = cfg
+                            break
+
+                t_names = [sel]
+                if t_cfg:
+                    if t_cfg.get('name'): t_names.append(t_cfg['name'].strip().lower())
+                    if t_cfg.get('id'): t_names.append(t_cfg['id'].strip().lower())
+                    if t_cfg.get('challonge_bracket_link'): t_names.append(t_cfg['challonge_bracket_link'].strip().lower())
+
+                match_found = False
+                for candidate in t_names:
+                    if candidate and (candidate == ev_t or candidate in ev_t or ev_t in candidate or candidate == ev_t_id or candidate in ev_t_id):
+                        match_found = True
+                        break
+                if not match_found and (ev_t or ev_t_id):
                     continue
 
-            # In /link add: only show matches where video link is not uploaded yet
+            # In /link add: only filter out matches that already have the required link
             if is_link_add:
                 if selected_link_type == "recorder":
                     if ev_data.get('recorder_link'):
@@ -159,8 +182,8 @@ async def match_autocomplete(
                     if ev_data.get('recording_link'):
                         continue
                 else:
-                    # By default in link add, skip if both general and recorder links already exist
-                    if ev_data.get('recording_link') or ev_data.get('recorder_link'):
+                    # By default in link add, skip only if all recording links already exist
+                    if ev_data.get('recording_link') and ev_data.get('recorder_link') and ev_data.get('judge_link'):
                         continue
 
             t1_val = resolve_name(ev_data.get('team1_name'), ev_data.get('team1_captain'), "Team 1")
@@ -1022,9 +1045,31 @@ async def link_missing(interaction: discord.Interaction, tournament: str = None)
     for ev_id, ev_data in scheduled_events.items():
         if str(ev_data.get('guild_id')) != str(interaction.guild.id):
             continue
+
+        # Don't show challonge id and show only whatever event is created
+        if ev_id.startswith("challonge_"):
+            continue
+
         if tournament:
-            t_name = ev_data.get('tournament') or ''
-            if tournament.lower() not in t_name.lower():
+            ev_t = str(ev_data.get('tournament') or '').strip().lower()
+            ev_t_id = str(ev_data.get('tournament_id') or '').strip().lower()
+            sel = str(tournament).strip().lower()
+
+            all_t = load_guild_tournaments(interaction.guild.id)
+            t_cfg = all_t.get(tournament) or all_t.get(sel)
+            if not t_cfg:
+                for tid, cfg in all_t.items():
+                    if cfg.get('name', '').strip().lower() == sel or tid.strip().lower() == sel:
+                        t_cfg = cfg
+                        break
+
+            t_names = [sel]
+            if t_cfg:
+                if t_cfg.get('name'): t_names.append(t_cfg['name'].strip().lower())
+                if t_cfg.get('id'): t_names.append(t_cfg['id'].strip().lower())
+
+            match_found = any(c and (c == ev_t or c in ev_t or ev_t in c or c == ev_t_id or c in ev_t_id) for c in t_names)
+            if not match_found and (ev_t or ev_t_id):
                 continue
 
         rec_link = ev_data.get('recorder_link')
@@ -1073,7 +1118,7 @@ async def link_missing(interaction: discord.Interaction, tournament: str = None)
             missing_str = ", ".join(missing_types)
             
             embed.add_field(
-                name=f"📌 [{ev_id}] {m_name}",
+                name=f"📌 {m_name}",
                 value=f"• **Tournament:** {tourn} ({rnd})\n• **Status:** {status}\n• **Missing:** `{missing_str}`",
                 inline=False
             )
