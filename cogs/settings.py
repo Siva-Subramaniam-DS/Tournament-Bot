@@ -145,12 +145,13 @@ def extract_player_fields(header: list, row: list, is_captain: bool = False, pla
     if is_captain:
         tag_aliases = [
             "captain discord tag", "captain discord username", "captain tag", "captain username",
-            "captain discord user name", "discord tag", "discord username", "tag", "username", "discord handle"
+            "captain discord user name", "discord tag", "discord username", "tag", "username",
+            "discord handle", "discord", "discord account", "discord user"
         ]
         id_aliases = [
             "captain discord developers i'd", "captain discord developers id", "captain discord developer id",
             "captain developer id", "discord developer id", "developer id", "captain discord id",
-            "captain discord", "captain id", "discord id", "captain", "captain's discord", "id"
+            "captain discord", "captain id", "discord id", "captain", "captain's discord", "discord", "discord user id", "id"
         ]
         name_aliases = [
             "captain in game name", "captain in-game name", "captain ign", "captain game name",
@@ -172,22 +173,24 @@ def extract_player_fields(header: list, row: list, is_captain: bool = False, pla
         tag_aliases = [
             f"player {n} discord tag", f"player{n} discord tag", f"player {n} discord username",
             f"player{n} discord username", f"player {n} tag", f"p{n} tag", f"p{n} discord tag",
-            f"player {n} username", f"p{n} username", f"player {n} discord user name"
+            f"player {n} username", f"p{n} username", f"player {n} discord user name",
+            f"player {n} discord", f"p{n} discord"
         ]
-        id_aliases = get_player_aliases(n, "Discord ID")
+        id_aliases = get_player_aliases(n, "Discord ID") + [f"p{n} id", f"player {n} id", f"player{n} id"]
         name_aliases = get_player_aliases(n, "Game Name")
         game_id_aliases = get_player_aliases(n, "Game ID")
         title_aliases = get_player_aliases(n, "Title")
     else:
         tag_aliases = [
             "player discord tag", "player discord username", "player tag", "player username",
-            "player discord user name", "discord tag", "discord username", "tag", "username", "discord handle"
+            "player discord user name", "discord tag", "discord username", "tag", "username",
+            "discord handle", "discord", "discord account", "discord user"
         ]
         id_aliases = [
             "player discord developers i'd", "player discord developers id", "player discord developer id",
             "discord developer id", "developer id", "player discord id", "discord id", "player discord",
             "discord tag", "discord name", "discord", "discord developers i'd", "discord developers id",
-            "discord developer id", "player discord username", "discord username", "id"
+            "discord developer id", "player discord username", "discord username", "discord user id", "id"
         ]
         name_aliases = [
             "player in game name", "player in-game name", "in game name", "in-game name",
@@ -286,8 +289,20 @@ def format_player_field_value(data: dict, is_captain: bool = True, guild: discor
 
     # Discord ID
     d_id = data.get('discord_id')
+    member = data.get('member')
+    mention_str = ""
+    if member:
+        mention_str = member.mention
+    elif d_id and d_id != "None" and str(d_id).isdigit():
+        mention_str = f"<@{d_id}>"
+
     if d_id and d_id != "None":
-        lines.append(f"**Discord ID:** `{d_id}`")
+        if mention_str:
+            lines.append(f"**Discord ID:** `{d_id}` ({mention_str})")
+        else:
+            lines.append(f"**Discord ID:** `{d_id}`")
+    elif mention_str:
+        lines.append(f"**Discord ID:** {mention_str}")
 
     # Verification
     member = data.get('member')
@@ -358,8 +373,20 @@ def format_player_block_quote(section_header: str, data: dict, emoji: str = "üí
 
     # Discord ID
     d_id = data.get('discord_id')
+    member = data.get('member')
+    mention_str = ""
+    if member:
+        mention_str = member.mention
+    elif d_id and d_id != "None" and str(d_id).isdigit():
+        mention_str = f"<@{d_id}>"
+
     if d_id and d_id != "None":
-        lines.append(f"> **Discord ID:** `{d_id}`")
+        if mention_str:
+            lines.append(f"> **Discord ID:** `{d_id}` ({mention_str})")
+        else:
+            lines.append(f"> **Discord ID:** `{d_id}`")
+    elif mention_str:
+        lines.append(f"> **Discord ID:** {mention_str}")
 
     # Verification
     member = data.get('member')
@@ -475,7 +502,7 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
                     p_data['sl'] = str(idx)
 
                 member = p_data['member']
-                if not member and p_data['discord_id'] != "None" and p_data['discord_id'].isdigit():
+                if not member and p_data['discord_id'] != "None" and str(p_data['discord_id']).isdigit():
                     try:
                         member = await guild.fetch_member(int(p_data['discord_id']))
                         p_data['member'] = member
@@ -483,6 +510,19 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
                             p_data['discord_tag'] = member.name
                     except:
                         pass
+                if not member and guild:
+                    name_q = p_data.get('discord_tag') or p_data.get('discord_id')
+                    if name_q and name_q != "None":
+                        clean_q = name_q.lstrip('@').split('#')[0].strip()
+                        try:
+                            found = await guild.query_members(query=clean_q, limit=3)
+                            if found:
+                                member = found[0]
+                                p_data['member'] = member
+                                p_data['discord_id'] = str(member.id)
+                                p_data['discord_tag'] = member.name
+                        except Exception:
+                            pass
 
                 title_name = p_data['game_name'] if p_data['game_name'] != 'None' else (p_data['discord_tag'] if p_data['discord_tag'] != 'None' else "Player Information")
 
@@ -490,7 +530,7 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
                 desc_mention = ""
                 if member:
                     desc_mention = f"{p_em} {member.mention}"
-                elif p_data.get('discord_id') and p_data['discord_id'] != 'None' and p_data['discord_id'].isdigit():
+                elif p_data.get('discord_id') and p_data['discord_id'] != 'None' and str(p_data['discord_id']).isdigit():
                     desc_mention = f"{p_em} <@{p_data['discord_id']}>"
                 elif p_data.get('discord_tag') and p_data['discord_tag'] != 'None':
                     desc_mention = f"{p_em} **@{p_data['discord_tag']}**"
@@ -536,7 +576,7 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
                     cap_data['sl'] = str(idx)
 
                 member = cap_data['member']
-                if not member and cap_data['discord_id'] != "None" and cap_data['discord_id'].isdigit():
+                if not member and cap_data['discord_id'] != "None" and str(cap_data['discord_id']).isdigit():
                     try:
                         member = await guild.fetch_member(int(cap_data['discord_id']))
                         cap_data['member'] = member
@@ -544,6 +584,19 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
                             cap_data['discord_tag'] = member.name
                     except:
                         pass
+                if not member and guild:
+                    name_q = cap_data.get('discord_tag') or cap_data.get('discord_id')
+                    if name_q and name_q != "None":
+                        clean_q = name_q.lstrip('@').split('#')[0].strip()
+                        try:
+                            found = await guild.query_members(query=clean_q, limit=3)
+                            if found:
+                                member = found[0]
+                                cap_data['member'] = member
+                                cap_data['discord_id'] = str(member.id)
+                                cap_data['discord_tag'] = member.name
+                        except Exception:
+                            pass
 
                 team_title = tn_val or (cap_data['game_name'] if cap_data['game_name'] != 'None' else "Team Information")
 
@@ -551,7 +604,7 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
                 desc_mention = ""
                 if member:
                     desc_mention = f"{cap_em} {member.mention}"
-                elif cap_data.get('discord_id') and cap_data['discord_id'] != 'None' and cap_data['discord_id'].isdigit():
+                elif cap_data.get('discord_id') and cap_data['discord_id'] != 'None' and str(cap_data['discord_id']).isdigit():
                     desc_mention = f"{cap_em} <@{cap_data['discord_id']}>"
                 elif cap_data.get('discord_tag') and cap_data['discord_tag'] != 'None':
                     desc_mention = f"{cap_em} **@{cap_data['discord_tag']}**"
@@ -571,6 +624,29 @@ async def sync_player_info_to_channel(guild: discord.Guild, sheet_link: str, for
                 for n in range(2, team_size + 1):
                     pn_data = extract_player_fields(header, row, is_captain=False, player_num=n, guild=guild)
                     if any(pn_data[k] != "None" for k in ["discord_tag", "discord_id", "game_name", "game_id", "title"]):
+                        p_mem = pn_data.get('member')
+                        if not p_mem and pn_data['discord_id'] != "None" and str(pn_data['discord_id']).isdigit() and guild:
+                            try:
+                                p_mem = await guild.fetch_member(int(pn_data['discord_id']))
+                                pn_data['member'] = p_mem
+                                if pn_data['discord_tag'] == "None" and p_mem:
+                                    pn_data['discord_tag'] = p_mem.name
+                            except:
+                                pass
+                        if not p_mem and guild:
+                            name_q = pn_data.get('discord_tag') or pn_data.get('discord_id')
+                            if name_q and name_q != "None":
+                                clean_q = name_q.lstrip('@').split('#')[0].strip()
+                                try:
+                                    found = await guild.query_members(query=clean_q, limit=3)
+                                    if found:
+                                        p_mem = found[0]
+                                        pn_data['member'] = p_mem
+                                        pn_data['discord_id'] = str(p_mem.id)
+                                        pn_data['discord_tag'] = p_mem.name
+                                except Exception:
+                                    pass
+
                         embed.add_field(
                             name=f"{get_emoji('details', guild)} Player {n} details",
                             value=format_player_field_value(pn_data, is_captain=False, guild=guild),
@@ -1239,10 +1315,18 @@ class Settings(commands.Cog):
             user_mention = f"<@{user.id}>"
 
             found_row = None
+            u_names = {user.name.lower(), user.display_name.lower()}
+            if user.global_name:
+                u_names.add(user.global_name.lower())
+
             for row in rows[1:]:
                 for cell in row:
                     cell_clean = cell.strip()
                     if user_id_str in cell_clean or user_mention in cell_clean:
+                        found_row = row
+                        break
+                    cell_lower = cell_clean.lower().lstrip('@').split('#')[0].strip()
+                    if cell_lower and cell_lower in u_names:
                         found_row = row
                         break
                 if found_row:
@@ -1251,7 +1335,7 @@ class Settings(commands.Cog):
             if found_row is None:
                 await interaction.followup.send(
                     f"‚ùå {user.mention} was not found in the player information sheet.\n"
-                    f"Make sure their Discord ID is recorded in the sheet."
+                    f"Make sure their Discord ID or username is recorded in the sheet."
                 )
                 return
 

@@ -257,30 +257,83 @@ async def resolve_embed_thumbnail(guild_id: int, embed: discord.Embed, fallback_
 
     return None, False
 
+def format_links_markdown(raw_val: str, label_prefix: str = "Link") -> str:
+    if not raw_val:
+        return ""
+    links = [l.strip() for l in str(raw_val).split(',') if l.strip()]
+    if not links:
+        return ""
+    if len(links) == 1:
+        return f"[Watch Here]({links[0]})"
+    return ", ".join(f"[{label_prefix}{idx}]({url})" for idx, url in enumerate(links, start=1))
+
 async def update_results_embed_with_links(guild: discord.Guild, ev_data: dict):
+    if not guild or not ev_data:
+        return
     res_msg_id = ev_data.get('results_message_id')
     res_chan_id = ev_data.get('results_channel_id')
-    if not res_msg_id or not res_chan_id or not guild:
+    
+    channel = None
+    if res_chan_id:
+        try:
+            channel = guild.get_channel(int(res_chan_id)) or await guild.fetch_channel(int(res_chan_id))
+        except Exception:
+            channel = None
+            
+    if not channel:
+        cfg = get_guild_config(guild.id)
+        candidate_chan_id = cfg.get('channel_ids', {}).get('results') or cfg.get('channel_ids', {}).get('result')
+        if candidate_chan_id:
+            try:
+                channel = guild.get_channel(int(candidate_chan_id)) or await guild.fetch_channel(int(candidate_chan_id))
+                if channel:
+                    ev_data['results_channel_id'] = channel.id
+            except Exception:
+                channel = None
+
+    if not channel:
         return
-    try:
-        channel = guild.get_channel(int(res_chan_id))
-        if not channel:
-            channel = await guild.fetch_channel(int(res_chan_id))
-        msg = await channel.fetch_message(int(res_msg_id))
-        if not msg or not msg.embeds:
-            return
+
+    msg = None
+    if res_msg_id:
+        try:
+            msg = await channel.fetch_message(int(res_msg_id))
+        except Exception:
+            msg = None
+
+    if not msg:
+        t1 = str(ev_data.get('team1_name') or '').lower()
+        t2 = str(ev_data.get('team2_name') or '').lower()
+        m_name = str(ev_data.get('match_name') or '').lower()
+        try:
+            async for history_msg in channel.history(limit=40):
+                if history_msg.author == guild.me and history_msg.embeds:
+                    em = history_msg.embeds[0]
+                    content_to_check = f"{em.title or ''} {em.description or ''} " + " ".join(f.name + " " + f.value for f in em.fields)
+                    c_lower = content_to_check.lower()
+                    if (t1 and t2 and t1 in c_lower and t2 in c_lower) or (m_name and m_name in c_lower):
+                        msg = history_msg
+                        ev_data['results_message_id'] = msg.id
+                        ev_data['results_channel_id'] = channel.id
+                        break
+        except Exception as search_err:
+            print(f"Error searching results channel for match: {search_err}")
+
+    if not msg or not msg.embeds:
+        return
         
+    try:
         embed = msg.embeds[0]
         general_link = ev_data.get('recording_link')
         rec_link = ev_data.get('recorder_link')
         jdg_link = ev_data.get('judge_link')
         
         link_lines = []
-        if general_link: link_lines.append(f"{EMOJIS['recorder']} **Recording:** [Watch Here]({general_link})")
-        if rec_link:     link_lines.append(f"{EMOJIS['recorder']} **Recorder VOD:** [Watch Here]({rec_link})")
-        if jdg_link:     link_lines.append(f"{EMOJIS['judge']} **Judge VOD:** [Watch Here]({jdg_link})")
+        if general_link: link_lines.append(f"{EMOJIS.get('recorder', '📹')} **Recording:** {format_links_markdown(general_link, 'Link')}")
+        if rec_link:     link_lines.append(f"{EMOJIS.get('recorder', '📹')} **Recorder VOD:** {format_links_markdown(rec_link, 'Link')}")
+        if jdg_link:     link_lines.append(f"{EMOJIS.get('judge', '⚖️')} **Judge VOD:** {format_links_markdown(jdg_link, 'Link')}")
         
-        fields = [f for f in embed.fields if f.name not in ("🎥 Recording Link", "🎥 Recordings / VODs", f"{EMOJIS['recorder']} Recordings / VODs")]
+        fields = [f for f in embed.fields if f.name not in ("🎥 Recording Link", "🎥 Recordings / VODs", f"{EMOJIS.get('recorder', '📹')} Recordings / VODs", "📹 Recordings / VODs")]
         embed.clear_fields()
         for f in fields:
             embed.add_field(name=f.name, value=f.value, inline=f.inline)

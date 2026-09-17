@@ -921,9 +921,18 @@ def load_scheduled_events():
                 for event_id, event_data in data.items():
                     if not isinstance(event_data, dict):
                         continue
-                    # Skip completed schedules to save memory
-                    if str(event_data.get('status', '')).lower() == 'completed':
-                        continue
+                    # Retain recent completed events (last 7 days or has results message) for /link add and editing
+                    is_completed = str(event_data.get('status', '')).lower() in ('completed', 'closed', 'finished', 'done')
+                    if is_completed and not event_data.get('results_message_id'):
+                        completed_at = event_data.get('completed_at')
+                        if completed_at:
+                            try:
+                                cat = datetime.datetime.fromisoformat(completed_at)
+                                if cat.tzinfo is None: cat = cat.replace(tzinfo=pytz.UTC)
+                                if cat < datetime.datetime.now(pytz.UTC) - datetime.timedelta(days=7):
+                                    continue
+                            except Exception:
+                                pass
                     if 'datetime' in event_data and isinstance(event_data['datetime'], str):
                         try:
                             event_data['datetime'] = datetime.datetime.fromisoformat(event_data['datetime'])
@@ -932,7 +941,7 @@ def load_scheduled_events():
                     active_events[event_id] = event_data
                 scheduled_events.clear()
                 scheduled_events.update(active_events)
-                print(f"Loaded {len(scheduled_events)} active scheduled events from local file")
+                print(f"Loaded {len(scheduled_events)} active/recent scheduled events from local file")
     except Exception as e:
         print(f"Error loading scheduled events from local file: {e}")
     return scheduled_events
@@ -954,9 +963,8 @@ async def load_scheduled_events_from_supabase():
         if res and res.data:
             loaded_count = 0
             for row in res.data:
-                # Skip completed or closed matches
-                if str(row.get("State") or row.get("Status") or "").lower() in ("completed", "closed", "finished", "done"):
-                    continue
+                row_status = str(row.get("State") or row.get("Status") or "").lower()
+                is_completed = row_status in ("completed", "closed", "finished", "done")
 
                 event_id = row.get("Match_ID") or row.get("Event_ID")
                 if not event_id:
@@ -988,10 +996,18 @@ async def load_scheduled_events_from_supabase():
                 if not event_datetime:
                     event_datetime = datetime.datetime.now()
                 
-                # Skip ancient matches older than 24 hours to keep active cache clean
-                now_cmp = datetime.datetime.now(event_datetime.tzinfo) if event_datetime.tzinfo else datetime.datetime.now()
-                if event_datetime < now_cmp - datetime.timedelta(hours=24):
-                    continue
+                # For completed matches, only skip if older than 7 days and has no results message
+                if is_completed and not row.get("results_message_id"):
+                    updated_at_str = row.get("Updated_At") or row.get("Created_At")
+                    if updated_at_str:
+                        try:
+                            clean_uat = updated_at_str.replace('Z', '+00:00')
+                            uat = datetime.datetime.fromisoformat(clean_uat)
+                            now_utc = datetime.datetime.now(uat.tzinfo) if uat.tzinfo else datetime.datetime.now()
+                            if uat < now_utc - datetime.timedelta(days=7):
+                                continue
+                        except Exception:
+                            continue
 
                 def parse_int_safe(val):
                     if not val:
@@ -1005,6 +1021,7 @@ async def load_scheduled_events_from_supabase():
                 t1_id = parse_int_safe(row.get("Team1_Captain_ID") or row.get("Team1_ID"))
                 t2_id = parse_int_safe(row.get("Team2_Captain_ID") or row.get("Team2_ID"))
                 j_id = parse_int_safe(row.get("Judge_ID"))
+                r_id = parse_int_safe(row.get("Recorder_ID"))
 
                 t1_n = row.get('Team1_Captain_Name') or row.get('Team1_Name')
                 t2_n = row.get('Team2_Captain_Name') or row.get('Team2_Name')
@@ -1027,13 +1044,26 @@ async def load_scheduled_events_from_supabase():
                         'tournament': row.get('Tournament_ID') or row.get('Tournament'),
                         'mode': None,
                         'judge': j_id,
-                        'recorder': None,
+                        'recorder': r_id,
                         'channel_id': parse_int_safe(row.get("Channel_ID")),
                         'team1_captain': t1_id,
                         'team2_captain': t2_id,
                         'team1_name': t1_n,
                         'team2_name': t2_n,
                         'match_name': m_name or f"{t1_n or 'Team 1'} vs {t2_n or 'Team 2'}",
+                        'status': row_status or 'scheduled',
+                        'recording_link': row.get('recording_link') or '',
+                        'recorder_link': row.get('recorder_link') or '',
+                        'judge_link': row.get('judge_link') or '',
+                        'results_message_id': parse_int_safe(row.get('results_message_id')),
+                        'results_channel_id': parse_int_safe(row.get('results_channel_id')),
+                        'match_results_message_id': parse_int_safe(row.get('match_results_message_id')),
+                        'match_results_channel_id': parse_int_safe(row.get('match_results_channel_id')),
+                        'winner_score': row.get('Team1_Score'),
+                        'loser_score': row.get('Team2_Score'),
+                        'winner_id': row.get('Winner_ID'),
+                        'remarks': row.get('Remarks') or '',
+                        'disqualified': row.get('Disqualified') or False,
                     }
                     loaded_count += 1
                 else:
@@ -1058,6 +1088,25 @@ async def load_scheduled_events_from_supabase():
                         
                     if j_id and existing.get('judge') != j_id:
                         existing['judge'] = j_id
+                    if r_id and existing.get('recorder') != r_id:
+                        existing['recorder'] = r_id
+                        
+                    if row.get('recording_link'):
+                        existing['recording_link'] = row.get('recording_link')
+                    if row.get('recorder_link'):
+                        existing['recorder_link'] = row.get('recorder_link')
+                    if row.get('judge_link'):
+                        existing['judge_link'] = row.get('judge_link')
+                    if row.get('results_message_id'):
+                        existing['results_message_id'] = parse_int_safe(row.get('results_message_id'))
+                    if row.get('results_channel_id'):
+                        existing['results_channel_id'] = parse_int_safe(row.get('results_channel_id'))
+                    if row_status:
+                        existing['status'] = row_status
+                    if row.get('Team1_Score') is not None:
+                        existing['winner_score'] = row.get('Team1_Score')
+                    if row.get('Team2_Score') is not None:
+                        existing['loser_score'] = row.get('Team2_Score')
                     
             print(f"✅ Loaded {loaded_count} scheduled event(s) from Supabase.")
     except Exception as e:
@@ -1968,6 +2017,7 @@ def _sync_fetch_google_sheet_captains(sheet_link: str):
         headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(url, headers=headers, timeout=15)
         resp.raise_for_status()
+        resp.encoding = 'utf-8'
         reader = csv.reader(io.StringIO(resp.text))
         
         h_row = next(reader, [])
@@ -2329,30 +2379,89 @@ async def match_autocomplete(
         print(f"Error in match_autocomplete: {e}")
         return []
 
+def format_links_markdown(raw_val: str, label_prefix: str = "Link") -> str:
+    if not raw_val:
+        return ""
+    links = [l.strip() for l in str(raw_val).split(',') if l.strip()]
+    if not links:
+        return ""
+    if len(links) == 1:
+        return f"[Watch Here]({links[0]})"
+    return ", ".join(f"[{label_prefix}{idx}]({url})" for idx, url in enumerate(links, start=1))
+
 async def update_results_embed_with_links(guild: discord.Guild, ev_data: dict):
+    if not guild or not ev_data:
+        return
+        
     res_msg_id = ev_data.get('results_message_id')
     res_chan_id = ev_data.get('results_channel_id')
-    if not res_msg_id or not res_chan_id or not guild:
+    
+    # Auto-resolve results channel if missing
+    channel = None
+    if res_chan_id:
+        try:
+            channel = guild.get_channel(int(res_chan_id)) or await guild.fetch_channel(int(res_chan_id))
+        except Exception:
+            channel = None
+            
+    if not channel:
+        cfg = get_guild_config(guild.id)
+        candidate_chan_id = cfg.get('channel_ids', {}).get('results') or cfg.get('channel_ids', {}).get('result')
+        if candidate_chan_id:
+            try:
+                channel = guild.get_channel(int(candidate_chan_id)) or await guild.fetch_channel(int(candidate_chan_id))
+                if channel:
+                    ev_data['results_channel_id'] = channel.id
+            except Exception:
+                channel = None
+
+    if not channel:
         return
+
+    msg = None
+    if res_msg_id:
+        try:
+            msg = await channel.fetch_message(int(res_msg_id))
+        except Exception:
+            msg = None
+
+    # If message not found by ID, search recent results messages for match
+    if not msg:
+        t1 = str(ev_data.get('team1_name') or '').lower()
+        t2 = str(ev_data.get('team2_name') or '').lower()
+        m_name = str(ev_data.get('match_name') or '').lower()
+        try:
+            async for history_msg in channel.history(limit=40):
+                if history_msg.author == guild.me and history_msg.embeds:
+                    em = history_msg.embeds[0]
+                    content_to_check = f"{em.title or ''} {em.description or ''} " + " ".join(f.name + " " + f.value for f in em.fields)
+                    c_lower = content_to_check.lower()
+                    if (t1 and t2 and t1 in c_lower and t2 in c_lower) or (m_name and m_name in c_lower):
+                        msg = history_msg
+                        ev_data['results_message_id'] = msg.id
+                        ev_data['results_channel_id'] = channel.id
+                        break
+        except Exception as search_err:
+            print(f"Error searching results channel for match: {search_err}")
+
+    if not msg or not msg.embeds:
+        return
+
     try:
-        channel = guild.get_channel(int(res_chan_id))
-        if not channel:
-            channel = await guild.fetch_channel(int(res_chan_id))
-        msg = await channel.fetch_message(int(res_msg_id))
-        if not msg or not msg.embeds:
-            return
-        
         embed = msg.embeds[0]
         general_link = ev_data.get('recording_link')
         rec_link = ev_data.get('recorder_link')
         jdg_link = ev_data.get('judge_link')
         
         link_lines = []
-        if general_link: link_lines.append(f"🎥 **Recording:** [Watch Here]({general_link})")
-        if rec_link:     link_lines.append(f"🎥 **Recorder VOD:** [Watch Here]({rec_link})")
-        if jdg_link:     link_lines.append(f"⚖️ **Judge VOD:** [Watch Here]({jdg_link})")
+        if general_link:
+            link_lines.append(f"🎥 **Recording:** {format_links_markdown(general_link, 'Link')}")
+        if rec_link:
+            link_lines.append(f"🎥 **Recorder VOD:** {format_links_markdown(rec_link, 'Link')}")
+        if jdg_link:
+            link_lines.append(f"⚖️ **Judge VOD:** {format_links_markdown(jdg_link, 'Link')}")
         
-        fields = [f for f in embed.fields if f.name not in ("🎥 Recording Link", "🎥 Recordings / VODs")]
+        fields = [f for f in embed.fields if f.name not in ("🎥 Recording Link", "🎥 Recordings / VODs", "📹 Recordings / VODs")]
         embed.clear_fields()
         for f in fields:
             embed.add_field(name=f.name, value=f.value, inline=f.inline)

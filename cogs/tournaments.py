@@ -27,7 +27,7 @@ from core.state import (
     ROLE_IDS, CHANNEL_IDS, scheduled_events, save_scheduled_events,
     scheduled_deadlines, reminder_tasks, deadline_tasks,
     auto_room_loops, auto_room_locks, get_default_tournament_data,
-    category_monitors, CHALLONGE_MATCHES_CACHE
+    category_monitors, CHALLONGE_MATCHES_CACHE, is_event_over
 )
 
 from core.database import (
@@ -134,6 +134,7 @@ async def match_autocomplete(
             return val
 
         seen_names = {}
+        allow_completed = is_link_add or (parent_name == "result" and cmd_name == "edit") or (parent_name == "link")
 
         for ev_id, ev_data in scheduled_events.items():
             if str(ev_data.get('guild_id')) != str(guild_id):
@@ -141,6 +142,10 @@ async def match_autocomplete(
 
             # Don't show challonge id and show only whatever event is created
             if ev_id.startswith("challonge_"):
+                continue
+
+            # If event is over/completed, exclude from options unless editing result or managing links
+            if not allow_completed and is_event_over(ev_data):
                 continue
 
             if selected_tournament:
@@ -844,9 +849,10 @@ async def link_add(
 ):
     await interaction.response.defer(ephemeral=False)
 
-    link_stripped = link.strip()
-    if not (link_stripped.startswith("http://") or link_stripped.startswith("https://")):
-        await interaction.followup.send("❌ Please provide a valid URL starting with `http://` or `https://`.", ephemeral=False)
+    raw_urls = [u.strip() for u in link.split(",") if u.strip()]
+    invalid_urls = [u for u in raw_urls if not (u.startswith("http://") or u.startswith("https://"))]
+    if not raw_urls or invalid_urls:
+        await interaction.followup.send("❌ Please provide valid URL(s) starting with `http://` or `https://`. Separate multiple links with commas.", ephemeral=False)
         return
 
     ev_id, ev_data = find_event_by_name_or_id(interaction.guild.id, match)
@@ -860,7 +866,10 @@ async def link_add(
     elif link_type.value == "judge":
         key = "judge_link"
         
-    ev_data[key] = link_stripped
+    existing_raw = ev_data.get(key, "")
+    existing_urls = [u.strip() for u in existing_raw.split(",") if u.strip() and (u.startswith("http://") or u.startswith("https://"))]
+    combined_urls = list(dict.fromkeys(existing_urls + raw_urls))
+    ev_data[key] = ", ".join(combined_urls)
 
     rec_obj = ev_data.get('recorder')
     rec_credited_name = None
@@ -893,13 +902,14 @@ async def link_add(
         event_saved_note += f"\n🎉 **Recorder credit registered in staff stats for {rec_credited_name}!**"
 
     link_label = link_type.name
+    display_links = ev_data[key]
     embed = discord.Embed(
         title=f"{EMOJIS['recorder']} {link_label} Added",
         description=(
             f"**Tournament:** {tournament}\n"
             f"**Event / Match:** {ev_data.get('match_name') or match}\n"
             f"**Match ID:** `{ev_id}`\n"
-            f"**Link:** {link_stripped}"
+            f"**Link(s):** {display_links}"
         ),
         color=discord.Color.green(),
         timestamp=discord.utils.utcnow()
@@ -933,9 +943,10 @@ async def link_edit(
 ):
     await interaction.response.defer(ephemeral=False)
 
-    link_stripped = new_link.strip()
-    if not (link_stripped.startswith("http://") or link_stripped.startswith("https://")):
-        await interaction.followup.send("❌ Please provide a valid URL starting with `http://` or `https://`.", ephemeral=False)
+    raw_urls = [u.strip() for u in new_link.split(",") if u.strip()]
+    invalid_urls = [u for u in raw_urls if not (u.startswith("http://") or u.startswith("https://"))]
+    if not raw_urls or invalid_urls:
+        await interaction.followup.send("❌ Please provide valid URL(s) starting with `http://` or `https://`. Separate multiple links with commas.", ephemeral=False)
         return
 
     ev_id, ev_data = find_event_by_name_or_id(interaction.guild.id, match)
@@ -950,7 +961,7 @@ async def link_edit(
         key = "judge_link"
 
     old_link = ev_data.get(key, "None")
-    ev_data[key] = link_stripped
+    ev_data[key] = ", ".join(raw_urls)
     save_scheduled_events()
     asyncio.create_task(save_event_to_supabase(ev_id, ev_data))
     await update_results_embed_with_links(interaction.guild, ev_data)
@@ -964,7 +975,7 @@ async def link_edit(
             f"**Event / Match:** {ev_data.get('match_name') or match}\n"
             f"**Match ID:** `{ev_id}`\n"
             f"**Old Link:** {old_link}\n"
-            f"**New Link:** {link_stripped}"
+            f"**New Link(s):** {ev_data[key]}"
         ),
         color=discord.Color.blue(),
         timestamp=discord.utils.utcnow()
@@ -1830,6 +1841,8 @@ def create_match_room_embed(
     captain2_ign_or_id: Optional[str] = None,
     captain1_game_name: Optional[str] = None,
     captain2_game_name: Optional[str] = None,
+    captain1_game_id: Optional[str] = None,
+    captain2_game_id: Optional[str] = None,
     group_name: Optional[str] = None,
     match_id: Optional[Union[str, int]] = None,
     rules_channel_id: Optional[Union[int, str]] = None,
@@ -1916,47 +1929,75 @@ def create_match_room_embed(
     p1_field_title = str(captain1_game_name).strip() if (captain1_game_name and str(captain1_game_name).strip() and "<@" not in str(captain1_game_name)) else p1_title
     p2_field_title = str(captain2_game_name).strip() if (captain2_game_name and str(captain2_game_name).strip() and "<@" not in str(captain2_game_name)) else p2_title
 
-    # Team 1 / Player 1 Field
-    p1_label = "Player 1" if is_1v1 else "Team 1"
-    if clean_c1_id:
-        embed.add_field(
-            name=f"{EMOJIS['captain']} **{p1_label}:** {p1_field_title}",
-            value=f"{EMOJIS['captain']} Captain: `{clean_c1_id}`",
-            inline=False
-        )
-    elif captain1_mention and "<@" in str(captain1_mention):
-        embed.add_field(
-            name=f"{EMOJIS['captain']} **{p1_label}:** {p1_field_title}",
-            value=f"{EMOJIS['captain']} Captain: {captain1_mention}",
-            inline=False
-        )
-    else:
-        embed.add_field(
-            name=f"{EMOJIS['captain']} **{p1_label}:** {p1_field_title}",
-            value=f"{EMOJIS['captain']} Captain: `N/A`",
-            inline=False
-        )
+    # Resolve Game Name and Game ID for Team 1 / Player 1
+    gname_1 = str(captain1_game_name or '').strip()
+    if not gname_1 or "<@" in gname_1:
+        if clean_c1_id and not clean_c1_id.isdigit():
+            gname_1 = clean_c1_id
+        elif p1_field_title and not p1_field_title.isdigit() and "<@" not in p1_field_title:
+            gname_1 = p1_field_title
 
-    # Team 2 / Player 2 Field
-    p2_label = "Player 2" if is_1v1 else "Team 2"
-    if clean_c2_id:
-        embed.add_field(
-            name=f"{EMOJIS['captain']} **{p2_label}:** {p2_field_title}",
-            value=f"{EMOJIS['captain']} Captain: `{clean_c2_id}`",
-            inline=False
-        )
-    elif captain2_mention and "<@" in str(captain2_mention):
-        embed.add_field(
-            name=f"{EMOJIS['captain']} **{p2_label}:** {p2_field_title}",
-            value=f"{EMOJIS['captain']} Captain: {captain2_mention}",
-            inline=False
-        )
+    gid_1 = str(captain1_game_id or '').strip()
+    if not gid_1:
+        if clean_c1_id and clean_c1_id != gname_1:
+            gid_1 = clean_c1_id
+        elif str(captain1_ign_or_id or '').strip() and str(captain1_ign_or_id or '').strip() != gname_1:
+            gid_1 = str(captain1_ign_or_id or '').strip()
+
+    p1_lines = []
+    if gname_1 and "<@" not in gname_1:
+        p1_lines.append(f"🎮 **Game Name:** `{gname_1}`")
+    elif captain1_mention and "<@" in str(captain1_mention):
+        p1_lines.append(f"🎮 **Game Name:** {captain1_mention}")
     else:
-        embed.add_field(
-            name=f"{EMOJIS['captain']} **{p2_label}:** {p2_field_title}",
-            value=f"{EMOJIS['captain']} Captain: `N/A`",
-            inline=False
-        )
+        p1_lines.append(f"🎮 **Game Name:** `N/A`")
+
+    if gid_1 and "<@" not in gid_1:
+        p1_lines.append(f"🆔 **Game ID:** `{gid_1}`")
+    else:
+        p1_lines.append(f"🆔 **Game ID:** `N/A`")
+
+    # Resolve Game Name and Game ID for Team 2 / Player 2
+    gname_2 = str(captain2_game_name or '').strip()
+    if not gname_2 or "<@" in gname_2:
+        if clean_c2_id and not clean_c2_id.isdigit():
+            gname_2 = clean_c2_id
+        elif p2_field_title and not p2_field_title.isdigit() and "<@" not in p2_field_title:
+            gname_2 = p2_field_title
+
+    gid_2 = str(captain2_game_id or '').strip()
+    if not gid_2:
+        if clean_c2_id and clean_c2_id != gname_2:
+            gid_2 = clean_c2_id
+        elif str(captain2_ign_or_id or '').strip() and str(captain2_ign_or_id or '').strip() != gname_2:
+            gid_2 = str(captain2_ign_or_id or '').strip()
+
+    p2_lines = []
+    if gname_2 and "<@" not in gname_2:
+        p2_lines.append(f"🎮 **Game Name:** `{gname_2}`")
+    elif captain2_mention and "<@" in str(captain2_mention):
+        p2_lines.append(f"🎮 **Game Name:** {captain2_mention}")
+    else:
+        p2_lines.append(f"🎮 **Game Name:** `N/A`")
+
+    if gid_2 and "<@" not in gid_2:
+        p2_lines.append(f"🆔 **Game ID:** `{gid_2}`")
+    else:
+        p2_lines.append(f"🆔 **Game ID:** `N/A`")
+
+    p1_label = "Player 1" if is_1v1 else "Team 1"
+    embed.add_field(
+        name=f"⚔️ **{p1_label}:** {p1_field_title}",
+        value="\n".join(p1_lines),
+        inline=False
+    )
+
+    p2_label = "Player 2" if is_1v1 else "Team 2"
+    embed.add_field(
+        name=f"⚔️ **{p2_label}:** {p2_field_title}",
+        value="\n".join(p2_lines),
+        inline=False
+    )
 
     # Rules / Deadline / Action Notice
     rules_val = f"<#{rules_channel_id}>" if rules_channel_id else (f"[Rules Channel]({rules_link})" if rules_link else "Not Set")
@@ -2122,6 +2163,8 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
             c2_ign = c2_entry.get('ign') if isinstance(c2_entry, dict) else ""
             c1_game_name = c1_entry.get('game_name') if isinstance(c1_entry, dict) else ""
             c2_game_name = c2_entry.get('game_name') if isinstance(c2_entry, dict) else ""
+            c1_game_id = c1_entry.get('game_id') if isinstance(c1_entry, dict) else ""
+            c2_game_id = c2_entry.get('game_id') if isinstance(c2_entry, dict) else ""
 
             if not c1_uid and c1_raw:
                 c1_uid = extract_discord_id_from_text(c1_raw)
@@ -2354,6 +2397,8 @@ async def auto_create_open_tickets_for_tournament(guild: discord.Guild, t_cfg: d
                     captain2_ign_or_id=c2_ign,
                     captain1_game_name=c1_game_name,
                     captain2_game_name=c2_game_name,
+                    captain1_game_id=c1_game_id,
+                    captain2_game_id=c2_game_id,
                     group_name=None,
                     match_id=match_id,
                     rules_channel_id=rules_ch_id,
@@ -3166,6 +3211,23 @@ class Tournaments(commands.Cog):
             # Auto-check next round open match rooms
             if t_cfg and t_cfg.get('auto_room_creation') and interaction.guild:
                 asyncio.create_task(auto_create_open_tickets_for_tournament(interaction.guild, t_cfg))
+
+            # Mark matching scheduled event as completed and sync to Supabase
+            ev_id, ev_data = find_event_by_name_or_id(interaction.guild.id, str(match_id))
+            if not ev_data:
+                for eid, edata in list(scheduled_events.items()):
+                    if str(edata.get('guild_id')) == str(interaction.guild.id):
+                        if str(edata.get('match_id')) == str(match_id) or str(eid) == str(match_id):
+                            ev_id, ev_data = eid, edata
+                            break
+            if ev_data:
+                ev_data['status'] = 'completed'
+                ev_data['winner_score'] = winner_score
+                ev_data['loser_score'] = loser_score
+                ev_data['winner_name'] = winner_name
+                ev_data['completed_at'] = datetime.datetime.utcnow().isoformat()
+                save_scheduled_events()
+                asyncio.create_task(save_event_to_supabase(ev_id, ev_data))
         else:
             await interaction.followup.send(f"❌ Challonge rejected the score upload:\n```{error[:500] if error else 'Unknown error'}```", ephemeral=False)
 

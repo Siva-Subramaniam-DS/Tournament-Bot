@@ -20,12 +20,13 @@ from core.state import (
     save_scheduled_events, staff_stats, save_staff_stats,
     reset_staff_stats, judge_assignments,
     tournament_rules, get_current_rules, set_rules_content,
-    is_event_over, resolve_event_names
+    is_event_over, resolve_event_names, check_staff_schedule_conflict
 )
 from core.database import (
     supabase_client, load_guild_tournaments, get_guild_config,
     get_active_tournament_config, log_bot_activity, sheetdb_post,
-    get_guild_staff_stats, save_guild_staff_stats, tournament_autocomplete
+    get_guild_staff_stats, save_guild_staff_stats, tournament_autocomplete,
+    extract_discord_id_from_text
 )
 from core.emojis import (
     EMOJIS, get_staff_emoji, LEFT_BUTTON_EMOJI, RIGHT_BUTTON_EMOJI,
@@ -337,6 +338,17 @@ class StaffReplacementView(discord.ui.View):
         if not ev:
             await interaction.response.send_message("❌ Event not found.", ephemeral=False)
             return
+
+        dt = ev.get('datetime')
+        has_conflict, conflict_ev = check_staff_schedule_conflict(interaction.guild.id, interaction.user.id, self.event_id, dt)
+        if has_conflict and conflict_ev:
+            c_name = conflict_ev.get('match_name') or conflict_ev.get('round') or "Another match"
+            c_time = conflict_ev.get('time_str') or ""
+            await interaction.response.send_message(
+                f"❌ **Schedule Conflict:** You are already assigned to **{c_name}** at {c_time or 'the same scheduled time'}.\nStaff cannot take two matches scheduled at the same time.",
+                ephemeral=True
+            )
+            return
             
         ev['judge'] = interaction.user
         ev['judge_confirmed'] = True
@@ -411,6 +423,17 @@ class StaffReplacementView(discord.ui.View):
         ev = scheduled_events.get(self.event_id)
         if not ev:
             await interaction.response.send_message("❌ Event not found.", ephemeral=False)
+            return
+
+        dt = ev.get('datetime')
+        has_conflict, conflict_ev = check_staff_schedule_conflict(interaction.guild.id, interaction.user.id, self.event_id, dt)
+        if has_conflict and conflict_ev:
+            c_name = conflict_ev.get('match_name') or conflict_ev.get('round') or "Another match"
+            c_time = conflict_ev.get('time_str') or ""
+            await interaction.response.send_message(
+                f"❌ **Schedule Conflict:** You are already assigned to **{c_name}** at {c_time or 'the same scheduled time'}.\nStaff cannot take two matches scheduled at the same time.",
+                ephemeral=True
+            )
             return
             
         ev['recorder'] = interaction.user
@@ -541,6 +564,18 @@ class TakeScheduleButton(discord.ui.View):
             await interaction.response.send_message(f"❌ This schedule has already been taken by {self.judge.display_name}.", ephemeral=False)
             return
 
+        ev_pre = scheduled_events.get(self.event_id, {})
+        dt_pre = ev_pre.get('datetime')
+        has_conflict, conflict_ev = check_staff_schedule_conflict(interaction.guild.id, interaction.user.id, self.event_id, dt_pre)
+        if has_conflict and conflict_ev:
+            c_name = conflict_ev.get('match_name') or conflict_ev.get('round') or "Another match"
+            c_time = conflict_ev.get('time_str') or ""
+            await interaction.response.send_message(
+                f"❌ **Schedule Conflict:** You are already assigned to **{c_name}** at {c_time or 'the same scheduled time'}.\nStaff cannot take two matches scheduled at the same time.",
+                ephemeral=True
+            )
+            return
+
         original_label = button.label
         original_style = button.style
         original_disabled = button.disabled
@@ -657,6 +692,17 @@ class TakeScheduleButton(discord.ui.View):
             r_val = ev.get('recorder')
             r_name = getattr(r_val, 'display_name', str(r_val))
             await interaction.response.send_message(f"❌ This match already has a recorder assigned: {r_name}.", ephemeral=False)
+            return
+
+        dt_pre = ev.get('datetime')
+        has_conflict, conflict_ev = check_staff_schedule_conflict(interaction.guild.id, interaction.user.id, self.event_id, dt_pre)
+        if has_conflict and conflict_ev:
+            c_name = conflict_ev.get('match_name') or conflict_ev.get('round') or "Another match"
+            c_time = conflict_ev.get('time_str') or ""
+            await interaction.response.send_message(
+                f"❌ **Schedule Conflict:** You are already assigned to **{c_name}** at {c_time or 'the same scheduled time'}.\nStaff cannot take two matches scheduled at the same time.",
+                ephemeral=True
+            )
             return
 
         self.recorder = interaction.user
@@ -1147,13 +1193,26 @@ async def render_staff_work_count(
         j_val = ev_data.get('result_judge') or ev_data.get('judge')
         r_val = ev_data.get('recorder')
 
-        # For Recorder: if video link is not submitted, do not count recorder
-        has_video_link = bool(ev_data.get('recording_link') or ev_data.get('recorder_link'))
+        # For Recorder: if video link is not submitted and not credited, do not count recorder
+        has_video_link = bool(ev_data.get('recording_link') or ev_data.get('recorder_link') or ev_data.get('recorder_credited'))
         if not has_video_link:
             r_val = None
         
-        j_uid = str(getattr(j_val, 'id', j_val)) if j_val else None
-        r_uid = str(getattr(r_val, 'id', r_val)) if r_val else None
+        def clean_uid(val):
+            if not val:
+                return None
+            if hasattr(val, 'id'):
+                return str(val.id)
+            val_str = str(val).strip()
+            if val_str.isdigit():
+                return val_str
+            extracted = extract_discord_id_from_text(val_str)
+            if extracted:
+                return str(extracted)
+            return val_str
+
+        j_uid = clean_uid(j_val)
+        r_uid = clean_uid(r_val)
         
         # Dual Role: Same person took BOTH Judge and Recorder on this exact match
         if j_uid and r_uid and j_uid == r_uid:
@@ -1185,32 +1244,48 @@ async def render_staff_work_count(
                 if hasattr(r_val, 'name'):
                     recorders[r_uid]['name'] = r_val.name
 
-    known_user_ids = set(judges.keys()) | set(recorders.keys()) | set(judge_and_recorders.keys())
     guild_stats = get_guild_staff_stats(guild.id)
     for u_id, s_data in guild_stats.items():
-        if u_id in known_user_ids:
-            continue
-            
         j_cnt = s_data.get('judge_count', 0)
         r_cnt = s_data.get('recorder_count', 0)
         jr_cnt = s_data.get('judge_and_recorder_count', 0)
         s_name = s_data.get('name', f"User_{u_id}")
-        
-        if not target_t_id:
-            if jr_cnt > 0 and u_id not in judge_and_recorders:
-                fake_matches = {f"stat_jr_{i}" for i in range(jr_cnt)}
+
+        if jr_cnt > 0:
+            if u_id not in judge_and_recorders:
+                fake_matches = {f"stat_{u_id}_jr_{i}" for i in range(jr_cnt)}
                 fake_rounds = {f"rnd_{i//2}" for i in range(jr_cnt)}
                 judge_and_recorders[u_id] = {'matches': fake_matches, 'rounds': fake_rounds, 'name': s_name}
+            else:
+                curr_matches = judge_and_recorders[u_id]['matches']
+                if len(curr_matches) < jr_cnt:
+                    for i in range(len(curr_matches), jr_cnt):
+                        curr_matches.add(f"stat_{u_id}_jr_{i}")
+                        judge_and_recorders[u_id]['rounds'].add(f"rnd_{i//2}")
 
-            if j_cnt > 0 and u_id not in judges and u_id not in judge_and_recorders:
-                fake_matches = {f"stat_j_{i}" for i in range(j_cnt)}
+        if j_cnt > 0 and u_id not in judge_and_recorders:
+            if u_id not in judges:
+                fake_matches = {f"stat_{u_id}_j_{i}" for i in range(j_cnt)}
                 fake_rounds = {f"rnd_{i//2}" for i in range(j_cnt)}
                 judges[u_id] = {'matches': fake_matches, 'rounds': fake_rounds, 'name': s_name}
-                
-            if r_cnt > 0 and u_id not in recorders and u_id not in judge_and_recorders:
-                fake_matches = {f"stat_r_{i}" for i in range(r_cnt)}
+            else:
+                curr_matches = judges[u_id]['matches']
+                if len(curr_matches) < j_cnt:
+                    for i in range(len(curr_matches), j_cnt):
+                        curr_matches.add(f"stat_{u_id}_j_{i}")
+                        judges[u_id]['rounds'].add(f"rnd_{i//2}")
+
+        if r_cnt > 0 and u_id not in judge_and_recorders:
+            if u_id not in recorders:
+                fake_matches = {f"stat_{u_id}_r_{i}" for i in range(r_cnt)}
                 fake_rounds = {f"rnd_{i//2}" for i in range(r_cnt)}
                 recorders[u_id] = {'matches': fake_matches, 'rounds': fake_rounds, 'name': s_name}
+            else:
+                curr_matches = recorders[u_id]['matches']
+                if len(curr_matches) < r_cnt:
+                    for i in range(len(curr_matches), r_cnt):
+                        curr_matches.add(f"stat_{u_id}_r_{i}")
+                        recorders[u_id]['rounds'].add(f"rnd_{i//2}")
 
     if member:
         target_uid = str(member.id)
@@ -1524,6 +1599,96 @@ async def staff_pending_schedules(
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
+@staff_group.command(name="update", description="Update a staff member's match count in the leaderboard")
+@app_commands.describe(
+    staff_member="The staff member to update",
+    role="Role to update (Judge, Recorder, or Judge & Recorder)",
+    action="Add, Subtract, or Set the count",
+    amount="The number of matches to add, subtract, or set to"
+)
+@app_commands.choices(
+    role=[
+        app_commands.Choice(name="Judge", value="judge"),
+        app_commands.Choice(name="Recorder", value="recorder"),
+        app_commands.Choice(name="Judge & Recorder", value="judge_and_recorder")
+    ],
+    action=[
+        app_commands.Choice(name="Add (+)", value="add"),
+        app_commands.Choice(name="Subtract (-)", value="subtract"),
+        app_commands.Choice(name="Set (=)", value="set")
+    ]
+)
+@with_guild_context
+async def staff_group_update(
+    interaction: discord.Interaction,
+    staff_member: discord.Member,
+    role: app_commands.Choice[str],
+    action: app_commands.Choice[str],
+    amount: int
+):
+    if not has_organizer_permission(interaction):
+        await interaction.response.send_message("❌ You need **Head Organizer** role to update staff statistics.", ephemeral=False)
+        return
+
+    if amount < 0 and action.value != "subtract":
+        await interaction.response.send_message("❌ Amount cannot be negative.", ephemeral=False)
+        return
+
+    guild_id = interaction.guild.id
+    stats = get_guild_staff_stats(guild_id)
+    uid = str(staff_member.id)
+    if uid not in stats:
+        stats[uid] = {'name': staff_member.display_name, 'judge_count': 0, 'recorder_count': 0, 'judge_and_recorder_count': 0, 'last_activity': None}
+    else:
+        stats[uid]['name'] = staff_member.display_name
+
+    role_key = f"{role.value}_count"
+    current_count = stats[uid].get(role_key, 0)
+    
+    if action.value == "add":
+        new_count = current_count + amount
+    elif action.value == "subtract":
+        new_count = max(0, current_count - amount)
+    else:
+        new_count = max(0, amount)
+
+    stats[uid][role_key] = new_count
+    stats[uid]['total_count'] = (
+        stats[uid].get('judge_count', 0) + 
+        stats[uid].get('recorder_count', 0) + 
+        stats[uid].get('judge_and_recorder_count', 0)
+    )
+    stats[uid]['last_activity'] = datetime.datetime.utcnow().isoformat()
+    save_guild_staff_stats(guild_id, stats)
+
+    await interaction.response.send_message(f"✅ Successfully updated **{staff_member.display_name}**'s {role.name} count from {current_count} to **{new_count}**.", ephemeral=False)
+    
+    try:
+        action_symbol = "+" if action.value == "add" else ("-" if action.value == "subtract" else "=")
+        su_log_embed = discord.Embed(
+            title="📊 Staff Stats Updated",
+            color=discord.Color.blurple(),
+            timestamp=discord.utils.utcnow()
+        )
+        su_log_embed.add_field(name="👤 Staff Member", value=staff_member.mention, inline=True)
+        su_log_embed.add_field(name="🏷️ Role", value=role.name, inline=True)
+        su_log_embed.add_field(name="🔧 Change", value=f"`{action_symbol}{amount}` ({current_count} → **{new_count}**)", inline=True)
+        su_log_embed.add_field(
+            name="📊 New Totals",
+            value=(
+                f"⚖️ Judge: **{stats[uid].get('judge_count', 0)}**\n"
+                f"🎥 Recorder: **{stats[uid].get('recorder_count', 0)}**\n"
+                f"🎥🧑‍⚖️ Judge & Recorder: **{stats[uid].get('judge_and_recorder_count', 0)}**\n"
+                f"✅ Total: **{stats[uid].get('total_count', 0)}**"
+            ),
+            inline=False
+        )
+        su_log_embed.set_footer(text=f"Updated by {interaction.user.display_name} • ID: {interaction.user.id}")
+        await log_bot_activity(interaction.guild, su_log_embed)
+    except Exception as log_err:
+        print(f"Error logging staff-update: {log_err}")
+
+
 # ===========================================================================================
 # AVAILABLE EVENTS INTERACTIVE CLAIM VIEW
 # ===========================================================================================
@@ -1622,6 +1787,16 @@ class AvailableEventsClaimSelect(discord.ui.Select):
             if datetime.datetime.now(pytz.UTC) >= dt:
                 await interaction.response.send_message("❌ This match has already started and can no longer be claimed.", ephemeral=True)
                 return
+
+        has_conflict, conflict_ev = check_staff_schedule_conflict(interaction.guild.id, interaction.user.id, ev_id, dt)
+        if has_conflict and conflict_ev:
+            c_name = conflict_ev.get('match_name') or conflict_ev.get('round') or "Another match"
+            c_time = conflict_ev.get('time_str') or ""
+            await interaction.response.send_message(
+                f"❌ **Schedule Conflict:** You are already assigned to **{c_name}** at {c_time or 'the same scheduled time'}.\nStaff cannot take two matches scheduled at the same time.",
+                ephemeral=True
+            )
+            return
 
         # Assign judge
         ev['judge'] = interaction.user

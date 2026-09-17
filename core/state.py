@@ -870,8 +870,8 @@ def is_event_over(event_data: dict, grace_hours: float = 2.0) -> bool:
         return True
     
     # 1. Check explicit status
-    status = str(event_data.get('status') or '').strip().lower()
-    if status in ('completed', 'closed', 'finished', 'done'):
+    status = str(event_data.get('status') or event_data.get('state') or '').strip().lower()
+    if status in ('completed', 'closed', 'finished', 'done', 'complete'):
         return True
 
     # 2. Check if match result was already recorded
@@ -887,6 +887,21 @@ def is_event_over(event_data: dict, grace_hours: float = 2.0) -> bool:
             dt = datetime.datetime.fromisoformat(dt)
         except Exception:
             dt = None
+
+    # Fallback to date_str and time_str if dt is None
+    if not dt:
+        date_str = event_data.get('date_str')
+        time_str = event_data.get('time_str')
+        if date_str and time_str:
+            try:
+                d_parts = [int(p) for p in str(date_str).split('/') if p.isdigit()]
+                t_clean = str(time_str).split(' ')[0].strip()
+                t_parts = [int(p) for p in t_clean.split(':') if p.isdigit()]
+                if len(d_parts) == 2 and len(t_parts) == 2:
+                    cur_year = datetime.datetime.now(pytz.UTC).year
+                    dt = datetime.datetime(cur_year, d_parts[1], d_parts[0], t_parts[0], t_parts[1], tzinfo=pytz.UTC)
+            except Exception:
+                dt = None
             
     if dt:
         if dt.tzinfo is None:
@@ -897,6 +912,87 @@ def is_event_over(event_data: dict, grace_hours: float = 2.0) -> bool:
             return True
             
     return False
+
+def check_staff_schedule_conflict(guild_id: int, user_id: int, event_id: str, event_datetime: Optional[Union[datetime.datetime, str]]) -> tuple[bool, Optional[dict]]:
+    """
+    Check if a staff member (user_id) is already assigned as Judge or Recorder
+    to another match in guild_id at the exact same scheduled datetime.
+    Returns (True, conflicting_dict) if conflict exists, else (False, None).
+    """
+    if not event_datetime or not user_id:
+        return False, None
+        
+    target_dt = event_datetime
+    if isinstance(target_dt, str):
+        try:
+            target_dt = datetime.datetime.fromisoformat(target_dt)
+        except Exception:
+            return False, None
+            
+    if not isinstance(target_dt, datetime.datetime):
+        return False, None
+        
+    if target_dt.tzinfo is None:
+        target_dt = target_dt.replace(tzinfo=pytz.UTC)
+        
+    u_id_str = str(user_id)
+    
+    for other_id, other_ev in scheduled_events.items():
+        if other_id == event_id:
+            continue
+        if other_ev.get('guild_id') and str(other_ev.get('guild_id')) != str(guild_id):
+            continue
+        if is_event_over(other_ev):
+            continue
+            
+        other_dt = other_ev.get('datetime')
+        if isinstance(other_dt, str):
+            try:
+                other_dt = datetime.datetime.fromisoformat(other_dt)
+            except Exception:
+                other_dt = None
+        if not other_dt:
+            d_str = other_ev.get('date_str')
+            t_str = other_ev.get('time_str')
+            if d_str and t_str:
+                try:
+                    d_parts = [int(p) for p in str(d_str).split('/') if p.isdigit()]
+                    t_clean = str(t_str).split(' ')[0].strip()
+                    t_parts = [int(p) for p in t_clean.split(':') if p.isdigit()]
+                    if len(d_parts) == 2 and len(t_parts) == 2:
+                        cur_year = target_dt.year
+                        other_dt = datetime.datetime(cur_year, d_parts[1], d_parts[0], t_parts[0], t_parts[1], tzinfo=pytz.UTC)
+                except Exception:
+                    other_dt = None
+                    
+        if not other_dt or not isinstance(other_dt, datetime.datetime):
+            continue
+            
+        if other_dt.tzinfo is None:
+            other_dt = other_dt.replace(tzinfo=pytz.UTC)
+            
+        # Check if match time is identical (or within 30 minutes)
+        time_diff = abs((target_dt - other_dt).total_seconds())
+        if time_diff < 1800:
+            j_val = other_ev.get('judge')
+            r_val = other_ev.get('recorder')
+            
+            j_id = str(getattr(j_val, 'id', j_val)) if j_val else None
+            r_id = str(getattr(r_val, 'id', r_val)) if r_val else None
+            
+            if u_id_str in (j_id, r_id):
+                role_name = "Judge" if u_id_str == j_id else "Recorder"
+                return True, {
+                    "event_id": other_id,
+                    "event": other_ev,
+                    "role": role_name,
+                    "datetime": other_dt,
+                    "match_name": other_ev.get('match_name', 'Another Match'),
+                    "time_str": other_ev.get('time_str', ''),
+                    "date_str": other_ev.get('date_str', '')
+                }
+                
+    return False, None
 
 def resolve_event_names(event_data: dict, guild: Optional[discord.Guild] = None) -> Tuple[str, str]:
     """Resolve human-readable team / player names for a match, avoiding 'T1', 'T2' or 'Unknown'."""
