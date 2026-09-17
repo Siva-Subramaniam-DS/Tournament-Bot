@@ -798,12 +798,14 @@ def save_guild_staff_stats(guild_id: int, stats: dict):
             for u_id, u_stats in stats.items():
                 if not isinstance(u_stats, dict):
                     continue
+                jr_cnt = int(u_stats.get("judge_and_recorder_count", 0))
                 row = {
                     "Guild_ID": guild_id_str,
                     "User_ID": str(u_id),
                     "Name": str(u_stats.get("name") or "Staff"),
                     "Judge_Count": int(u_stats.get("judge_count", 0)),
                     "Recorder_Count": int(u_stats.get("recorder_count", 0)),
+                    "Judge_and_Record": jr_cnt,
                     "Total_Count": int(u_stats.get("total_count", 0)),
                     "Timestamp": u_stats.get("last_active") or datetime.datetime.utcnow().isoformat()
                 }
@@ -883,6 +885,9 @@ def update_staff_stats(user: discord.Member, role_type: str):
         stats[user_id]["recorder_count"] = stats[user_id].get("recorder_count", 0) + 1
     elif role_type in ("judge_and_recorder", "judge_and_recorder_count", "both"):
         stats[user_id]["judge_and_recorder_count"] = stats[user_id].get("judge_and_recorder_count", 0) + 1
+    elif role_type == "upgrade_to_both":
+        stats[user_id]["judge_count"] = max(0, stats[user_id].get("judge_count", 1) - 1)
+        stats[user_id]["judge_and_recorder_count"] = stats[user_id].get("judge_and_recorder_count", 0) + 1
         
     stats[user_id]["total_count"] = (
         stats[user_id].get("judge_count", 0) + 
@@ -902,6 +907,7 @@ def update_staff_stats(user: discord.Member, role_type: str):
         "Role_Updated": role_type,
         "Judge_Count": stats[user_id].get("judge_count", 0),
         "Recorder_Count": stats[user_id].get("recorder_count", 0),
+        "Judge_and_Record": stats[user_id].get("judge_and_recorder_count", 0),
         "Total_Count": stats[user_id].get("total_count", 0)
     }))
 
@@ -2353,7 +2359,7 @@ async def load_all_staff_stats_from_supabase():
                     "name": row.get("Name") or "Staff",
                     "judge_count": int(row.get("Judge_Count") or 0),
                     "recorder_count": int(row.get("Recorder_Count") or 0),
-                    "judge_and_recorder_count": 0,
+                    "judge_and_recorder_count": int(row.get("Judge_and_Record") or row.get("Judge_and_Recorder_Count") or 0),
                     "total_count": int(row.get("Total_Count") or 0),
                     "last_active": row.get("Timestamp") or datetime.datetime.utcnow().isoformat()
                 }

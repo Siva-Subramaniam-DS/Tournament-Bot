@@ -193,6 +193,7 @@ CREATE TABLE "StaffStats" (
     "Role_Updated" text,
     "Judge_Count" integer,
     "Recorder_Count" integer,
+    "Judge_and_Record" integer DEFAULT 0,
     "Total_Count" integer
 );
 
@@ -489,6 +490,7 @@ CREATE TABLE "StaffStats" (
     "Role_Updated" text,
     "Judge_Count" integer,
     "Recorder_Count" integer,
+    "Judge_and_Record" integer DEFAULT 0,
     "Total_Count" integer
 );
 

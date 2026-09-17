@@ -1146,12 +1146,20 @@ class Events(commands.Cog):
         })
 
         # Credit staff stats from the result
-        update_staff_stats(actual_judge, "judge")
-        # For recorder: if video link is not submitted, don't count it who ever mentioned in the result
         has_video_link = bool(ev_data.get('recording_link') or ev_data.get('recorder_link'))
-        if recorder and has_video_link:
-            update_staff_stats(recorder, "recorder")
+        is_both = (
+            actual_judge and recorder and 
+            str(getattr(actual_judge, 'id', actual_judge)) == str(getattr(recorder, 'id', recorder))
+        )
+        if is_both and has_video_link:
+            update_staff_stats(actual_judge, "judge_and_recorder")
             ev_data['recorder_credited'] = True
+        else:
+            update_staff_stats(actual_judge, "judge")
+            # For recorder: if video link is not submitted, don't count it who ever mentioned in the result
+            if recorder and has_video_link:
+                update_staff_stats(recorder, "recorder")
+                ev_data['recorder_credited'] = True
 
         # Post in results channel and save message ID for VOD link updates
         res_msg = None

@@ -884,14 +884,16 @@ async def link_add(
             try: rec_mem = await interaction.guild.fetch_member(int(rec_obj))
             except: pass
 
-        if rec_mem:
-            update_staff_stats(rec_mem, "recorder")
+        target_mem = rec_mem or interaction.user
+        if target_mem:
+            j_val = ev_data.get('judge')
+            j_id = str(getattr(j_val, 'id', j_val)) if j_val else None
+            if j_id and j_id == str(target_mem.id) and ev_data.get('status') == 'completed':
+                update_staff_stats(target_mem, "upgrade_to_both")
+            else:
+                update_staff_stats(target_mem, "recorder")
             ev_data['recorder_credited'] = True
-            rec_credited_name = rec_mem.mention
-        elif interaction.user:
-            update_staff_stats(interaction.user, "recorder")
-            ev_data['recorder_credited'] = True
-            rec_credited_name = interaction.user.mention
+            rec_credited_name = target_mem.mention
 
     save_scheduled_events()
     asyncio.create_task(save_event_to_supabase(ev_id, ev_data))
