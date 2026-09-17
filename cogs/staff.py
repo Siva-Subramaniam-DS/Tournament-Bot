@@ -2098,28 +2098,30 @@ class Staff(commands.Cog):
                 continue
             judge_val = event_data.get('judge')
             recorder_val = event_data.get('recorder')
-            user_role = None
-            
+            is_judge = False
             if judge_val:
                 try:
                     j_id = int(getattr(judge_val, 'id', judge_val))
                     if j_id == interaction.user.id:
-                        user_role = "Judge"
+                        is_judge = True
                 except (ValueError, TypeError):
                     if str(getattr(judge_val, 'id', judge_val)) == str(interaction.user.id):
-                        user_role = "Judge"
-            
-            if recorder_val and not user_role:
+                        is_judge = True
+
+            is_recorder = False
+            if recorder_val:
                 try:
                     r_id = int(getattr(recorder_val, 'id', recorder_val))
                     if r_id == interaction.user.id:
-                        user_role = "Recorder"
+                        is_recorder = True
                 except (ValueError, TypeError):
                     if str(getattr(recorder_val, 'id', recorder_val)) == str(interaction.user.id):
-                        user_role = "Recorder"
-            
-            if user_role:
-                user_events.append((event_id, event_data, user_role))
+                        is_recorder = True
+
+            if is_judge:
+                user_events.append((event_id, event_data, "Judge"))
+            if is_recorder:
+                user_events.append((event_id, event_data, "Recorder"))
 
         if not user_events:
             await interaction.response.send_message("❌ You are not assigned to any active, upcoming events as Judge or Recorder.", ephemeral=False)
@@ -2189,7 +2191,7 @@ class Staff(commands.Cog):
                     event_data['recorder'] = None
                     event_data['recorder_confirmed'] = False
                 
-                save_scheduled_events()
+                save_scheduled_events(selected_event_id)
 
                 # Remove old staff permissions from the match ticket channel
                 ticket_ch_id = event_data.get('channel_id')
@@ -2215,14 +2217,10 @@ class Staff(commands.Cog):
                             embed = msg.embeds[0]
                             if role_type == "Judge":
                                 remove_field_by_name(embed, "Judge")
-                                recorder = event_data.get('recorder')
-                                if not recorder:
-                                    embed.add_field(name=f"{EMOJIS['judge']} Judge", value="⏳ Waiting...", inline=True)
+                                embed.add_field(name=f"{EMOJIS['judge']} Judge", value="⏳ Waiting...", inline=True)
                             else:
                                 remove_field_by_name(embed, "Recorder")
-                                judge = event_data.get('judge')
-                                if not judge:
-                                    embed.add_field(name=f"{EMOJIS['recorder']} Recorder", value="⏳ Waiting...", inline=True)
+                                embed.add_field(name=f"{EMOJIS['recorder']} Recorder", value="⏳ Waiting...", inline=True)
                             
                             embed.color = discord.Color.blue()
                             if embed.title and embed.title.startswith("✅"):

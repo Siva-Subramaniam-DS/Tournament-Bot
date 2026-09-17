@@ -1444,6 +1444,39 @@ async def save_event_to_supabase(event_id: str, event_data: dict):
                     "Timestamp": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
                 }
                 await asyncio.to_thread(supabase_safe_upsert, "Results", results_row)
+
+        # Sync to Judge_and_Record table if available in Supabase
+        try:
+            j_display = ""
+            if j_id:
+                j_display = judge_val.display_name if hasattr(judge_val, 'display_name') else (judge_val.name if hasattr(judge_val, 'name') else str(judge_val))
+            r_display = ""
+            if r_id:
+                r_display = recorder_val.display_name if hasattr(recorder_val, 'display_name') else (recorder_val.name if hasattr(recorder_val, 'name') else str(recorder_val))
+
+            jr_payload = {
+                "Guild_ID": str(guild_id) if guild_id else "",
+                "Event_ID": str(event_id),
+                "Match_Name": str(match_name or ''),
+                "Tournament": str(event_data.get('tournament', '') or ''),
+                "Round": str(event_data.get('round', '') or ''),
+                "Date": str(event_data.get('date_str', '') or ''),
+                "UTC_Time": str(event_data.get('time_str', '') or ''),
+                "Judge_ID": str(j_id) if j_id else "",
+                "Judge_Name": j_display if j_id else "",
+                "judge_link": str(event_data.get('judge_link', '') or ''),
+                "Recorder_ID": str(r_id) if r_id else "",
+                "Recorder_Name": r_display if r_id else "",
+                "recorder_link": str(event_data.get('recorder_link', '') or event_data.get('recording_link', '') or ''),
+                "Status": str(event_data.get('status', 'Scheduled')),
+                "Timestamp": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            upserted = await asyncio.to_thread(supabase_safe_upsert, "Judge_and_Record", jr_payload, "Event_ID")
+            if not upserted:
+                await asyncio.to_thread(supabase_safe_upsert, "Judge and Record", jr_payload, "Event_ID")
+        except Exception as jr_err:
+            print(f"[Supabase] Note on Judge_and_Record sync: {jr_err}")
+
     except Exception as e:
         print(f"[Supabase] Error saving event {event_id} to database: {e}")
 
