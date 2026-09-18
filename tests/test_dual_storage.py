@@ -7,6 +7,100 @@ from unittest.mock import MagicMock, patch
 # Ensure project root is in path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+if 'pytz' not in sys.modules:
+    try:
+        import pytz
+    except ImportError:
+        mock_pytz = MagicMock()
+        import datetime
+        mock_pytz.UTC = datetime.timezone.utc
+        mock_pytz.timezone.return_value = datetime.timezone.utc
+        sys.modules['pytz'] = mock_pytz
+
+if 'discord' not in sys.modules:
+    try:
+        import discord
+    except ImportError:
+        mock_discord = MagicMock()
+        class MockField:
+            def __init__(self, name, value, inline=True):
+                self.name = name
+                self.value = value
+                self.inline = inline
+
+        class MockEmbed:
+            def __init__(self, title="", description="", color=None, timestamp=None):
+                self.title = title
+                self.description = description
+                self.color = color
+                self.timestamp = timestamp
+                self.fields = []
+            def add_field(self, name, value, inline=True):
+                self.fields.append(MockField(name, value, inline))
+            def clear_fields(self):
+                self.fields.clear()
+            def set_footer(self, text=None, icon_url=None):
+                pass
+            def set_thumbnail(self, url=None):
+                pass
+
+        mock_discord.Embed = MockEmbed
+        mock_discord.Color = MagicMock()
+        mock_discord.Color.green.return_value = 0x00FF00
+        mock_discord.Color.gold.return_value = 0xFFD700
+        mock_discord.Color.blue.return_value = 0x0000FF
+        mock_discord.Color.red.return_value = 0xFF0000
+        mock_discord.Color.orange.return_value = 0xFFA500
+        mock_discord.utils = MagicMock()
+        import datetime
+        mock_discord.utils.utcnow.return_value = datetime.datetime.now(datetime.timezone.utc)
+        class MockChoice:
+            def __init__(self, name="", value=""):
+                self.name = name
+                self.value = value
+            def __class_getitem__(cls, item):
+                return cls
+        class MockView:
+            def __init__(self, timeout=180):
+                self.timeout = timeout
+                self.children = []
+                for attr in dir(self.__class__):
+                    val = getattr(self.__class__, attr, None)
+                    if getattr(val, '__discord_ui_button__', False):
+                        btn = MagicMock()
+                        btn.custom_id = getattr(val, 'custom_id', attr)
+                        setattr(self, attr, btn)
+                        self.children.append(btn)
+
+        def mock_button(*args, **kwargs):
+            def decorator(func):
+                func.__discord_ui_button__ = True
+                func.custom_id = kwargs.get('custom_id')
+                return func
+            return decorator
+
+        mock_discord.ui = MagicMock()
+        mock_discord.ui.View = MockView
+        mock_discord.ui.button = mock_button
+        mock_discord.ButtonStyle = MagicMock()
+        mock_discord.ButtonStyle.primary = 1
+        mock_discord.ButtonStyle.secondary = 2
+        mock_discord.app_commands = MagicMock()
+        mock_discord.app_commands.Choice = MockChoice
+        mock_discord.ext = MagicMock()
+        mock_discord.ext.commands = MagicMock()
+        sys.modules['discord'] = mock_discord
+        sys.modules['discord.app_commands'] = mock_discord.app_commands
+        sys.modules['discord.ext'] = mock_discord.ext
+        sys.modules['discord.ext.commands'] = mock_discord.ext.commands
+
+for mod in ['dotenv', 'requests', 'PIL', 'PIL.Image', 'PIL.ImageDraw', 'PIL.ImageFont', 'supabase']:
+    if mod not in sys.modules:
+        try:
+            __import__(mod)
+        except ImportError:
+            sys.modules[mod] = MagicMock()
+
 import core.database as db
 
 class TestDualStorage(unittest.TestCase):

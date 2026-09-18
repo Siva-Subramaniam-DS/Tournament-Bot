@@ -544,6 +544,16 @@ class TakeScheduleButton(discord.ui.View):
             await interaction.response.send_message("❌ This event has already started. Buttons are now disabled.", ephemeral=False)
             return
 
+        # Validate event existence
+        ev = scheduled_events.get(self.event_id)
+        if not ev or ev.get('status') in ('cancelled', 'deleted'):
+            for child in self.children:
+                child.disabled = True
+            try: await interaction.message.edit(view=self)
+            except Exception: pass
+            await interaction.response.send_message("❌ This event has been deleted or cancelled.", ephemeral=True)
+            return
+
         if self._taking_schedule:
             await interaction.response.send_message("⏳ Another judge is currently taking this schedule. Please wait.", ephemeral=False)
             return
@@ -599,6 +609,14 @@ class TakeScheduleButton(discord.ui.View):
 
         try:
             ev = scheduled_events.get(self.event_id, {})
+            if not ev or ev.get('status') in ('cancelled', 'deleted'):
+                for child in self.children:
+                    child.disabled = True
+                try: await interaction.message.edit(view=self)
+                except Exception: pass
+                await interaction.followup.send("❌ This event has been deleted or cancelled.", ephemeral=True)
+                return
+
             if ev.get('judge'):
                 button.label = original_label
                 button.style = original_style
@@ -641,15 +659,22 @@ class TakeScheduleButton(discord.ui.View):
                 scheduled_events[self.event_id]['judge'] = self.judge
                 save_scheduled_events()
 
-            if self.event_channel:
+            target_ch = self.event_channel
+            if not target_ch and interaction.guild and self.event_id in scheduled_events:
+                ch_id = scheduled_events[self.event_id].get('channel_id')
+                if ch_id:
+                    try: target_ch = interaction.guild.get_channel(int(ch_id))
+                    except Exception: pass
+
+            if target_ch:
                 try:
-                    await self.event_channel.set_permissions(
+                    await target_ch.set_permissions(
                         interaction.user,
                         read_messages=True, send_messages=True, view_channel=True,
                         embed_links=True, attach_files=True, read_message_history=True
                     )
-                    emoji = get_staff_emoji(self.event_channel.guild, "judge")
-                    await self.event_channel.send(content=f"{interaction.user.mention} assigned as **judge** {emoji}")
+                    emoji = get_staff_emoji(target_ch.guild, "judge")
+                    await target_ch.send(content=f"{interaction.user.mention} assigned as **judge** {emoji}")
                 except Exception as perm_err:
                     print(f"Error giving judge ticket channel access: {perm_err}")
 
@@ -675,6 +700,16 @@ class TakeScheduleButton(discord.ui.View):
             await interaction.response.send_message("❌ This event has already started. Buttons are now disabled.", ephemeral=False)
             return
 
+        # Validate event existence
+        ev = scheduled_events.get(self.event_id)
+        if not ev or ev.get('status') in ('cancelled', 'deleted'):
+            for child in self.children:
+                child.disabled = True
+            try: await interaction.message.edit(view=self)
+            except Exception: pass
+            await interaction.response.send_message("❌ This event has been deleted or cancelled.", ephemeral=True)
+            return
+
         is_admin = interaction.guild and interaction.user.guild_permissions.administrator
         is_owner = interaction.user.id == BOT_OWNER_ID
         head_organizer_role = discord.utils.get(interaction.user.roles, id=ROLE_IDS["head_organizer"])
@@ -687,7 +722,6 @@ class TakeScheduleButton(discord.ui.View):
             await interaction.response.send_message("❌ You do not have the required role to record this schedule.", ephemeral=False)
             return
 
-        ev = scheduled_events.get(self.event_id, {})
         if ev.get('recorder'):
             r_val = ev.get('recorder')
             r_name = getattr(r_val, 'display_name', str(r_val))
@@ -721,15 +755,22 @@ class TakeScheduleButton(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=self)
         await interaction.followup.send("✅ You have successfully claimed recorder for this match!", ephemeral=False)
 
-        if self.event_channel:
+        target_ch = self.event_channel
+        if not target_ch and interaction.guild and self.event_id in scheduled_events:
+            ch_id = scheduled_events[self.event_id].get('channel_id')
+            if ch_id:
+                try: target_ch = interaction.guild.get_channel(int(ch_id))
+                except Exception: pass
+
+        if target_ch:
             try:
-                await self.event_channel.set_permissions(
+                await target_ch.set_permissions(
                     interaction.user,
                     read_messages=True, send_messages=True, view_channel=True,
                     embed_links=True, attach_files=True, read_message_history=True
                 )
-                emoji = get_staff_emoji(self.event_channel.guild, "recorder")
-                await self.event_channel.send(content=f"{interaction.user.mention} assigned as **recorder** {emoji}")
+                emoji = get_staff_emoji(target_ch.guild, "recorder")
+                await target_ch.send(content=f"{interaction.user.mention} assigned as **recorder** {emoji}")
             except Exception as perm_err:
                 print(f"Error giving recorder ticket channel access: {perm_err}")
 
@@ -1190,13 +1231,8 @@ async def render_staff_work_count(
 
         rnd = str(ev_data.get('round') or 'R1')
         
-        j_val = ev_data.get('result_judge') or ev_data.get('judge')
+        j_val = ev_data.get('judge') or ev_data.get('result_judge')
         r_val = ev_data.get('recorder')
-
-        # For Recorder: if video link is not submitted and not credited, do not count recorder
-        has_video_link = bool(ev_data.get('recording_link') or ev_data.get('recorder_link') or ev_data.get('recorder_credited'))
-        if not has_video_link:
-            r_val = None
         
         def clean_uid(val):
             if not val:
@@ -1246,9 +1282,9 @@ async def render_staff_work_count(
 
     guild_stats = get_guild_staff_stats(guild.id)
     for u_id, s_data in guild_stats.items():
-        j_cnt = s_data.get('judge_count', 0)
-        r_cnt = s_data.get('recorder_count', 0)
-        jr_cnt = s_data.get('judge_and_recorder_count', 0)
+        j_cnt = int(s_data.get('judge_count') or 0)
+        r_cnt = int(s_data.get('recorder_count') or 0)
+        jr_cnt = int(s_data.get('judge_and_recorder_count') or 0)
         s_name = s_data.get('name', f"User_{u_id}")
 
         if jr_cnt > 0:
@@ -1308,39 +1344,107 @@ async def render_staff_work_count(
 
     org_name = ORGANIZATION_NAME
     header_embed = discord.Embed(
-        title="✔️ Staff Work Count",
+        title="✔️ Staff Work Count • Overview",
+        description="Select a tab below to view detailed leaderboards for **Judge**, **Record**, or **Judge & Record**.",
         color=discord.Color(0x2F3136),
         timestamp=discord.utils.utcnow()
     )
-    header_embed.add_field(name=f"{EMOJIS['trophy']} Tournament", value=target_t_name, inline=False)
-    header_embed.add_field(name="🥀 Default Wins", value=dw_setting, inline=False)
-    header_embed.add_field(name="👑 Requested By", value=interaction.user.mention, inline=False)
+    header_embed.add_field(name=f"{EMOJIS.get('trophy', '🏆')} Tournament", value=target_t_name, inline=True)
+    header_embed.add_field(name="🥀 Default Wins", value=dw_setting, inline=True)
+    header_embed.add_field(name="👑 Requested By", value=interaction.user.mention, inline=True)
     
+    total_judges = len(judges)
+    total_recorders = len(recorders)
+    total_both = len(judge_and_recorders)
+    summary_text = (
+        f"⚖️ **Judges Active:** `{total_judges}`\n"
+        f"📹 **Recorders Active:** `{total_recorders}`\n"
+        f"🔮 **Dual-Role (Judge & Record):** `{total_both}`"
+    )
+    header_embed.add_field(name="📊 Activity Summary", value=summary_text, inline=False)
     t_slug = target_t_name.replace(' ', '_')
     header_embed.set_footer(text=f"{org_name} · {t_slug}")
 
     sorted_judges = sorted(judges.items(), key=lambda x: (len(x[1]['matches']), len(x[1]['rounds'])), reverse=True)
-    judges_embed = discord.Embed(title=f"{EMOJIS['judge']} Judges", color=discord.Color.red())
+    judges_embed = discord.Embed(title=f"{EMOJIS.get('judge', '⚖️')} Judges Leaderboard", color=discord.Color.red())
     if sorted_judges:
         judges_embed.description = "\n".join([format_staff_entry(i, uid, d) for i, (uid, d) in enumerate(sorted_judges, 1)][:25])
     else:
         judges_embed.description = "*No judge activity recorded.*"
+    judges_embed.set_footer(text=f"{org_name} · {t_slug} • Judges")
 
     sorted_recorders = sorted(recorders.items(), key=lambda x: (len(x[1]['matches']), len(x[1]['rounds'])), reverse=True)
-    recorders_embed = discord.Embed(title=f"{EMOJIS['recorder']} Recorders", color=discord.Color.green())
+    recorders_embed = discord.Embed(title=f"{EMOJIS.get('recorder', '📹')} Recorders Leaderboard", color=discord.Color.green())
     if sorted_recorders:
         recorders_embed.description = "\n".join([format_staff_entry(i, uid, d) for i, (uid, d) in enumerate(sorted_recorders, 1)][:25])
     else:
         recorders_embed.description = "*No recorder activity recorded.*"
+    recorders_embed.set_footer(text=f"{org_name} · {t_slug} • Recorders")
 
     sorted_combined = sorted(judge_and_recorders.items(), key=lambda x: (len(x[1]['matches']), len(x[1]['rounds'])), reverse=True)
-    combined_embed = discord.Embed(title=f"{EMOJIS['judge']} {EMOJIS['recorder']} Judge & Recorder", color=discord.Color.blue())
+    combined_embed = discord.Embed(title=f"{EMOJIS.get('judge', '⚖️')} {EMOJIS.get('recorder', '📹')} Judge & Recorder Leaderboard", color=discord.Color.blue())
     if sorted_combined:
         combined_embed.description = "\n".join([format_staff_entry(i, uid, d) for i, (uid, d) in enumerate(sorted_combined, 1)][:25])
     else:
         combined_embed.description = "*No judge & recorder activity recorded.*"
+    combined_embed.set_footer(text=f"{org_name} · {t_slug} • Dual Role")
 
-    await interaction.followup.send(embeds=[header_embed, judges_embed, recorders_embed, combined_embed], ephemeral=False)
+    embeds_dict = {
+        "overview": header_embed,
+        "judge": judges_embed,
+        "recorder": recorders_embed,
+        "both": combined_embed
+    }
+    view = StaffWorkTabView(interaction.user.id, embeds_dict, default_tab="overview")
+    await interaction.followup.send(embed=header_embed, view=view, ephemeral=False)
+
+
+class StaffWorkTabView(discord.ui.View):
+    """
+    Interactive Tabbed View for /staff work.
+    Allows toggling between Overview, Judge, Record, and Judge & Record embeds cleanly.
+    """
+    def __init__(self, author_id: int, embeds_dict: dict, default_tab: str = "overview"):
+        super().__init__(timeout=300)
+        self.author_id = author_id
+        self.embeds_dict = embeds_dict
+        self.current_tab = default_tab
+        self._update_buttons()
+
+    def _update_buttons(self):
+        self.btn_overview.style = discord.ButtonStyle.primary if self.current_tab == "overview" else discord.ButtonStyle.secondary
+        self.btn_judge.style = discord.ButtonStyle.primary if self.current_tab == "judge" else discord.ButtonStyle.secondary
+        self.btn_recorder.style = discord.ButtonStyle.primary if self.current_tab == "recorder" else discord.ButtonStyle.secondary
+        self.btn_both.style = discord.ButtonStyle.primary if self.current_tab == "both" else discord.ButtonStyle.secondary
+
+    async def _handle_click(self, interaction: discord.Interaction, tab: str):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("❌ Only the member who ran this command can switch tabs.", ephemeral=True)
+            return
+        self.current_tab = tab
+        self._update_buttons()
+        embed = self.embeds_dict.get(tab)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Overview", style=discord.ButtonStyle.primary, emoji="📊", custom_id="staff_tab_overview", row=0)
+    async def btn_overview(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle_click(interaction, "overview")
+
+    @discord.ui.button(label="Judge", style=discord.ButtonStyle.secondary, emoji="⚖️", custom_id="staff_tab_judge", row=0)
+    async def btn_judge(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle_click(interaction, "judge")
+
+    @discord.ui.button(label="Record", style=discord.ButtonStyle.secondary, emoji="📹", custom_id="staff_tab_recorder", row=0)
+    async def btn_recorder(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle_click(interaction, "recorder")
+
+    @discord.ui.button(label="Judge & Record", style=discord.ButtonStyle.secondary, emoji="🔮", custom_id="staff_tab_both", row=0)
+    async def btn_both(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle_click(interaction, "both")
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
 
 
 

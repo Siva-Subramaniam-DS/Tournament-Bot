@@ -92,7 +92,7 @@ class Listeners(commands.Cog):
                 if isinstance(dt, datetime.datetime):
                     if dt.tzinfo is None:
                         dt = dt.replace(tzinfo=pytz.UTC)
-                    if dt > now_utc:
+                    if dt > now_utc and ev_data.get('status') not in ('cancelled', 'deleted', 'completed'):
                         try:
                             ch_id_int = int(ch_id)
                             channel = self.bot.get_channel(ch_id_int)
@@ -113,12 +113,28 @@ class Listeners(commands.Cog):
                         except Exception as rem_err:
                             print(f"Error rescheduling reminder for {ev_id}: {rem_err}")
 
-        # Startup sweep for old events
+        # Reschedule deadline reminders on startup
+        try:
+            from cogs.tournaments import schedule_deadline_tasks
+            for dl_id in list(scheduled_deadlines.keys()):
+                schedule_deadline_tasks(self.bot, dl_id)
+            print(f"📅 Rescheduled reminders for {len(scheduled_deadlines)} active deadlines.")
+        except Exception as dl_err:
+            print(f"Error rescheduling deadline tasks: {dl_err}")
+
+        # Startup sweep for old events (7 days retention)
         try:
             for ev_id, data in list(scheduled_events.items()):
                 dt = data.get('datetime')
+                if isinstance(dt, str):
+                    try:
+                        dt = datetime.datetime.fromisoformat(dt)
+                        data['datetime'] = dt
+                    except Exception:
+                        pass
                 if isinstance(dt, datetime.datetime):
-                    age_days = (datetime.datetime.now() - dt.replace(tzinfo=None)).days
+                    dt_naive = dt.replace(tzinfo=None)
+                    age_days = (datetime.datetime.now() - dt_naive).days
                     if age_days >= 7:
                         if ev_id in reminder_tasks:
                             try:

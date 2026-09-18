@@ -7,6 +7,7 @@ import time
 import asyncio
 import datetime
 from typing import Optional, Union, Any
+import pytz
 import discord
 import requests
 from supabase import create_client, Client
@@ -753,21 +754,30 @@ def save_guild_rules(guild_id: int, rules: dict):
 def get_guild_staff_stats(guild_id: int) -> dict:
     guild_id_str = str(guild_id)
     if guild_id_str in STAFF_STATS_CACHE:
-        return STAFF_STATS_CACHE[guild_id_str]
-        
-    stats = {}
-    if os.path.exists('staff_stats.json'):
-        try:
-            with open('staff_stats.json', 'r', encoding='utf-8') as f:
-                all_stats = json.load(f)
-                if guild_id_str in all_stats:
-                    stats = all_stats[guild_id_str]
-                elif all_stats and not any(isinstance(v, dict) and any(isinstance(inner, dict) for inner in v.values()) for v in all_stats.values() if v):
-                    stats = all_stats
-        except Exception as e:
-            print(f"Error loading staff_stats.json: {e}")
-            
-    STAFF_STATS_CACHE[guild_id_str] = stats
+        stats = STAFF_STATS_CACHE[guild_id_str]
+    else:
+        stats = {}
+        if os.path.exists('staff_stats.json'):
+            try:
+                with open('staff_stats.json', 'r', encoding='utf-8') as f:
+                    all_stats = json.load(f)
+                    if guild_id_str in all_stats:
+                        stats = all_stats[guild_id_str]
+                    elif all_stats and not any(isinstance(v, dict) and any(isinstance(inner, dict) for inner in v.values()) for v in all_stats.values() if v):
+                        stats = all_stats
+            except Exception as e:
+                print(f"Error loading staff_stats.json: {e}")
+                
+        STAFF_STATS_CACHE[guild_id_str] = stats
+
+    # Ensure all numerical fields are clean integers
+    if isinstance(stats, dict):
+        for uid, udata in list(stats.items()):
+            if isinstance(udata, dict):
+                udata["judge_count"] = int(udata.get("judge_count") or 0)
+                udata["recorder_count"] = int(udata.get("recorder_count") or 0)
+                udata["judge_and_recorder_count"] = int(udata.get("judge_and_recorder_count") or 0)
+                udata["total_count"] = int(udata.get("total_count") or (udata["judge_count"] + udata["recorder_count"] + udata["judge_and_recorder_count"]))
     return stats
 
 def save_guild_staff_stats(guild_id: int, stats: dict):
@@ -857,22 +867,19 @@ def reset_staff_stats():
         return True
     return False
 
-def update_staff_stats(user: discord.Member, role_type: str):
-    g_id = None
-    if hasattr(user, 'guild') and user.guild:
-        g_id = user.guild.id
-    else:
-        g_id = current_guild_id.get()
+def update_staff_stats(user: Any, role_type: str, guild_id: Optional[int] = None):
+    g_id = guild_id or (getattr(user, 'guild', None).id if hasattr(user, 'guild') and user.guild else current_guild_id.get())
         
     if not g_id:
         return
         
     stats = get_guild_staff_stats(g_id)
-    user_id = str(user.id)
+    user_id = str(getattr(user, 'id', user))
+    display_name = str(getattr(user, 'display_name', getattr(user, 'name', f"Staff_{user_id}")))
     
     if user_id not in stats:
         stats[user_id] = {
-            "name": user.display_name,
+            "name": display_name,
             "judge_count": 0,
             "recorder_count": 0,
             "judge_and_recorder_count": 0,
@@ -880,36 +887,108 @@ def update_staff_stats(user: discord.Member, role_type: str):
         }
     
     if role_type == "judge":
-        stats[user_id]["judge_count"] = stats[user_id].get("judge_count", 0) + 1
+        stats[user_id]["judge_count"] = int(stats[user_id].get("judge_count", 0)) + 1
     elif role_type == "recorder":
-        stats[user_id]["recorder_count"] = stats[user_id].get("recorder_count", 0) + 1
+        stats[user_id]["recorder_count"] = int(stats[user_id].get("recorder_count", 0)) + 1
     elif role_type in ("judge_and_recorder", "judge_and_recorder_count", "both"):
-        stats[user_id]["judge_and_recorder_count"] = stats[user_id].get("judge_and_recorder_count", 0) + 1
+        stats[user_id]["judge_and_recorder_count"] = int(stats[user_id].get("judge_and_recorder_count", 0)) + 1
     elif role_type == "upgrade_to_both":
-        stats[user_id]["judge_count"] = max(0, stats[user_id].get("judge_count", 1) - 1)
-        stats[user_id]["judge_and_recorder_count"] = stats[user_id].get("judge_and_recorder_count", 0) + 1
+        stats[user_id]["judge_count"] = max(0, int(stats[user_id].get("judge_count", 1)) - 1)
+        stats[user_id]["judge_and_recorder_count"] = int(stats[user_id].get("judge_and_recorder_count", 0)) + 1
         
     stats[user_id]["total_count"] = (
-        stats[user_id].get("judge_count", 0) + 
-        stats[user_id].get("recorder_count", 0) + 
-        stats[user_id].get("judge_and_recorder_count", 0)
+        int(stats[user_id].get("judge_count", 0)) + 
+        int(stats[user_id].get("recorder_count", 0)) + 
+        int(stats[user_id].get("judge_and_recorder_count", 0))
     )
-    stats[user_id]["name"] = user.display_name
+    stats[user_id]["name"] = display_name
     stats[user_id]["last_active"] = datetime.datetime.utcnow().isoformat()
     
     save_guild_staff_stats(g_id, stats)
 
-    asyncio.create_task(sheetdb_post("StaffStats", {
-        "Guild_ID": str(g_id) if g_id else "",
-        "Timestamp": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-        "User_ID": user_id,
-        "Name": user.display_name,
-        "Role_Updated": role_type,
-        "Judge_Count": stats[user_id].get("judge_count", 0),
-        "Recorder_Count": stats[user_id].get("recorder_count", 0),
-        "Judge_and_Record": stats[user_id].get("judge_and_recorder_count", 0),
-        "Total_Count": stats[user_id].get("total_count", 0)
-    }))
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(sheetdb_post("StaffStats", {
+            "Guild_ID": str(g_id) if g_id else "",
+            "Timestamp": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+            "User_ID": user_id,
+            "Name": display_name,
+            "Role_Updated": role_type,
+            "Judge_Count": stats[user_id].get("judge_count", 0),
+            "Recorder_Count": stats[user_id].get("recorder_count", 0),
+            "Judge_and_Record": stats[user_id].get("judge_and_recorder_count", 0),
+            "Total_Count": stats[user_id].get("total_count", 0)
+        }))
+    except RuntimeError:
+        pass
+
+def decrement_staff_stats(user: Any, role_type: str, guild_id: Optional[int] = None):
+    g_id = guild_id or (getattr(user, 'guild', None).id if hasattr(user, 'guild') and user.guild else current_guild_id.get())
+    if not g_id:
+        return
+    stats = get_guild_staff_stats(g_id)
+    user_id = str(getattr(user, 'id', user))
+    if user_id not in stats:
+        return
+    if role_type == "judge":
+        stats[user_id]["judge_count"] = max(0, int(stats[user_id].get("judge_count", 0)) - 1)
+    elif role_type == "recorder":
+        stats[user_id]["recorder_count"] = max(0, int(stats[user_id].get("recorder_count", 0)) - 1)
+    elif role_type in ("judge_and_recorder", "both"):
+        stats[user_id]["judge_and_recorder_count"] = max(0, int(stats[user_id].get("judge_and_recorder_count", 0)) - 1)
+    stats[user_id]["total_count"] = (
+        int(stats[user_id].get("judge_count", 0)) +
+        int(stats[user_id].get("recorder_count", 0)) +
+        int(stats[user_id].get("judge_and_recorder_count", 0))
+    )
+    save_guild_staff_stats(g_id, stats)
+
+def recalculate_guild_staff_stats(guild_id: int) -> dict:
+    """
+    Recalculates staff stats for a guild based on all completed matches in scheduled_events.
+    """
+    g_id_str = str(guild_id)
+    new_stats = {}
+    for ev_id, ev in scheduled_events.items():
+        if ev.get('guild_id') and str(ev.get('guild_id')) != g_id_str:
+            continue
+        is_completed = (
+            ev.get('status') == 'completed' or
+            bool(ev.get('results_message_id')) or
+            bool(ev.get('completed_at')) or
+            'winner_score' in ev
+        )
+        if not is_completed:
+            continue
+
+        j_val = ev.get('result_judge') or ev.get('judge')
+        r_val = ev.get('recorder')
+        
+        j_id = str(getattr(j_val, 'id', j_val)) if j_val else None
+        r_id = str(getattr(r_val, 'id', r_val)) if r_val else None
+
+        if j_id and r_id and j_id == r_id:
+            if j_id not in new_stats:
+                j_name = getattr(j_val, 'display_name', getattr(j_val, 'name', f"Staff_{j_id}"))
+                new_stats[j_id] = {"name": str(j_name), "judge_count": 0, "recorder_count": 0, "judge_and_recorder_count": 0, "total_count": 0}
+            new_stats[j_id]["judge_and_recorder_count"] += 1
+        else:
+            if j_id:
+                if j_id not in new_stats:
+                    j_name = getattr(j_val, 'display_name', getattr(j_val, 'name', f"Staff_{j_id}"))
+                    new_stats[j_id] = {"name": str(j_name), "judge_count": 0, "recorder_count": 0, "judge_and_recorder_count": 0, "total_count": 0}
+                new_stats[j_id]["judge_count"] += 1
+            if r_id:
+                if r_id not in new_stats:
+                    r_name = getattr(r_val, 'display_name', getattr(r_val, 'name', f"Staff_{r_id}"))
+                    new_stats[r_id] = {"name": str(r_name), "judge_count": 0, "recorder_count": 0, "judge_and_recorder_count": 0, "total_count": 0}
+                new_stats[r_id]["recorder_count"] += 1
+
+    for u_id, u_data in new_stats.items():
+        u_data["total_count"] = u_data["judge_count"] + u_data["recorder_count"] + u_data["judge_and_recorder_count"]
+
+    save_guild_staff_stats(guild_id, new_stats)
+    return new_stats
 
 
 # ===========================================================================================
@@ -941,9 +1020,15 @@ def load_scheduled_events():
                                 pass
                     if 'datetime' in event_data and isinstance(event_data['datetime'], str):
                         try:
-                            event_data['datetime'] = datetime.datetime.fromisoformat(event_data['datetime'])
+                            parsed_dt = datetime.datetime.fromisoformat(event_data['datetime'])
+                            if parsed_dt.tzinfo is None:
+                                parsed_dt = parsed_dt.replace(tzinfo=pytz.UTC)
+                            event_data['datetime'] = parsed_dt
                         except Exception:
                             pass
+                    elif 'datetime' in event_data and isinstance(event_data['datetime'], datetime.datetime):
+                        if event_data['datetime'].tzinfo is None:
+                            event_data['datetime'] = event_data['datetime'].replace(tzinfo=pytz.UTC)
                     active_events[event_id] = event_data
                 scheduled_events.clear()
                 scheduled_events.update(active_events)
@@ -979,13 +1064,17 @@ async def load_scheduled_events_from_supabase():
                 date_str = row.get("Date") or ""
                 utc_time_str = row.get("UTC_Time") or ""
                 event_datetime = None
+                has_remote_time = False
                 
                 if row.get("Scheduled_Time"):
                     try:
-                        clean_time = row["Scheduled_Time"].replace('Z', '+00:00')
+                        clean_time = str(row["Scheduled_Time"]).replace('Z', '+00:00')
                         event_datetime = datetime.datetime.fromisoformat(clean_time)
+                        if event_datetime.tzinfo is None:
+                            event_datetime = event_datetime.replace(tzinfo=pytz.UTC)
                         utc_time_str = event_datetime.strftime("%H:%M UTC")
                         date_str = event_datetime.strftime("%d/%m")
+                        has_remote_time = True
                     except Exception:
                         pass
                         
@@ -995,12 +1084,13 @@ async def load_scheduled_events_from_supabase():
                         time_part = utc_time_str.split(' ')[0]
                         hour, minute = map(int, time_part.split(':'))
                         current_year = datetime.datetime.now().year
-                        event_datetime = datetime.datetime(current_year, month, day, hour, minute)
+                        event_datetime = datetime.datetime(current_year, month, day, hour, minute, tzinfo=pytz.UTC)
+                        has_remote_time = True
                     except Exception:
                         pass
                 
                 if not event_datetime:
-                    event_datetime = datetime.datetime.now()
+                    event_datetime = datetime.datetime.now(pytz.UTC)
                 
                 # For completed matches, only skip if older than 7 days and has no results message
                 if is_completed and not row.get("results_message_id"):
@@ -1009,7 +1099,7 @@ async def load_scheduled_events_from_supabase():
                         try:
                             clean_uat = updated_at_str.replace('Z', '+00:00')
                             uat = datetime.datetime.fromisoformat(clean_uat)
-                            now_utc = datetime.datetime.now(uat.tzinfo) if uat.tzinfo else datetime.datetime.now()
+                            now_utc = datetime.datetime.now(uat.tzinfo) if uat.tzinfo else datetime.datetime.now(pytz.UTC)
                             if uat < now_utc - datetime.timedelta(days=7):
                                 continue
                         except Exception:
@@ -1074,7 +1164,7 @@ async def load_scheduled_events_from_supabase():
                     loaded_count += 1
                 else:
                     existing = scheduled_events[event_id]
-                    if event_datetime and existing.get('datetime') != event_datetime:
+                    if has_remote_time and event_datetime and existing.get('datetime') != event_datetime:
                         existing['datetime'] = event_datetime
                         existing['time_str'] = utc_time_str
                         existing['date_str'] = date_str
@@ -1282,6 +1372,16 @@ async def save_event_to_supabase(event_id: str, event_data: dict):
             w_score = event_data.get('winner_score') if event_data.get('winner_score') is not None else event_data.get('team1_score')
             l_score = event_data.get('loser_score') if event_data.get('loser_score') is not None else event_data.get('team2_score')
 
+            dt_val = event_data.get('datetime')
+            sched_time_str = None
+            if isinstance(dt_val, datetime.datetime):
+                sched_time_str = dt_val.isoformat()
+            elif isinstance(dt_val, str) and dt_val:
+                sched_time_str = dt_val
+
+            j_name_str = getattr(judge_val, 'name', getattr(judge_val, 'display_name', '')) if judge_val else ''
+            r_name_str = getattr(recorder_val, 'name', getattr(recorder_val, 'display_name', '')) if recorder_val else ''
+
             match_row = {
                 "Match_ID": event_id,
                 "Guild_ID": str(guild_id) if guild_id else None,
@@ -1289,8 +1389,19 @@ async def save_event_to_supabase(event_id: str, event_data: dict):
                 "Tournament_ID": resolved_t_id,
                 "Round": round_int,
                 "Group": str(event_data.get('group', '') or ''),
+                "Scheduled_Time": sched_time_str,
+                "Date": str(event_data.get('date_str') or ''),
+                "UTC_Time": str(event_data.get('time_str') or ''),
                 "Team1_ID": str(t1_id) if t1_id else None,
                 "Team2_ID": str(t2_id) if t2_id else None,
+                "Team1_Captain_ID": str(t1_id) if t1_id else None,
+                "Team1_Captain_Name": str(t1_name or ''),
+                "Team2_Captain_ID": str(t2_id) if t2_id else None,
+                "Team2_Captain_Name": str(t2_name or ''),
+                "Judge_ID": str(j_id) if j_id else None,
+                "Judge_Name": str(j_name_str or ''),
+                "Recorder_ID": str(r_id) if r_id else None,
+                "Recorder_Name": str(r_name_str or ''),
                 "Team1_Score": int(w_score) if w_score is not None and str(w_score).isdigit() else None,
                 "Team2_Score": int(l_score) if l_score is not None and str(l_score).isdigit() else None,
                 "Status": str(event_data.get('status', 'scheduled')).lower(),
@@ -2435,9 +2546,16 @@ async def update_results_embed_with_links(guild: discord.Guild, ev_data: dict):
     res_msg_id = ev_data.get('results_message_id')
     res_chan_id = ev_data.get('results_channel_id')
     
-    # Auto-resolve results channel if missing
+    # 1. Auto-resolve results channel: tournament-specific channel takes priority
     channel = None
-    if res_chan_id:
+    t_id = ev_data.get('tournament') or ev_data.get('tournament_id')
+    if t_id:
+        try:
+            channel = get_tournament_results_channel(guild, t_id)
+        except Exception:
+            channel = None
+
+    if not channel and res_chan_id:
         try:
             channel = guild.get_channel(int(res_chan_id)) or await guild.fetch_channel(int(res_chan_id))
         except Exception:
@@ -2487,30 +2605,77 @@ async def update_results_embed_with_links(guild: discord.Guild, ev_data: dict):
         return
 
     try:
-        embed = msg.embeds[0]
+        from core.emojis import EMOJIS
+    except Exception:
+        EMOJIS = {}
+
+    rec_emoji = EMOJIS.get('recorder', '📹')
+    jdg_emoji = EMOJIS.get('judge', '⚖️')
+
+    async def _apply_links_to_message(target_msg: discord.Message):
+        if not target_msg or not target_msg.embeds:
+            return
+        embed = target_msg.embeds[0]
         general_link = ev_data.get('recording_link')
         rec_link = ev_data.get('recorder_link')
         jdg_link = ev_data.get('judge_link')
         
         link_lines = []
         if general_link:
-            link_lines.append(f"🎥 **Recording:** {format_links_markdown(general_link, 'Link')}")
+            link_lines.append(f"{rec_emoji} **Recording:** {format_links_markdown(general_link, 'Link')}")
         if rec_link:
-            link_lines.append(f"🎥 **Recorder VOD:** {format_links_markdown(rec_link, 'Link')}")
+            link_lines.append(f"{rec_emoji} **Recorder VOD:** {format_links_markdown(rec_link, 'Link')}")
         if jdg_link:
-            link_lines.append(f"⚖️ **Judge VOD:** {format_links_markdown(jdg_link, 'Link')}")
+            link_lines.append(f"{jdg_emoji} **Judge VOD:** {format_links_markdown(jdg_link, 'Link')}")
         
-        fields = [f for f in embed.fields if f.name not in ("🎥 Recording Link", "🎥 Recordings / VODs", "📹 Recordings / VODs")]
+        # Filter out existing recording/VOD fields
+        clean_fields = []
+        remarks_field = None
+        ss_field = None
+        for f in embed.fields:
+            if "Recording" in (f.name or "") or "VOD" in (f.name or "") or "Recordings / VODs" in (f.name or ""):
+                continue
+            if "Remarks" in (f.name or ""):
+                remarks_field = f
+                continue
+            if "Screenshots" in (f.name or "") or "Screenshots of Result" in (f.value or ""):
+                ss_field = f
+                continue
+            clean_fields.append(f)
+
         embed.clear_fields()
-        for f in fields:
+        for f in clean_fields:
             embed.add_field(name=f.name, value=f.value, inline=f.inline)
-            
+
+        # Place VOD links directly before Remarks, or before Screenshots
         if link_lines:
-            embed.add_field(name="🎥 Recordings / VODs", value="\n".join(link_lines), inline=False)
+            vod_title = f"{rec_emoji} Recordings / VODs"
+            embed.add_field(name=vod_title, value="\n".join(link_lines), inline=False)
+
+        if remarks_field:
+            embed.add_field(name=remarks_field.name, value=remarks_field.value, inline=remarks_field.inline)
+        if ss_field:
+            embed.add_field(name=ss_field.name, value=ss_field.value, inline=ss_field.inline)
             
-        await msg.edit(embed=embed)
+        await target_msg.edit(embed=embed)
+
+    try:
+        await _apply_links_to_message(msg)
     except Exception as e:
         print(f"Error updating result embed with links: {e}")
+
+    # Also update ticket channel message if saved
+    ticket_msg_id = ev_data.get('ticket_results_message_id')
+    ticket_chan_id = ev_data.get('channel_id')
+    if ticket_msg_id and ticket_chan_id:
+        try:
+            t_chan = guild.get_channel(int(ticket_chan_id)) or await guild.fetch_channel(int(ticket_chan_id))
+            if t_chan:
+                t_msg = await t_chan.fetch_message(int(ticket_msg_id))
+                if t_msg:
+                    await _apply_links_to_message(t_msg)
+        except Exception:
+            pass
 
 
 # ===========================================================================================

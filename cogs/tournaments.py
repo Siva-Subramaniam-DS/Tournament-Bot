@@ -183,12 +183,9 @@ async def match_autocomplete(
                 elif selected_link_type == "judge":
                     if ev_data.get('judge_link'):
                         continue
-                elif selected_link_type == "general":
-                    if ev_data.get('recording_link'):
-                        continue
                 else:
-                    # By default in link add, skip only if all recording links already exist
-                    if ev_data.get('recording_link') and ev_data.get('recorder_link') and ev_data.get('judge_link'):
+                    # By default in link add, skip only if both recorder and judge links already exist
+                    if ev_data.get('recorder_link') and ev_data.get('judge_link'):
                         continue
 
             t1_val = resolve_name(ev_data.get('team1_name'), ev_data.get('team1_captain'), "Team 1")
@@ -834,7 +831,6 @@ link_group = app_commands.Group(name="link", description="Manage match links and
     link="The URL of the recording/VOD link to add"
 )
 @app_commands.choices(link_type=[
-    app_commands.Choice(name="General Recording", value="general"),
     app_commands.Choice(name="Recorder VOD", value="recorder"),
     app_commands.Choice(name="Judge VOD", value="judge"),
 ])
@@ -860,11 +856,7 @@ async def link_add(
         await interaction.followup.send("❌ No matching scheduled event was found.", ephemeral=False)
         return
 
-    key = "recording_link"
-    if link_type.value == "recorder":
-        key = "recorder_link"
-    elif link_type.value == "judge":
-        key = "judge_link"
+    key = "recorder_link" if link_type.value == "recorder" else "judge_link"
         
     existing_raw = ev_data.get(key, "")
     existing_urls = [u.strip() for u in existing_raw.split(",") if u.strip() and (u.startswith("http://") or u.startswith("https://"))]
@@ -889,9 +881,9 @@ async def link_add(
             j_val = ev_data.get('judge')
             j_id = str(getattr(j_val, 'id', j_val)) if j_val else None
             if j_id and j_id == str(target_mem.id) and ev_data.get('status') == 'completed':
-                update_staff_stats(target_mem, "upgrade_to_both")
+                update_staff_stats(target_mem, "upgrade_to_both", interaction.guild.id)
             else:
-                update_staff_stats(target_mem, "recorder")
+                update_staff_stats(target_mem, "recorder", interaction.guild.id)
             ev_data['recorder_credited'] = True
             rec_credited_name = target_mem.mention
 
@@ -930,7 +922,6 @@ async def link_add(
     new_link="The updated URL of the recording/VOD link"
 )
 @app_commands.choices(link_type=[
-    app_commands.Choice(name="General Recording", value="general"),
     app_commands.Choice(name="Recorder VOD", value="recorder"),
     app_commands.Choice(name="Judge VOD", value="judge"),
 ])
@@ -956,11 +947,7 @@ async def link_edit(
         await interaction.followup.send("❌ No matching scheduled event was found.", ephemeral=False)
         return
 
-    key = "recording_link"
-    if link_type.value == "recorder":
-        key = "recorder_link"
-    elif link_type.value == "judge":
-        key = "judge_link"
+    key = "recorder_link" if link_type.value == "recorder" else "judge_link"
 
     old_link = ev_data.get(key, "None")
     ev_data[key] = ", ".join(raw_urls)
@@ -995,7 +982,6 @@ async def link_edit(
     link_type="Select which link type to remove"
 )
 @app_commands.choices(link_type=[
-    app_commands.Choice(name="General Recording", value="general"),
     app_commands.Choice(name="Recorder VOD", value="recorder"),
     app_commands.Choice(name="Judge VOD", value="judge"),
     app_commands.Choice(name="All Links", value="all"),
@@ -1016,15 +1002,14 @@ async def link_delete(
         return
 
     removed_types = []
-    if link_type.value in ("general", "all"):
-        ev_data["recording_link"] = ""
-        removed_types.append("General Recording")
     if link_type.value in ("recorder", "all"):
         ev_data["recorder_link"] = ""
         removed_types.append("Recorder VOD")
     if link_type.value in ("judge", "all"):
         ev_data["judge_link"] = ""
         removed_types.append("Judge VOD")
+    if link_type.value == "all" and "recording_link" in ev_data:
+        ev_data["recording_link"] = ""
 
     save_scheduled_events()
     asyncio.create_task(save_event_to_supabase(ev_id, ev_data))
@@ -1087,10 +1072,8 @@ async def link_missing(interaction: discord.Interaction, tournament: str = None)
 
         rec_link = ev_data.get('recorder_link')
         jdg_link = ev_data.get('judge_link')
-        general_link = ev_data.get('recording_link')
 
         missing_types = []
-        if not general_link: missing_types.append("General Link")
         if not rec_link: missing_types.append("Recorder VOD")
         if not jdg_link: missing_types.append("Judge VOD")
 

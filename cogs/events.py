@@ -274,7 +274,14 @@ async def update_results_embed_with_links(guild: discord.Guild, ev_data: dict):
     res_chan_id = ev_data.get('results_channel_id')
     
     channel = None
-    if res_chan_id:
+    t_id = ev_data.get('tournament') or ev_data.get('tournament_id')
+    if t_id:
+        try:
+            channel = get_tournament_results_channel(guild, t_id)
+        except Exception:
+            channel = None
+
+    if not channel and res_chan_id:
         try:
             channel = guild.get_channel(int(res_chan_id)) or await guild.fetch_channel(int(res_chan_id))
         except Exception:
@@ -322,28 +329,68 @@ async def update_results_embed_with_links(guild: discord.Guild, ev_data: dict):
     if not msg or not msg.embeds:
         return
         
-    try:
-        embed = msg.embeds[0]
+    rec_emoji = EMOJIS.get('recorder', '📹')
+    jdg_emoji = EMOJIS.get('judge', '⚖️')
+
+    async def _apply_links_to_message(target_msg: discord.Message):
+        if not target_msg or not target_msg.embeds:
+            return
+        embed = target_msg.embeds[0]
         general_link = ev_data.get('recording_link')
         rec_link = ev_data.get('recorder_link')
         jdg_link = ev_data.get('judge_link')
         
         link_lines = []
-        if general_link: link_lines.append(f"{EMOJIS.get('recorder', '📹')} **Recording:** {format_links_markdown(general_link, 'Link')}")
-        if rec_link:     link_lines.append(f"{EMOJIS.get('recorder', '📹')} **Recorder VOD:** {format_links_markdown(rec_link, 'Link')}")
-        if jdg_link:     link_lines.append(f"{EMOJIS.get('judge', '⚖️')} **Judge VOD:** {format_links_markdown(jdg_link, 'Link')}")
+        if general_link: link_lines.append(f"{rec_emoji} **Recording:** {format_links_markdown(general_link, 'Link')}")
+        if rec_link:     link_lines.append(f"{rec_emoji} **Recorder VOD:** {format_links_markdown(rec_link, 'Link')}")
+        if jdg_link:     link_lines.append(f"{jdg_emoji} **Judge VOD:** {format_links_markdown(jdg_link, 'Link')}")
         
-        fields = [f for f in embed.fields if f.name not in ("🎥 Recording Link", "🎥 Recordings / VODs", f"{EMOJIS.get('recorder', '📹')} Recordings / VODs", "📹 Recordings / VODs")]
+        clean_fields = []
+        remarks_field = None
+        ss_field = None
+        for f in embed.fields:
+            if "Recording" in (f.name or "") or "VOD" in (f.name or "") or "Recordings / VODs" in (f.name or ""):
+                continue
+            if "Remarks" in (f.name or ""):
+                remarks_field = f
+                continue
+            if "Screenshots" in (f.name or "") or "Screenshots of Result" in (f.value or ""):
+                ss_field = f
+                continue
+            clean_fields.append(f)
+
         embed.clear_fields()
-        for f in fields:
+        for f in clean_fields:
             embed.add_field(name=f.name, value=f.value, inline=f.inline)
-            
+
         if link_lines:
-            embed.add_field(name="🎥 Recordings / VODs", value="\n".join(link_lines), inline=False)
+            vod_title = f"{rec_emoji} Recordings / VODs"
+            embed.add_field(name=vod_title, value="\n".join(link_lines), inline=False)
+
+        if remarks_field:
+            embed.add_field(name=remarks_field.name, value=remarks_field.value, inline=remarks_field.inline)
+        if ss_field:
+            embed.add_field(name=ss_field.name, value=ss_field.value, inline=ss_field.inline)
             
-        await msg.edit(embed=embed)
+        await target_msg.edit(embed=embed)
+
+    try:
+        await _apply_links_to_message(msg)
     except Exception as e:
         print(f"Error updating result embed with links: {e}")
+
+    # Also update ticket channel embed if available
+    ticket_msg_id = ev_data.get('ticket_results_message_id')
+    ticket_chan_id = ev_data.get('channel_id')
+    if ticket_msg_id and ticket_chan_id:
+        try:
+            t_chan = guild.get_channel(int(ticket_chan_id)) or await guild.fetch_channel(int(ticket_chan_id))
+            if t_chan:
+                t_msg = await t_chan.fetch_message(int(ticket_msg_id))
+                if t_msg:
+                    await _apply_links_to_message(t_msg)
+        except Exception:
+            pass
 
 async def update_results_message_embed(guild: discord.Guild, ev_data: dict) -> bool:
     res_msg_id = ev_data.get('results_message_id')
@@ -377,7 +424,7 @@ async def update_results_message_embed(guild: discord.Guild, ev_data: dict) -> b
 
         judge_mention = getattr(judge_val, 'mention', None) or (f"<@{judge_val}>" if str(judge_val).isdigit() else str(judge_val or "Unknown"))
         judge_name = getattr(judge_val, 'name', None) or (ev_data.get('result_judge') or str(judge_val or "Unknown"))
-        staff_text = f"**Staffs**\n▪ {EMOJIS.get('judge', '⚖️')} Judge: {judge_mention}" + (f" ({judge_name})" if judge_name and judge_name not in judge_mention else "")
+        staff_text = f"{EMOJIS.get('helpers', '👥')} **Staffs**\n▪ {EMOJIS.get('judge', '⚖️')} Judge: {judge_mention}" + (f" ({judge_name})" if judge_name and judge_name not in judge_mention else "")
 
         if recorder_val:
             rec_mention = getattr(recorder_val, 'mention', None) or (f"<@{recorder_val}>" if str(recorder_val).isdigit() else str(recorder_val))
@@ -391,8 +438,8 @@ async def update_results_message_embed(guild: discord.Guild, ev_data: dict) -> b
         if dq_status in ("Winner", "Both"): t1_cap_mention += " (Disqualified)"
         if dq_status in ("Loser", "Both"):  t2_cap_mention += " (Disqualified)"
 
-        captains_text = f"**Captains**\n- Team1 Captain: {t1_cap_mention}\n- Team2 Captain: {t2_cap_mention}"
-        results_text = f"**Results**\n{winner_badge} {w_name} ({w_score}) {EMOJIS.get('vs', 'vs')} ({l_score}) {l_name} {EMOJIS.get('skull', '💀')}"
+        captains_text = f"{EMOJIS.get('captain', '👑')} **Captains**\n- Team1 Captain: {t1_cap_mention}\n- Team2 Captain: {t2_cap_mention}"
+        results_text = f"{EMOJIS.get('trophy', '🏆')} **Results**\n{winner_badge} {w_name} ({w_score}) {EMOJIS.get('vs', 'vs')} ({l_score}) {l_name} {EMOJIS.get('skull', '💀')}"
 
         ss_field = None
         rec_field = None
@@ -406,19 +453,22 @@ async def update_results_message_embed(guild: discord.Guild, ev_data: dict) -> b
         orig_embed.add_field(name="", value=captains_text, inline=False)
         orig_embed.add_field(name="", value=results_text, inline=False)
         orig_embed.add_field(name="", value=staff_text, inline=False)
+        if rec_field:
+            orig_embed.add_field(name=rec_field.name, value=rec_field.value, inline=rec_field.inline)
         orig_embed.add_field(name="📝 Remarks", value=remarks, inline=False)
         if ss_field:
             orig_embed.add_field(name=ss_field.name, value=ss_field.value, inline=ss_field.inline)
-        if rec_field:
-            orig_embed.add_field(name=rec_field.name, value=rec_field.value, inline=rec_field.inline)
 
         await msg.edit(embed=orig_embed)
         return True
     except Exception as e:
         print(f"Error updating result message embed: {e}")
         return False
+    except Exception as e:
+        print(f"Error updating result message embed: {e}")
+        return False
 
-async def send_ten_minute_reminder(event_id: str, team1_captain: discord.Member, team2_captain: discord.Member, judge: Optional[discord.Member], event_channel: discord.TextChannel, match_time: datetime.datetime):
+async def send_ten_minute_reminder(event_id: str, team1_captain: Any, team2_captain: Any, judge: Optional[Any], event_channel: discord.TextChannel, match_time: datetime.datetime):
     try:
         if not event_channel:
             return
@@ -448,10 +498,13 @@ async def send_ten_minute_reminder(event_id: str, team1_captain: discord.Member,
         )
         _mt_utc = match_time if match_time.tzinfo else match_time.replace(tzinfo=datetime.timezone.utc)
         embed.add_field(name="🕒 Match Time", value=f"<t:{int(_mt_utc.timestamp())}:F>", inline=False)
-        embed.add_field(name="👥 Team Captains", value=f"<@{t1_id}> vs <@{t2_id}>", inline=False)
-        if j_id:
+        
+        t1_ping = f"<@{t1_id}>" if t1_id and str(t1_id).strip().isdigit() else "Team 1 Captain"
+        t2_ping = f"<@{t2_id}>" if t2_id and str(t2_id).strip().isdigit() else "Team 2 Captain"
+        embed.add_field(name="👥 Team Captains", value=f"{t1_ping} vs {t2_ping}", inline=False)
+        if j_id and str(j_id).strip().isdigit():
             embed.add_field(name=f"{EMOJIS['judge']} Judge", value=f"<@{j_id}>", inline=True)
-        if r_id:
+        if r_id and str(r_id).strip().isdigit():
             embed.add_field(name=f"{EMOJIS['recorder']} Recorder", value=f"<@{r_id}>", inline=True)
         embed.add_field(name="📝 Action Required", value="Please prepare for the match and join the designated channel.", inline=False)
         embed.set_footer(text="Tournament Management System")
@@ -467,9 +520,12 @@ async def send_ten_minute_reminder(event_id: str, team1_captain: discord.Member,
                 except Exception as e:
                     print(f"Error loading poster image for reminder: {e}")
 
-        pings = f"<@{t1_id}> <@{t2_id}>"
-        if j_id: pings = f"<@{j_id}> " + pings
-        if r_id: pings = f"<@{r_id}> " + pings
+        pings_list = []
+        if j_id and str(j_id).strip().isdigit(): pings_list.append(f"<@{j_id}>")
+        if r_id and str(r_id).strip().isdigit(): pings_list.append(f"<@{r_id}>")
+        if t1_id and str(t1_id).strip().isdigit(): pings_list.append(f"<@{t1_id}>")
+        if t2_id and str(t2_id).strip().isdigit(): pings_list.append(f"<@{t2_id}>")
+        pings = " ".join(pings_list)
         notification_text = f"🔔 **MATCH REMINDER**\n\n{pings}\n\nYour match starts in **10 minutes**!"
 
         if file:
@@ -479,7 +535,7 @@ async def send_ten_minute_reminder(event_id: str, team1_captain: discord.Member,
     except Exception as e:
         print(f"Error sending 10-minute reminder: {e}")
 
-async def schedule_ten_minute_reminder(event_id: str, team1_captain: discord.Member, team2_captain: discord.Member, judge: Optional[discord.Member], event_channel: discord.TextChannel, match_time: datetime.datetime):
+async def schedule_ten_minute_reminder(event_id: str, team1_captain: Any, team2_captain: Any, judge: Optional[Any], event_channel: discord.TextChannel, match_time: datetime.datetime):
     try:
         now = datetime.datetime.now(pytz.UTC)
         if match_time.tzinfo is None:
@@ -523,9 +579,26 @@ async def schedule_ten_minute_reminder(event_id: str, team1_captain: discord.Mem
                     
                     if j or r:
                         try:
-                            j_m = event_channel.guild.get_member(j) if isinstance(j, int) else j
-                            r_m = event_channel.guild.get_member(r) if isinstance(r, int) else r
-                            pings = [m.mention for m in (j_m, r_m) if m]
+                            def resolve_member_obj(user_or_id):
+                                if not user_or_id:
+                                    return None
+                                if isinstance(user_or_id, (discord.Member, discord.User)):
+                                    return user_or_id
+                                uid_str = str(user_or_id).strip()
+                                if uid_str.isdigit() and event_channel and event_channel.guild:
+                                    return event_channel.guild.get_member(int(uid_str))
+                                return None
+
+                            j_m = resolve_member_obj(j)
+                            r_m = resolve_member_obj(r)
+                            
+                            pings = []
+                            for target in (j_m or j, r_m or r):
+                                if target:
+                                    tid = getattr(target, 'id', target)
+                                    if tid and str(tid).strip().isdigit():
+                                        pings.append(f"<@{tid}>")
+
                             embed = discord.Embed(
                                 title="Staff Confirmation Required",
                                 description="Please confirm your presence for the upcoming match.",
@@ -551,10 +624,19 @@ async def schedule_ten_minute_reminder(event_id: str, team1_captain: discord.Mem
                         ev_data = scheduled_events[event_id]
                         t1 = ev_data.get('team1_captain')
                         t2 = ev_data.get('team2_captain')
-                        t1_m = event_channel.guild.get_member(t1) if isinstance(t1, int) else t1
-                        t2_m = event_channel.guild.get_member(t2) if isinstance(t2, int) else t2
                         j_val = ev_data.get('judge')
-                        j_m = event_channel.guild.get_member(j_val) if isinstance(j_val, int) else j_val
+                        
+                        def resolve_member_obj_local(user_or_id):
+                            if not user_or_id: return None
+                            if isinstance(user_or_id, (discord.Member, discord.User)): return user_or_id
+                            uid_str = str(user_or_id).strip()
+                            if uid_str.isdigit() and event_channel and event_channel.guild:
+                                return event_channel.guild.get_member(int(uid_str))
+                            return None
+
+                        t1_m = resolve_member_obj_local(t1) or t1
+                        t2_m = resolve_member_obj_local(t2) or t2
+                        j_m = resolve_member_obj_local(j_val) or j_val
                         await send_ten_minute_reminder(event_id, t1_m, t2_m, j_m, event_channel, match_time)
                     except Exception as e:
                         print(f"Failed to send 10-min player reminder: {e}")
@@ -1067,59 +1149,10 @@ class Events(commands.Cog):
 
         actual_judge = judge or interaction.user
 
-        now_utc = datetime.datetime.now(pytz.UTC)
-        timestamp = int(now_utc.timestamp())
-        
-        embed_description = f"**Result UTC Time:** {now_utc.strftime('%Y-%m-%d %H:%M')}\n"
-        embed_description += f"**Result Local Time:** <t:{timestamp}:f> (<t:{timestamp}:R>)\n\n"
-        embed_description += f"**Tournament:** {t_display_name}\n"
-        embed_description += f"**Round:** {format_round_heading(round)}"
-        if group_label: embed_description += f"\n**Group:** {group_label}"
-        embed_description += f"\n\n**Channel:** {interaction.channel.mention}"
-        
-        winner_badge = EMOJIS.get('winner')
-
-        embed = discord.Embed(
-            title=f"{winner_badge} {w_display_name} 🆚 {l_display_name}",
-            description=embed_description,
-            color=discord.Color.gold(),
-            timestamp=discord.utils.utcnow()
-        )
-        await resolve_embed_thumbnail(interaction.guild.id, embed)
-
-        captains_text = f"**Captains**\n- Team1 Captain: {w_display_mention}" + (f" ({winner.name})" if winner else "") + f"\n- Team2 Captain: {l_display_mention}" + (f" ({loser.name})" if loser else "")
-        embed.add_field(name="", value=captains_text, inline=False)
-        
-        results_text = f"**Results**\n{winner_badge} {w_name} ({winner_score}) {EMOJIS['vs']} ({loser_score}) {l_name} {EMOJIS['skull']}"
-        embed.add_field(name="", value=results_text, inline=False)
-        
-        staff_text = f"**Staffs**\n▪ {EMOJIS['judge']} Judge: {actual_judge.mention}" + (f" ({actual_judge.name})" if actual_judge else "")
-        if recorder: staff_text += f"\n▪ {EMOJIS['recorder']} Recorder: {recorder.mention}" + (f" ({recorder.name})" if recorder else "")
-        embed.add_field(name="", value=staff_text, inline=False)
-        embed.add_field(name="📝 Remarks", value=remarks, inline=False)
-        
-        screenshots = [ss_1, ss_2, ss_3, ss_4]
-        raw_screenshots = []
-        screenshot_names = []
-        for i, ss in enumerate(screenshots, 1):
-            if ss:
-                try:
-                    b = await ss.read()
-                    fn = f"SS-{i}_{ss.filename}"
-                    raw_screenshots.append((fn, b))
-                    screenshot_names.append(f"SS-{i}")
-                except Exception as e:
-                    print(f"Error reading screenshot {i}: {e}")
-
-        if screenshot_names:
-            embed.add_field(name="", value=f"**Screenshots of Result ({len(screenshot_names)} images)**\n📷 {' • '.join(screenshot_names)}", inline=False)
-
-        embed.set_footer(text=f"Result uploaded by {interaction.user.name} · {now_utc.strftime('%d-%m-%Y %H:%M')}")
-
-        # Locate or register event in scheduled_events
+        # 1. Locate or register event in scheduled_events early so links and metadata are preserved
         matched_ev_id = None
         for ev_id, ev_d in scheduled_events.items():
-            if ev_d.get('channel_id') == interaction.channel.id:
+            if str(ev_d.get('channel_id')) == str(interaction.channel.id):
                 matched_ev_id = ev_id
                 break
         if not matched_ev_id:
@@ -1145,20 +1178,82 @@ class Events(commands.Cog):
             'completed_at': datetime.datetime.utcnow().isoformat()
         })
 
-        # Credit staff stats from the result
-        has_video_link = bool(ev_data.get('recording_link') or ev_data.get('recorder_link'))
+        now_utc = datetime.datetime.now(pytz.UTC)
+        timestamp = int(now_utc.timestamp())
+        
+        embed_description = f"**Result UTC Time:** {now_utc.strftime('%Y-%m-%d %H:%M')}\n"
+        embed_description += f"**Result Local Time:** <t:{timestamp}:f> (<t:{timestamp}:R>)\n\n"
+        embed_description += f"**Tournament:** {t_display_name}\n"
+        embed_description += f"**Round:** {format_round_heading(round)}"
+        if group_label: embed_description += f"\n**Group:** {group_label}"
+        embed_description += f"\n\n**Channel:** {interaction.channel.mention}"
+        
+        winner_badge = EMOJIS.get('winner', '🏆')
+
+        embed = discord.Embed(
+            title=f"{winner_badge} {w_display_name} 🆚 {l_display_name}",
+            description=embed_description,
+            color=discord.Color.gold(),
+            timestamp=discord.utils.utcnow()
+        )
+        await resolve_embed_thumbnail(interaction.guild.id, embed)
+
+        captains_text = f"{EMOJIS.get('captain', '👑')} **Captains**\n- Team1 Captain: {w_display_mention}" + (f" ({winner.name})" if winner else "") + f"\n- Team2 Captain: {l_display_mention}" + (f" ({loser.name})" if loser else "")
+        embed.add_field(name="", value=captains_text, inline=False)
+        
+        results_text = f"{EMOJIS.get('trophy', '🏆')} **Results**\n{winner_badge} {w_name} ({winner_score}) {EMOJIS.get('vs', 'vs')} ({loser_score}) {l_name} {EMOJIS.get('skull', '💀')}"
+        embed.add_field(name="", value=results_text, inline=False)
+        
+        staff_text = f"{EMOJIS.get('helpers', '👥')} **Staffs**\n▪ {EMOJIS.get('judge', '⚖️')} Judge: {actual_judge.mention}" + (f" ({actual_judge.name})" if actual_judge else "")
+        if recorder: staff_text += f"\n▪ {EMOJIS.get('recorder', '📹')} Recorder: {recorder.mention}" + (f" ({recorder.name})" if recorder else "")
+        embed.add_field(name="", value=staff_text, inline=False)
+
+        # Include recording / VOD links if already uploaded on this event
+        rec_emoji = EMOJIS.get('recorder', '📹')
+        jdg_emoji = EMOJIS.get('judge', '⚖️')
+        general_link = ev_data.get('recording_link')
+        rec_link = ev_data.get('recorder_link')
+        jdg_link = ev_data.get('judge_link')
+        link_lines = []
+        if general_link: link_lines.append(f"{rec_emoji} **Recording:** {format_links_markdown(general_link, 'Link')}")
+        if rec_link:     link_lines.append(f"{rec_emoji} **Recorder VOD:** {format_links_markdown(rec_link, 'Link')}")
+        if jdg_link:     link_lines.append(f"{jdg_emoji} **Judge VOD:** {format_links_markdown(jdg_link, 'Link')}")
+        if link_lines:
+            embed.add_field(name=f"{rec_emoji} Recordings / VODs", value="\n".join(link_lines), inline=False)
+
+        embed.add_field(name="📝 Remarks", value=remarks, inline=False)
+        
+        screenshots = [ss_1, ss_2, ss_3, ss_4]
+        raw_screenshots = []
+        screenshot_names = []
+        for i, ss in enumerate(screenshots, 1):
+            if ss:
+                try:
+                    b = await ss.read()
+                    fn = f"SS-{i}_{ss.filename}"
+                    raw_screenshots.append((fn, b))
+                    screenshot_names.append(f"SS-{i}")
+                except Exception as e:
+                    print(f"Error reading screenshot {i}: {e}")
+
+        if screenshot_names:
+            embed.add_field(name="", value=f"{EMOJIS.get('folder', '📸')} **Screenshots of Result ({len(screenshot_names)} images)**\n📷 {' • '.join(screenshot_names)}", inline=False)
+
+        embed.set_footer(text=f"Result uploaded by {interaction.user.name} · {now_utc.strftime('%d-%m-%Y %H:%M')}")
+
+        # Credit staff stats from the result based on staff mentioned
         is_both = (
             actual_judge and recorder and 
             str(getattr(actual_judge, 'id', actual_judge)) == str(getattr(recorder, 'id', recorder))
         )
-        if is_both and has_video_link:
-            update_staff_stats(actual_judge, "judge_and_recorder")
+        if is_both:
+            update_staff_stats(actual_judge, "judge_and_recorder", interaction.guild.id)
             ev_data['recorder_credited'] = True
         else:
-            update_staff_stats(actual_judge, "judge")
-            # For recorder: if video link is not submitted, don't count it who ever mentioned in the result
-            if recorder and has_video_link:
-                update_staff_stats(recorder, "recorder")
+            if actual_judge:
+                update_staff_stats(actual_judge, "judge", interaction.guild.id)
+            if recorder:
+                update_staff_stats(recorder, "recorder", interaction.guild.id)
                 ev_data['recorder_credited'] = True
 
         # Post in results channel and save message ID for VOD link updates
@@ -1174,18 +1269,21 @@ class Events(commands.Cog):
                 ev_data['results_message_id'] = res_msg.id
                 ev_data['results_channel_id'] = results_channel.id
 
-        # Post in ticket channel
+        # Post in ticket channel and record ticket_results_message_id
+        ticket_msg = None
         if raw_screenshots:
             files = [discord.File(fp=io.BytesIO(b), filename=fn) for fn, b in raw_screenshots]
-            await interaction.channel.send(embed=embed, files=files)
+            ticket_msg = await interaction.channel.send(embed=embed, files=files)
         else:
-            await interaction.channel.send(embed=embed)
+            ticket_msg = await interaction.channel.send(embed=embed)
+        if ticket_msg:
+            ev_data['ticket_results_message_id'] = ticket_msg.id
 
         save_scheduled_events()
         asyncio.create_task(save_event_to_supabase(matched_ev_id, ev_data))
 
         # Check if links already exist on event and update results embed
-        if ev_data.get('recording_link') or ev_data.get('recorder_link') or ev_data.get('judge_link'):
+        if ev_data.get('recorder_link') or ev_data.get('judge_link'):
             await update_results_embed_with_links(interaction.guild, ev_data)
 
         # Post Staff Attendance Log
@@ -1225,8 +1323,8 @@ class Events(commands.Cog):
             except Exception as e:
                 print(f"Error posting in Staff Attendance channel: {e}")
 
-        # Once schedule is over, prune completed match from scheduled_events JSON to save memory
-        asyncio.create_task(schedule_event_cleanup(matched_ev_id, delay_minutes=2, keep_event_data=False))
+        # Retain completed match in scheduled_events JSON for links, stats, and result editing (7 days)
+        asyncio.create_task(schedule_event_cleanup(matched_ev_id, delay_hours=168, keep_event_data=True))
 
         await interaction.followup.send(f"{EMOJIS['attendance_done']} Event results processed and posted successfully!", ephemeral=False)
 
@@ -1560,31 +1658,44 @@ class Events(commands.Cog):
             old_sched_msg_id = event_to_edit.get('schedule_message_id')
             old_sched_chan_id = event_to_edit.get('schedule_channel_id')
 
-            # Delete old schedule message if exists
-            if old_sched_msg_id and old_sched_chan_id and interaction.guild:
+            edited_in_place = False
+            # Edit existing schedule message in-place if it exists
+            if old_sched_msg_id and interaction.guild:
                 try:
-                    old_ch = interaction.guild.get_channel(int(old_sched_chan_id))
-                    if old_ch:
-                        old_msg = await old_ch.fetch_message(int(old_sched_msg_id))
-                        if old_msg: await old_msg.delete()
-                except Exception:
-                    pass
+                    ch_to_use = schedule_channel
+                    if old_sched_chan_id:
+                        ch_to_use = interaction.guild.get_channel(int(old_sched_chan_id)) or await interaction.guild.fetch_channel(int(old_sched_chan_id))
+                    if ch_to_use:
+                        old_msg = await ch_to_use.fetch_message(int(old_sched_msg_id))
+                        if old_msg:
+                            if files_to_send:
+                                sched_files = []
+                                for fo in files_to_send:
+                                    fo.fp.seek(0)
+                                    sched_files.append(discord.File(fp=io.BytesIO(fo.fp.read()), filename=fo.filename))
+                                await old_msg.edit(embed=schedule_embed, attachments=sched_files, view=take_schedule_view)
+                            else:
+                                await old_msg.edit(embed=schedule_embed, view=take_schedule_view)
+                            edited_in_place = True
+                except Exception as edit_err:
+                    print(f"Could not edit schedule message in-place: {edit_err}")
 
-            staff_role_id = ROLE_IDS.get('staff') or ROLE_IDS.get('judge')
-            staff_ping = f"<@&{staff_role_id}>" if staff_role_id else "@Staff"
-            if files_to_send:
-                sched_files = []
-                for fo in files_to_send:
-                    fo.fp.seek(0)
-                    sched_files.append(discord.File(fp=io.BytesIO(fo.fp.read()), filename=fo.filename))
-                new_sched_msg = await schedule_channel.send(content=staff_ping, embed=schedule_embed, files=sched_files, view=take_schedule_view)
-            else:
-                new_sched_msg = await schedule_channel.send(content=staff_ping, embed=schedule_embed, view=take_schedule_view)
+            if not edited_in_place:
+                staff_role_id = ROLE_IDS.get('staff') or ROLE_IDS.get('judge')
+                staff_ping = f"<@&{staff_role_id}>" if staff_role_id else "@Staff"
+                if files_to_send:
+                    sched_files = []
+                    for fo in files_to_send:
+                        fo.fp.seek(0)
+                        sched_files.append(discord.File(fp=io.BytesIO(fo.fp.read()), filename=fo.filename))
+                    new_sched_msg = await schedule_channel.send(content=staff_ping, embed=schedule_embed, files=sched_files, view=take_schedule_view)
+                else:
+                    new_sched_msg = await schedule_channel.send(content=staff_ping, embed=schedule_embed, view=take_schedule_view)
 
-            if new_sched_msg:
-                event_to_edit['schedule_message_id'] = new_sched_msg.id
-                event_to_edit['schedule_channel_id'] = schedule_channel.id
-                save_scheduled_events()
+                if new_sched_msg:
+                    event_to_edit['schedule_message_id'] = new_sched_msg.id
+                    event_to_edit['schedule_channel_id'] = schedule_channel.id
+                    save_scheduled_events()
         except Exception as e:
             print(f"Error updating schedule channel message: {e}")
 
@@ -1652,6 +1763,25 @@ class Events(commands.Cog):
                 ev_to_delete = scheduled_events.get(selected_event_id, {})
                 t1_d, t2_d = resolve_event_names(ev_to_delete, select_interaction.guild)
                 
+                # Cancel/Disable the schedule announcement message in schedule channel
+                sch_ch_id = ev_to_delete.get('schedule_channel_id')
+                sch_msg_id = ev_to_delete.get('schedule_message_id')
+                if sch_ch_id and sch_msg_id and select_interaction.guild:
+                    try:
+                        sch_channel = select_interaction.guild.get_channel(int(sch_ch_id))
+                        if not sch_channel:
+                            sch_channel = await select_interaction.guild.fetch_channel(int(sch_ch_id))
+                        if sch_channel:
+                            sch_msg = await sch_channel.fetch_message(int(sch_msg_id))
+                            if sch_msg:
+                                cancelled_embed = sch_msg.embeds[0] if sch_msg.embeds else discord.Embed()
+                                cancelled_embed.title = f"🛑 Event Cancelled / Deleted — {t1_d} vs {t2_d}"
+                                cancelled_embed.color = discord.Color.red()
+                                cancelled_embed.description = f"⚠️ This match has been cancelled/deleted by {select_interaction.user.mention}."
+                                await sch_msg.edit(embed=cancelled_embed, view=None)
+                    except Exception as sch_err:
+                        print(f"Error updating schedule message on event delete: {sch_err}")
+
                 # Cancel Discord scheduled event if present
                 disc_ev_id = ev_to_delete.get('scheduled_event_id')
                 if disc_ev_id and select_interaction.guild:
@@ -1662,6 +1792,17 @@ class Events(commands.Cog):
                     except Exception:
                         pass
 
+                # Remove active judge assignment
+                j_assigned = ev_to_delete.get('judge')
+                if j_assigned:
+                    j_uid = getattr(j_assigned, 'id', j_assigned)
+                    if j_uid and str(j_uid).strip().isdigit():
+                        try:
+                            remove_judge_assignment(int(j_uid), selected_event_id)
+                        except Exception:
+                            pass
+
+                ev_to_delete['status'] = 'cancelled'
                 if selected_event_id in scheduled_events:
                     del scheduled_events[selected_event_id]
                     save_scheduled_events()
@@ -1901,9 +2042,9 @@ async def handle_event_result_edit(
             old_j_id = str(getattr(old_judge, 'id', old_judge))
             stats = get_guild_staff_stats(guild_id)
             if old_j_id in stats:
-                stats[old_j_id]['judge_count'] = max(0, stats[old_j_id].get('judge_count', 1) - 1)
+                stats[old_j_id]['judge_count'] = max(0, int(stats[old_j_id].get('judge_count', 1)) - 1)
                 save_guild_staff_stats(guild_id, stats)
-            update_staff_stats(judge, "judge")
+            update_staff_stats(judge, "judge", guild_id)
 
     if recorder:
         old_rec = ev_data.get('recorder')
@@ -1913,12 +2054,10 @@ async def handle_event_result_edit(
             old_r_id = str(getattr(old_rec, 'id', old_rec))
             stats = get_guild_staff_stats(guild_id)
             if old_r_id in stats:
-                stats[old_r_id]['recorder_count'] = max(0, stats[old_r_id].get('recorder_count', 1) - 1)
+                stats[old_r_id]['recorder_count'] = max(0, int(stats[old_r_id].get('recorder_count', 1)) - 1)
                 save_guild_staff_stats(guild_id, stats)
-            has_video_link = bool(ev_data.get('recording_link') or ev_data.get('recorder_link'))
-            if has_video_link:
-                update_staff_stats(recorder, "recorder")
-                ev_data['recorder_credited'] = True
+            update_staff_stats(recorder, "recorder", guild_id)
+            ev_data['recorder_credited'] = True
 
     t1_n = ev_data.get('team1_name') or 'Team 1'
     t2_n = ev_data.get('team2_name') or 'Team 2'
