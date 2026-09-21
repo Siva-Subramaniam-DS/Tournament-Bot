@@ -1075,7 +1075,10 @@ class Events(commands.Cog):
         ss_1="Screenshot 1 (upload)",
         ss_2="Screenshot 2 (upload)",
         ss_3="Screenshot 3 (upload)",
-        ss_4="Screenshot 4 (upload)"
+        ss_4="Screenshot 4 (upload)",
+        ss_5="Screenshot 5 (upload)",
+        ss_6="Screenshot 6 (upload)",
+        ss_7="Screenshot 7 (upload)"
     )
     @app_commands.autocomplete(tournament=tournament_autocomplete)
     @app_commands.choices(
@@ -1114,7 +1117,10 @@ class Events(commands.Cog):
         ss_1: discord.Attachment = None,
         ss_2: discord.Attachment = None,
         ss_3: discord.Attachment = None,
-        ss_4: discord.Attachment = None
+        ss_4: discord.Attachment = None,
+        ss_5: discord.Attachment = None,
+        ss_6: discord.Attachment = None,
+        ss_7: discord.Attachment = None
     ):
         await interaction.response.defer(ephemeral=False)
         
@@ -1223,7 +1229,7 @@ class Events(commands.Cog):
 
         embed.add_field(name="📝 Remarks", value=remarks, inline=False)
         
-        screenshots = [ss_1, ss_2, ss_3, ss_4]
+        screenshots = [ss_1, ss_2, ss_3, ss_4, ss_5, ss_6, ss_7]
         raw_screenshots = []
         screenshot_names = []
         for i, ss in enumerate(screenshots, 1):
