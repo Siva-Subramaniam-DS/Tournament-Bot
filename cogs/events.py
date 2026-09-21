@@ -8,7 +8,7 @@ import asyncio
 import datetime
 import tempfile
 from pathlib import Path
-from typing import Optional, List, Union
+from typing import Optional, List, Union, Any
 
 import discord
 from discord import app_commands
