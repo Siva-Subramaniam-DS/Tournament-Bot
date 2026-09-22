@@ -23,7 +23,8 @@ from core.database import (
     load_scheduled_events,
     load_scheduled_events_from_supabase,
     load_banned_players,
-    load_banned_players_from_supabase
+    load_banned_players_from_supabase,
+    load_staff_stats
 )
 
 
@@ -69,6 +70,7 @@ class TournamentBot(commands.Bot):
             load_scheduled_deadlines()
             load_scheduled_events()
             load_banned_players()
+            load_staff_stats()
             await load_guild_configs_from_supabase()
             await load_all_tournaments_from_supabase()
             await load_all_staff_stats_from_supabase()

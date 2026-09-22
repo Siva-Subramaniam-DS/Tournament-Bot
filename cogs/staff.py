@@ -506,6 +506,19 @@ class TakeScheduleButton(discord.ui.View):
         self.judge = ev.get('judge')
         self.recorder = ev.get('recorder')
 
+        # Check if 2 minutes after match start has passed
+        is_past_cutoff = False
+        dt = ev.get('datetime')
+        if dt:
+            if isinstance(dt, str):
+                try: dt = datetime.datetime.fromisoformat(dt)
+                except Exception: pass
+            if isinstance(dt, datetime.datetime):
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=pytz.UTC)
+                if datetime.datetime.now(pytz.UTC) >= dt + datetime.timedelta(minutes=2):
+                    is_past_cutoff = True
+
         for child in self.children:
             if child.custom_id == "take_schedule_btn" or (child.custom_id and child.custom_id.startswith("take_schedule_")):
                 child.custom_id = f"take_schedule_{event_id}"
@@ -514,11 +527,21 @@ class TakeScheduleButton(discord.ui.View):
                     child.style = discord.ButtonStyle.green
                     child.disabled = True
                     child.emoji = None
+                elif is_past_cutoff:
+                    child.label = "Closed"
+                    child.style = discord.ButtonStyle.secondary
+                    child.disabled = True
+                    child.emoji = None
             elif child.custom_id == "record_btn" or (child.custom_id and child.custom_id.startswith("record_")):
                 child.custom_id = f"record_{event_id}"
                 if self.recorder:
                     child.label = "📹 Assigned"
                     child.style = discord.ButtonStyle.green
+                    child.disabled = True
+                    child.emoji = None
+                elif is_past_cutoff:
+                    child.label = "Closed"
+                    child.style = discord.ButtonStyle.secondary
                     child.disabled = True
                     child.emoji = None
 
@@ -529,19 +552,33 @@ class TakeScheduleButton(discord.ui.View):
         dt = event_data.get('datetime')
         if not dt:
             return False
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=pytz.UTC)
-        return datetime.datetime.now(pytz.UTC) >= dt
+        if isinstance(dt, str):
+            try: dt = datetime.datetime.fromisoformat(dt)
+            except Exception: pass
+        if isinstance(dt, datetime.datetime):
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=pytz.UTC)
+            return datetime.datetime.now(pytz.UTC) >= dt + datetime.timedelta(minutes=2)
+        return False
 
     @discord.ui.button(label="Take Schedule", style=discord.ButtonStyle.green, emoji=TAKE_SCHEDULE_BUTTON_EMOJI, custom_id="take_schedule_btn")
     @with_guild_context
     async def take_schedule(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self._is_event_started():
             for child in self.children:
-                child.disabled = True
+                if not self.judge and (child.custom_id and "take_schedule" in child.custom_id):
+                    child.label = "Closed"
+                    child.style = discord.ButtonStyle.secondary
+                    child.disabled = True
+                    child.emoji = None
+                if not self.recorder and (child.custom_id and "record" in child.custom_id):
+                    child.label = "Closed"
+                    child.style = discord.ButtonStyle.secondary
+                    child.disabled = True
+                    child.emoji = None
             try: await interaction.message.edit(view=self)
             except Exception: pass
-            await interaction.response.send_message("❌ This event has already started. Buttons are now disabled.", ephemeral=False)
+            await interaction.response.send_message("❌ The window to claim this match has closed (ended 2 minutes after match start).", ephemeral=False)
             return
 
         # Validate event existence
@@ -694,10 +731,19 @@ class TakeScheduleButton(discord.ui.View):
     async def record_schedule(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self._is_event_started():
             for child in self.children:
-                child.disabled = True
+                if not self.judge and (child.custom_id and "take_schedule" in child.custom_id):
+                    child.label = "Closed"
+                    child.style = discord.ButtonStyle.secondary
+                    child.disabled = True
+                    child.emoji = None
+                if not self.recorder and (child.custom_id and "record" in child.custom_id):
+                    child.label = "Closed"
+                    child.style = discord.ButtonStyle.secondary
+                    child.disabled = True
+                    child.emoji = None
             try: await interaction.message.edit(view=self)
             except Exception: pass
-            await interaction.response.send_message("❌ This event has already started. Buttons are now disabled.", ephemeral=False)
+            await interaction.response.send_message("❌ The window to record this match has closed (ended 2 minutes after match start).", ephemeral=False)
             return
 
         # Validate event existence

@@ -535,6 +535,59 @@ async def send_ten_minute_reminder(event_id: str, team1_captain: Any, team2_capt
     except Exception as e:
         print(f"Error sending 10-minute reminder: {e}")
 
+async def close_unassigned_schedule_buttons(event_id: str, guild: Optional[discord.Guild]):
+    """
+    Closes and disables unassigned Take Schedule (Judge) and Record buttons on the schedule message
+    2 minutes after match start. If Judge is assigned but Recorder is not, only the Record button closes.
+    """
+    if event_id not in scheduled_events:
+        return
+    ev_data = scheduled_events[event_id]
+    if ev_data.get('status') in ('cancelled', 'deleted'):
+        return
+
+    # Check if both are already assigned
+    j_assigned = bool(ev_data.get('judge'))
+    r_assigned = bool(ev_data.get('recorder'))
+    if j_assigned and r_assigned:
+        return
+
+    if not guild:
+        return
+
+    sch_ch_id = ev_data.get('schedule_channel_id')
+    sch_msg_id = ev_data.get('schedule_message_id')
+    sch_ch = None
+    if sch_ch_id:
+        try:
+            sch_ch = guild.get_channel(int(sch_ch_id))
+            if not sch_ch:
+                sch_ch = await guild.fetch_channel(int(sch_ch_id))
+        except Exception:
+            sch_ch = None
+
+    if not sch_ch:
+        clean_t_id = ev_data.get('tournament_id') or ev_data.get('tournament')
+        sch_ch = get_tournament_schedule_channel(guild, clean_t_id)
+
+    if not sch_ch or not sch_msg_id:
+        return
+
+    try:
+        sch_msg = await sch_ch.fetch_message(int(sch_msg_id))
+        if sch_msg:
+            ev_ch = guild.get_channel(int(ev_data.get('channel_id'))) if ev_data.get('channel_id') else None
+            new_view = TakeScheduleButton(
+                event_id,
+                ev_data.get('team1_captain'),
+                ev_data.get('team2_captain'),
+                ev_ch
+            )
+            await sch_msg.edit(view=new_view)
+            print(f"🔒 Closed unassigned schedule buttons for event {event_id} (Judge: {'Assigned' if j_assigned else 'Closed'}, Record: {'Assigned' if r_assigned else 'Closed'}).")
+    except Exception as e:
+        print(f"Error closing unassigned schedule buttons for {event_id}: {e}")
+
 async def schedule_ten_minute_reminder(event_id: str, team1_captain: Any, team2_captain: Any, judge: Optional[Any], event_channel: discord.TextChannel, match_time: datetime.datetime):
     try:
         now = datetime.datetime.now(pytz.UTC)
@@ -543,19 +596,40 @@ async def schedule_ten_minute_reminder(event_id: str, team1_captain: Any, team2_
             
         reminder_time_20 = match_time - datetime.timedelta(minutes=20)
         reminder_time_10 = match_time - datetime.timedelta(minutes=10)
+        cutoff_time_post_start = match_time + datetime.timedelta(minutes=2)
         
         async def combined_reminder_task():
             g_id = None
             if event_id in scheduled_events:
                 g_id = scheduled_events[event_id].get('guild_id')
-                if g_id: current_guild_id.set(g_id)
+            if not g_id and event_channel and event_channel.guild:
+                g_id = event_channel.guild.id
+            if g_id:
+                current_guild_id.set(g_id)
+
+            guild = event_channel.guild if event_channel else None
+
+            # Resolve schedule channel for staff announcements
+            schedule_channel = None
+            if guild and event_id in scheduled_events:
+                ev_cfg_data = scheduled_events[event_id]
+                sch_id = ev_cfg_data.get('schedule_channel_id')
+                if sch_id:
+                    try:
+                        schedule_channel = guild.get_channel(int(sch_id))
+                    except Exception:
+                        pass
+                if not schedule_channel:
+                    schedule_channel = get_tournament_schedule_channel(guild, ev_cfg_data.get('tournament_id') or ev_cfg_data.get('tournament'))
                     
             delay_20 = (reminder_time_20 - datetime.datetime.now(pytz.UTC)).total_seconds()
             if delay_20 > 0:
                 await asyncio.sleep(delay_20)
             
-            if g_id: current_guild_id.set(g_id)
+            if g_id:
+                current_guild_id.set(g_id)
                 
+            # T-20min Presence & Missing Staff Checks
             if event_id in scheduled_events:
                 now_check = datetime.datetime.now(pytz.UTC)
                 if now_check < match_time:
@@ -567,15 +641,23 @@ async def schedule_ten_minute_reminder(event_id: str, team1_captain: Any, team2_
                         try:
                             j_role = ROLE_IDS.get('judge')
                             j_ping = f"<@&{j_role}>" if j_role else "**@Judge**"
-                            await event_channel.send(f"⚠️ {j_ping} **URGENT:** Match starts in 20 mins and NO JUDGE is assigned!")
-                        except Exception as e: pass
+                            warning_msg = f"⚠️ {j_ping} **URGENT:** Match starts in 20 mins and NO JUDGE is assigned! Please Take Schedule!"
+                            if schedule_channel:
+                                await schedule_channel.send(warning_msg)
+                            await event_channel.send(warning_msg)
+                        except Exception as e:
+                            pass
                     
                     if not r:
                         try:
                             r_role = ROLE_IDS.get('recorder')
                             r_ping = f"<@&{r_role}>" if r_role else "**@Recorder**"
-                            await event_channel.send(f"⚠️ {r_ping} **URGENT:** Match starts in 20 mins and NO RECORDER is assigned!")
-                        except Exception as e: pass
+                            warning_msg = f"⚠️ {r_ping} **URGENT:** Match starts in 20 mins and NO RECORDER is assigned! Please Record!"
+                            if schedule_channel:
+                                await schedule_channel.send(warning_msg)
+                            await event_channel.send(warning_msg)
+                        except Exception as e:
+                            pass
                     
                     if j or r:
                         try:
@@ -585,8 +667,8 @@ async def schedule_ten_minute_reminder(event_id: str, team1_captain: Any, team2_
                                 if isinstance(user_or_id, (discord.Member, discord.User)):
                                     return user_or_id
                                 uid_str = str(user_or_id).strip()
-                                if uid_str.isdigit() and event_channel and event_channel.guild:
-                                    return event_channel.guild.get_member(int(uid_str))
+                                if uid_str.isdigit() and guild:
+                                    return guild.get_member(int(uid_str))
                                 return None
 
                             j_m = resolve_member_obj(j)
@@ -611,17 +693,84 @@ async def schedule_ten_minute_reminder(event_id: str, team1_captain: Any, team2_
                         except Exception as e:
                             print(f"Error sending staff confirmation: {e}")
             
+            # T-10min Checks & Reminders
             delay_10 = (reminder_time_10 - datetime.datetime.now(pytz.UTC)).total_seconds()
             if delay_10 > 0:
                 await asyncio.sleep(delay_10)
                 
-            if g_id: current_guild_id.set(g_id)
+            if g_id:
+                current_guild_id.set(g_id)
                 
             if event_id in scheduled_events:
                 now_check = datetime.datetime.now(pytz.UTC)
                 if now_check < match_time:
+                    ev_data = scheduled_events[event_id]
+                    j = ev_data.get('judge')
+                    r = ev_data.get('recorder')
+                    j_confirmed = ev_data.get('judge_confirmed', False)
+                    r_confirmed = ev_data.get('recorder_confirmed', False)
+
+                    # 1. Missing staff alerts (if no judge or no recorder taken before 10 mins)
+                    if not j:
+                        try:
+                            j_role = ROLE_IDS.get('judge')
+                            j_ping = f"<@&{j_role}>" if j_role else "**@Judge**"
+                            missing_j_text = f"⚠️ {j_ping} **URGENT:** Match starts in 10 minutes and NO JUDGE is assigned! Please Take Schedule!"
+                            if schedule_channel:
+                                await schedule_channel.send(missing_j_text)
+                            await event_channel.send(missing_j_text)
+                        except Exception as e:
+                            print(f"Error alerting missing judge at T-10m: {e}")
+
+                    if not r:
+                        try:
+                            r_role = ROLE_IDS.get('recorder')
+                            r_ping = f"<@&{r_role}>" if r_role else "**@Recorder**"
+                            missing_r_text = f"⚠️ {r_ping} **URGENT:** Match starts in 10 minutes and NO RECORDER is assigned! Please Record!"
+                            if schedule_channel:
+                                await schedule_channel.send(missing_r_text)
+                            await event_channel.send(missing_r_text)
+                        except Exception as e:
+                            print(f"Error alerting missing recorder at T-10m: {e}")
+
+                    # 2. Staff replacement check (if staff was assigned but failed to confirm presence)
+                    replace_judge = j and not j_confirmed
+                    replace_recorder = r and not r_confirmed
+                    if replace_judge or replace_recorder:
+                        try:
+                            rep_view = StaffReplacementView(event_id, replace_judge, replace_recorder)
+                            rep_embed = discord.Embed(
+                                title="🚨 URGENT: Staff Replacement Required",
+                                description="Assigned staff did not confirm presence. Immediate replacement needed!",
+                                color=discord.Color.red(),
+                                timestamp=discord.utils.utcnow()
+                            )
+                            staff_needed = []
+                            pings_list = []
+                            if replace_judge:
+                                staff_needed.append("👨‍⚖️ **Judge**")
+                                j_r_id = ROLE_IDS.get('judge')
+                                if j_r_id:
+                                    pings_list.append(f"<@&{j_r_id}>")
+                            if replace_recorder:
+                                staff_needed.append("🎥 **Recorder**")
+                                r_r_id = ROLE_IDS.get('recorder')
+                                if r_r_id:
+                                    pings_list.append(f"<@&{r_r_id}>")
+                            rep_embed.add_field(name="⚠️ Staff Needed", value="\n".join(staff_needed), inline=False)
+                            t1_name = ev_data.get('team1_name') or "Team 1"
+                            t2_name = ev_data.get('team2_name') or "Team 2"
+                            rep_embed.add_field(name="📋 Match", value=f"**{t1_name} vs {t2_name}** (starts in 10 mins)", inline=False)
+                            
+                            target_post_ch = schedule_channel or event_channel
+                            if target_post_ch:
+                                await target_post_ch.send(content=" ".join(pings_list), embed=rep_embed, view=rep_view)
+                            await event_channel.send("🚨 **URGENT:** Staff presence was not confirmed. Replacement request has been posted.")
+                        except Exception as rep_err:
+                            print(f"Error triggering staff replacement at T-10m: {rep_err}")
+
+                    # 3. Send 10-min player reminder
                     try:
-                        ev_data = scheduled_events[event_id]
                         t1 = ev_data.get('team1_captain')
                         t2 = ev_data.get('team2_captain')
                         j_val = ev_data.get('judge')
@@ -630,8 +779,8 @@ async def schedule_ten_minute_reminder(event_id: str, team1_captain: Any, team2_
                             if not user_or_id: return None
                             if isinstance(user_or_id, (discord.Member, discord.User)): return user_or_id
                             uid_str = str(user_or_id).strip()
-                            if uid_str.isdigit() and event_channel and event_channel.guild:
-                                return event_channel.guild.get_member(int(uid_str))
+                            if uid_str.isdigit() and guild:
+                                return guild.get_member(int(uid_str))
                             return None
 
                         t1_m = resolve_member_obj_local(t1) or t1
@@ -640,6 +789,16 @@ async def schedule_ten_minute_reminder(event_id: str, team1_captain: Any, team2_
                         await send_ten_minute_reminder(event_id, t1_m, t2_m, j_m, event_channel, match_time)
                     except Exception as e:
                         print(f"Failed to send 10-min player reminder: {e}")
+
+            # 4. Post-Start Cutoff: 2 minutes after match starts, close unassigned Take Schedule & Record buttons
+            delay_close = (cutoff_time_post_start - datetime.datetime.now(pytz.UTC)).total_seconds()
+            if delay_close > 0:
+                await asyncio.sleep(delay_close)
+
+            if g_id:
+                current_guild_id.set(g_id)
+
+            await close_unassigned_schedule_buttons(event_id, guild)
 
         if event_id in reminder_tasks:
             reminder_tasks[event_id].cancel()

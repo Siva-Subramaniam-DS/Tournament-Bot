@@ -2444,47 +2444,110 @@ async def load_all_tournaments_from_supabase():
         print(f"Error loading all tournaments from Supabase: {e}")
 
 async def load_all_staff_stats_from_supabase():
-    if not supabase_client:
-        return
-    try:
-        resp = await asyncio.to_thread(lambda: supabase_client.table("StaffStats").select("*").execute())
-        if resp and resp.data:
-            all_stats = {}
-            if os.path.exists('staff_stats.json'):
-                try:
-                    with open('staff_stats.json', 'r', encoding='utf-8') as f:
-                        all_stats = json.load(f)
-                except Exception:
-                    pass
-            for row in resp.data:
-                g_id = str(row.get("Guild_ID") or "")
-                u_id = str(row.get("User_ID") or "")
-                if not g_id or not u_id:
-                    continue
-                if g_id not in STAFF_STATS_CACHE:
-                    STAFF_STATS_CACHE[g_id] = {}
-                if g_id not in all_stats:
-                    all_stats[g_id] = {}
-                
-                user_stat = {
-                    "name": row.get("Name") or "Staff",
-                    "judge_count": int(row.get("Judge_Count") or 0),
-                    "recorder_count": int(row.get("Recorder_Count") or 0),
-                    "judge_and_recorder_count": int(row.get("Judge_and_Record") or row.get("Judge_and_Recorder_Count") or 0),
-                    "total_count": int(row.get("Total_Count") or 0),
-                    "last_active": row.get("Timestamp") or datetime.datetime.utcnow().isoformat()
-                }
-                STAFF_STATS_CACHE[g_id][u_id] = user_stat
-                all_stats[g_id][u_id] = user_stat
+    # 1. First, read local staff_stats.json (and judge_stats.json) from hosting database
+    all_stats = {}
+    if os.path.exists('staff_stats.json'):
+        try:
+            with open('staff_stats.json', 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    # Check if multi-guild format or legacy single-guild format
+                    if any(isinstance(v, dict) and any(isinstance(inner, dict) for inner in v.values()) for v in data.values() if v):
+                        all_stats = data
+                    else:
+                        all_stats = {"legacy": data}
+        except Exception as e:
+            print(f"Error loading local staff_stats.json: {e}")
+    elif os.path.exists('judge_stats.json'):
+        try:
+            with open('judge_stats.json', 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    all_stats = {"legacy": data}
+        except Exception as e:
+            print(f"Error loading local judge_stats.json: {e}")
 
-            try:
-                with open('staff_stats.json', 'w', encoding='utf-8') as f:
-                    json.dump(all_stats, f, indent=2, ensure_ascii=False)
-            except Exception as e:
-                print(f"Error saving staff_stats.json during Supabase load: {e}")
-            print(f"✅ Loaded {len(resp.data)} staff stat entries from Supabase.")
-    except Exception as e:
-        print(f"Error loading all staff stats from Supabase: {e}")
+    # Populate in-memory cache immediately from local JSON
+    for g_id, u_map in all_stats.items():
+        if isinstance(u_map, dict):
+            if g_id not in STAFF_STATS_CACHE:
+                STAFF_STATS_CACHE[g_id] = {}
+            for u_id, u_data in u_map.items():
+                if isinstance(u_data, dict):
+                    STAFF_STATS_CACHE[g_id][str(u_id)] = u_data
+
+    # 2. If Supabase is connected, store/sync local JSON data into Supabase StaffStats table
+    if supabase_client:
+        try:
+            pushed_count = 0
+            for g_id, u_map in all_stats.items():
+                if not isinstance(u_map, dict):
+                    continue
+                for u_id, u_stats in u_map.items():
+                    if not isinstance(u_stats, dict):
+                        continue
+                    jr_cnt = int(u_stats.get("judge_and_recorder_count") or u_stats.get("judge_and_record") or 0)
+                    row = {
+                        "Guild_ID": str(g_id),
+                        "User_ID": str(u_id),
+                        "Name": str(u_stats.get("name") or "Staff"),
+                        "Judge_Count": int(u_stats.get("judge_count", 0)),
+                        "Recorder_Count": int(u_stats.get("recorder_count", 0)),
+                        "Judge_and_Record": jr_cnt,
+                        "Total_Count": int(u_stats.get("total_count", 0)),
+                        "Timestamp": u_stats.get("last_active") or datetime.datetime.utcnow().isoformat()
+                    }
+                    upserted = await asyncio.to_thread(supabase_safe_upsert, "StaffStats", row, "Guild_ID,User_ID")
+                    if upserted:
+                        pushed_count += 1
+            if pushed_count > 0:
+                print(f"✅ Synced {pushed_count} staff stat entries from local JSON to Supabase StaffStats.")
+
+            # 3. Read back all staff stats from Supabase to ensure complete remote persistence
+            resp = await asyncio.to_thread(lambda: supabase_client.table("StaffStats").select("*").execute())
+            if resp and resp.data:
+                for row in resp.data:
+                    g_id = str(row.get("Guild_ID") or "")
+                    u_id = str(row.get("User_ID") or "")
+                    if not g_id or not u_id:
+                        continue
+                    if g_id not in STAFF_STATS_CACHE:
+                        STAFF_STATS_CACHE[g_id] = {}
+                    if g_id not in all_stats:
+                        all_stats[g_id] = {}
+
+                    prev_data = STAFF_STATS_CACHE[g_id].get(u_id, {})
+                    remote_j = int(row.get("Judge_Count") or 0)
+                    remote_r = int(row.get("Recorder_Count") or 0)
+                    remote_jr = int(row.get("Judge_and_Record") or row.get("Judge_and_Recorder_Count") or 0)
+                    remote_tot = int(row.get("Total_Count") or (remote_j + remote_r + remote_jr))
+
+                    # Merge keeping maximum counts
+                    final_j = max(int(prev_data.get("judge_count", 0)), remote_j)
+                    final_r = max(int(prev_data.get("recorder_count", 0)), remote_r)
+                    final_jr = max(int(prev_data.get("judge_and_recorder_count", 0)), remote_jr)
+                    final_tot = max(int(prev_data.get("total_count", 0)), remote_tot, final_j + final_r + final_jr)
+
+                    user_stat = {
+                        "name": row.get("Name") or prev_data.get("name") or "Staff",
+                        "judge_count": final_j,
+                        "recorder_count": final_r,
+                        "judge_and_recorder_count": final_jr,
+                        "total_count": final_tot,
+                        "last_active": row.get("Timestamp") or prev_data.get("last_active") or datetime.datetime.utcnow().isoformat()
+                    }
+                    STAFF_STATS_CACHE[g_id][u_id] = user_stat
+                    all_stats[g_id][u_id] = user_stat
+
+                try:
+                    with open('staff_stats.json', 'w', encoding='utf-8') as f:
+                        json.dump(all_stats, f, indent=2, ensure_ascii=False)
+                except Exception as e:
+                    print(f"Error saving staff_stats.json during Supabase load: {e}")
+                print(f"✅ Loaded {len(resp.data)} staff stat entries from Supabase.")
+        except Exception as e:
+            print(f"Error loading all staff stats from Supabase: {e}")
+
 
 async def tournament_autocomplete(
     interaction: discord.Interaction,

@@ -31,7 +31,7 @@ from core.transcript import (
 from cogs.staff import (
     TakeScheduleButton, StaffConfirmationView, StaffReplacementView
 )
-from cogs.events import schedule_ten_minute_reminder
+from cogs.events import schedule_ten_minute_reminder, close_unassigned_schedule_buttons
 try:
     from core.emojis import init_emojis_from_bot
 except ImportError:
@@ -44,16 +44,14 @@ class Listeners(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        print(f"✅ Bot is online as {self.bot.user}")
-        print(f"🆔 Bot ID: {self.bot.user.id}")
-        print(f"📊 Connected to {len(self.bot.guilds)} guild(s)")
-
-        # Auto-resolve and cache custom emojis by ID from connected servers and application emojis
+        print(f"Logged in as {self.bot.user.name} ({self.bot.user.id})")
+        
+        # Initialize dynamic emojis using connected bot client
         if init_emojis_from_bot:
             try:
-                await init_emojis_from_bot(self.bot)
-            except Exception as e:
-                print(f"Error resolving emojis: {e}")
+                init_emojis_from_bot(self.bot)
+            except Exception as emoji_init_err:
+                print(f"Warning: Failed to init dynamic emojis: {emoji_init_err}")
 
         # Reschedule reminders and register persistent views
         now_utc = datetime.datetime.now(pytz.UTC)
@@ -61,22 +59,25 @@ class Listeners(commands.Cog):
             dt = ev_data.get('datetime')
             ch_id = ev_data.get('channel_id')
             
+            # Register persistent views
             try:
                 t1 = ev_data.get('team1_captain')
                 t2 = ev_data.get('team2_captain')
-                j = ev_data.get('judge')
-                r = ev_data.get('recorder')
+                t_ch = self.bot.get_channel(int(ch_id)) if ch_id else None
                 
-                self.bot.add_view(TakeScheduleButton(ev_id, t1, t2))
-                self.bot.add_view(StaffConfirmationView(ev_id, j, r))
+                # Reconstruct and register TakeScheduleButton
+                self.bot.add_view(TakeScheduleButton(ev_id, t1, t2, t_ch))
                 
-                j_confirmed = ev_data.get('judge_confirmed', False)
-                r_confirmed = ev_data.get('recorder_confirmed', False)
-                j_replaced = ev_data.get('judge_replaced', False)
-                r_replaced = ev_data.get('recorder_replaced', False)
+                # Reconstruct and register StaffConfirmationView
+                j_obj = ev_data.get('judge')
+                r_obj = ev_data.get('recorder')
+                self.bot.add_view(StaffConfirmationView(ev_id, j_obj, r_obj))
                 
-                replace_j = bool(j and not j_confirmed) or j_replaced
-                replace_r = bool(r and not r_confirmed) or r_replaced
+                # Reconstruct and register StaffReplacementView
+                j_conf = ev_data.get('judge_confirmed', False)
+                r_conf = ev_data.get('recorder_confirmed', False)
+                replace_j = j_obj and not j_conf
+                replace_r = r_obj and not r_conf
                 
                 self.bot.add_view(StaffReplacementView(ev_id, replace_j, replace_r))
             except Exception as view_err:
@@ -92,7 +93,7 @@ class Listeners(commands.Cog):
                 if isinstance(dt, datetime.datetime):
                     if dt.tzinfo is None:
                         dt = dt.replace(tzinfo=pytz.UTC)
-                    if dt > now_utc and ev_data.get('status') not in ('cancelled', 'deleted', 'completed'):
+                    if ev_data.get('status') not in ('cancelled', 'deleted', 'completed'):
                         try:
                             ch_id_int = int(ch_id)
                             channel = self.bot.get_channel(ch_id_int)
@@ -101,15 +102,27 @@ class Listeners(commands.Cog):
                                     channel = await self.bot.fetch_channel(ch_id_int)
                                 except Exception:
                                     channel = None
-                            if channel:
-                                asyncio.create_task(schedule_ten_minute_reminder(
-                                    ev_id,
-                                    ev_data.get('team1_captain'),
-                                    ev_data.get('team2_captain'),
-                                    ev_data.get('judge'),
-                                    channel,
-                                    dt
-                                ))
+
+                            cutoff_2m = dt + datetime.timedelta(minutes=2)
+                            if now_utc < cutoff_2m:
+                                if channel:
+                                    asyncio.create_task(schedule_ten_minute_reminder(
+                                        ev_id,
+                                        ev_data.get('team1_captain'),
+                                        ev_data.get('team2_captain'),
+                                        ev_data.get('judge'),
+                                        channel,
+                                        dt
+                                    ))
+                            else:
+                                # Event is past 2 mins of start time: close unassigned buttons if any
+                                guild = channel.guild if channel else None
+                                if not guild and ev_data.get('guild_id'):
+                                    try:
+                                        guild = self.bot.get_guild(int(ev_data['guild_id']))
+                                    except Exception:
+                                        pass
+                                asyncio.create_task(close_unassigned_schedule_buttons(ev_id, guild))
                         except Exception as rem_err:
                             print(f"Error rescheduling reminder for {ev_id}: {rem_err}")
 

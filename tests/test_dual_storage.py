@@ -69,6 +69,9 @@ if 'discord' not in sys.modules:
                     if getattr(val, '__discord_ui_button__', False):
                         btn = MagicMock()
                         btn.custom_id = getattr(val, 'custom_id', attr)
+                        btn.disabled = getattr(val, 'disabled', False)
+                        btn.label = getattr(val, 'label', '')
+                        btn.style = getattr(val, 'style', 1)
                         setattr(self, attr, btn)
                         self.children.append(btn)
 
@@ -76,6 +79,9 @@ if 'discord' not in sys.modules:
             def decorator(func):
                 func.__discord_ui_button__ = True
                 func.custom_id = kwargs.get('custom_id')
+                func.disabled = kwargs.get('disabled', False)
+                func.label = kwargs.get('label', '')
+                func.style = kwargs.get('style', 1)
                 return func
             return decorator
 
@@ -90,6 +96,7 @@ if 'discord' not in sys.modules:
         mock_discord.ext = MagicMock()
         mock_discord.ext.commands = MagicMock()
         sys.modules['discord'] = mock_discord
+        sys.modules['discord.ui'] = mock_discord.ui
         sys.modules['discord.app_commands'] = mock_discord.app_commands
         sys.modules['discord.ext'] = mock_discord.ext
         sys.modules['discord.ext.commands'] = mock_discord.ext.commands

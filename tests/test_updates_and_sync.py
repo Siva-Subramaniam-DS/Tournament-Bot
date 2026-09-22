@@ -65,6 +65,9 @@ if 'discord' not in sys.modules:
                     if getattr(val, '__discord_ui_button__', False):
                         btn = MagicMock()
                         btn.custom_id = getattr(val, 'custom_id', attr)
+                        btn.disabled = getattr(val, 'disabled', False)
+                        btn.label = getattr(val, 'label', '')
+                        btn.style = getattr(val, 'style', 1)
                         setattr(self, attr, btn)
                         self.children.append(btn)
 
@@ -72,6 +75,9 @@ if 'discord' not in sys.modules:
             def decorator(func):
                 func.__discord_ui_button__ = True
                 func.custom_id = kwargs.get('custom_id')
+                func.disabled = kwargs.get('disabled', False)
+                func.label = kwargs.get('label', '')
+                func.style = kwargs.get('style', 1)
                 return func
             return decorator
 
@@ -86,6 +92,7 @@ if 'discord' not in sys.modules:
         mock_discord.ext = MagicMock()
         mock_discord.ext.commands = MagicMock()
         sys.modules['discord'] = mock_discord
+        sys.modules['discord.ui'] = mock_discord.ui
         sys.modules['discord.app_commands'] = mock_discord.app_commands
         sys.modules['discord.ext'] = mock_discord.ext
         sys.modules['discord.ext.commands'] = mock_discord.ext.commands
@@ -385,6 +392,178 @@ class TestTournamentBotUpdates(unittest.TestCase):
         self.assertEqual(view.current_tab, "overview")
         self.assertEqual(len(view.children), 4)
 
+    def test_staff_stats_hosting_sync_and_persistence(self):
+        import os
+        import json
+        import asyncio
+        from core.database import load_all_staff_stats_from_supabase, STAFF_STATS_CACHE, get_guild_staff_stats
+
+        test_guild = 999888777
+        test_user = "123456789"
+        mock_data = {
+            str(test_guild): {
+                test_user: {
+                    "name": "SuperStaff",
+                    "judge_count": 7,
+                    "recorder_count": 4,
+                    "judge_and_recorder_count": 2,
+                    "total_count": 13,
+                    "last_active": "2026-09-22T07:00:00"
+                }
+            }
+        }
+        # Save mock data to staff_stats.json
+        with open('staff_stats.json', 'w', encoding='utf-8') as f:
+            json.dump(mock_data, f)
+
+        try:
+            # Run the sync function
+            asyncio.run(load_all_staff_stats_from_supabase())
+            
+            # Verify cache has been populated from hosting database JSON
+            stats = get_guild_staff_stats(test_guild)
+            self.assertIn(test_user, stats)
+            self.assertEqual(stats[test_user]["judge_count"], 7)
+            self.assertEqual(stats[test_user]["recorder_count"], 4)
+            self.assertEqual(stats[test_user]["judge_and_recorder_count"], 2)
+            self.assertEqual(stats[test_user]["total_count"], 13)
+        finally:
+            # Clean up test entry
+            if str(test_guild) in STAFF_STATS_CACHE:
+                del STAFF_STATS_CACHE[str(test_guild)]
+            with open('staff_stats.json', 'w', encoding='utf-8') as f:
+                json.dump({}, f)
+
+    def test_take_schedule_button_2min_cutoff(self):
+        import pytz
+        from cogs.staff import TakeScheduleButton
+        from core.state import scheduled_events
+
+        ev_id = "test_cutoff_event"
+        now = datetime.datetime.now(pytz.UTC)
+
+        # Case 1: Event in the future (not started)
+        scheduled_events[ev_id] = {
+            'datetime': now + datetime.timedelta(minutes=30),
+            'judge': None,
+            'recorder': None
+        }
+        view_future = TakeScheduleButton(ev_id, None, None)
+        self.assertFalse(view_future._is_event_started())
+        for child in view_future.children:
+            if child.custom_id and "take_schedule" in child.custom_id:
+                self.assertFalse(child.disabled)
+                self.assertEqual(child.label, "Take Schedule")
+            elif child.custom_id and "record" in child.custom_id:
+                self.assertFalse(child.disabled)
+                self.assertEqual(child.label, "Record")
+
+        # Case 2: Event started 1 min ago (within 2-minute window)
+        scheduled_events[ev_id]['datetime'] = now - datetime.timedelta(minutes=1)
+        view_within_2m = TakeScheduleButton(ev_id, None, None)
+        self.assertFalse(view_within_2m._is_event_started())
+
+        # Case 3: Event started 3 mins ago (past 2-minute window) - Neither claimed
+        scheduled_events[ev_id]['datetime'] = now - datetime.timedelta(minutes=3)
+        view_past_cutoff = TakeScheduleButton(ev_id, None, None)
+        self.assertTrue(view_past_cutoff._is_event_started())
+        for child in view_past_cutoff.children:
+            self.assertTrue(child.disabled)
+            self.assertEqual(child.label, "Closed")
+
+        # Case 4: Event started 3 mins ago - Judge was taken, but Record was not
+        mock_judge = MagicMock()
+        mock_judge.display_name = "JudgeUser"
+        mock_judge.id = 111222
+        scheduled_events[ev_id]['judge'] = mock_judge
+        scheduled_events[ev_id]['recorder'] = None
+        view_judge_taken = TakeScheduleButton(ev_id, None, None)
+        for child in view_judge_taken.children:
+            if child.custom_id and "take_schedule" in child.custom_id:
+                self.assertTrue(child.disabled)
+                self.assertEqual(child.label, "🙋 Assigned")
+            elif child.custom_id and "record" in child.custom_id:
+                self.assertTrue(child.disabled)
+                self.assertEqual(child.label, "Closed")
+
+        # Cleanup
+        del scheduled_events[ev_id]
+
+    def test_work_counted_only_on_result(self):
+        from core.database import update_staff_stats, get_guild_staff_stats, STAFF_STATS_CACHE
+
+        test_guild = 888777666
+        STAFF_STATS_CACHE[str(test_guild)] = {}
+
+        mock_user = MagicMock()
+        mock_user.id = 555666
+        mock_user.display_name = "JudgeWorker"
+
+        # 1. Update stats for judge on result
+        update_staff_stats(mock_user, "judge", test_guild)
+        stats = get_guild_staff_stats(test_guild)
+        self.assertEqual(stats[str(mock_user.id)]["judge_count"], 1)
+        self.assertEqual(stats[str(mock_user.id)]["recorder_count"], 0)
+        self.assertEqual(stats[str(mock_user.id)]["total_count"], 1)
+
+        # 2. Update stats for recorder on result
+        update_staff_stats(mock_user, "recorder", test_guild)
+        stats = get_guild_staff_stats(test_guild)
+        self.assertEqual(stats[str(mock_user.id)]["judge_count"], 1)
+        self.assertEqual(stats[str(mock_user.id)]["recorder_count"], 1)
+        self.assertEqual(stats[str(mock_user.id)]["total_count"], 2)
+
+        # Cleanup
+        if str(test_guild) in STAFF_STATS_CACHE:
+            del STAFF_STATS_CACHE[str(test_guild)]
+
+    def test_close_unassigned_schedule_buttons(self):
+        import pytz
+        import asyncio
+        from core.state import scheduled_events
+        from cogs.events import close_unassigned_schedule_buttons
+
+        ev_id = "test_close_btns_event"
+        now = datetime.datetime.now(pytz.UTC)
+        scheduled_events[ev_id] = {
+            'datetime': now - datetime.timedelta(minutes=5),
+            'judge': None,
+            'recorder': None,
+            'schedule_channel_id': 12345,
+            'schedule_message_id': 67890,
+            'team1_captain': None,
+            'team2_captain': None
+        }
+
+        guild = MagicMock()
+        channel = MagicMock()
+        msg = MagicMock()
+        msg.edit_calls = []
+
+        async def mock_fetch_msg(mid):
+            return msg
+
+        async def mock_edit(**kwargs):
+            msg.edit_calls.append(kwargs)
+            return True
+
+        channel.fetch_message = mock_fetch_msg
+        msg.edit = mock_edit
+        guild.get_channel.return_value = channel
+
+        asyncio.run(close_unassigned_schedule_buttons(ev_id, guild))
+        self.assertEqual(len(msg.edit_calls), 1)
+        edited_view = msg.edit_calls[0].get('view')
+        self.assertIsNotNone(edited_view)
+        for child in edited_view.children:
+            self.assertTrue(child.disabled)
+            self.assertEqual(child.label, "Closed")
+
+        # Cleanup
+        del scheduled_events[ev_id]
+
 if __name__ == '__main__':
     unittest.main()
+
+
 
