@@ -362,18 +362,33 @@ class EmbedContentModal(discord.ui.Modal, title="💬 Add Content"):
 # COMMAND GROUPS: PURGE & RECURRING
 # ===========================================================================
 
+async def _safe_followup(interaction: discord.Interaction, content: str, ephemeral: bool = True):
+    try:
+        return await interaction.followup.send(content, ephemeral=ephemeral)
+    except (discord.NotFound, discord.HTTPException):
+        pass
+    except Exception as e:
+        print(f"Error sending followup: {e}")
+
 purge_group = app_commands.Group(name="purge", description="Delete messages from a channel")
 
 @purge_group.command(name="all", description="Delete ALL messages in the current channel")
 @with_guild_context
 async def purge_all(interaction: discord.Interaction):
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except (discord.NotFound, discord.InteractionResponded):
+        pass
+    except Exception as e:
+        print(f"Error deferring purge_all interaction: {e}")
+
     if not interaction.guild:
-        await interaction.response.send_message("❌ Server only.", ephemeral=True)
+        await _safe_followup(interaction, "❌ Server only.", ephemeral=True)
         return
     if not (interaction.user.guild_permissions.manage_messages or interaction.user.guild_permissions.administrator):
-        await interaction.response.send_message("❌ You need **Manage Messages** permission.", ephemeral=True)
+        await _safe_followup(interaction, "❌ You need **Manage Messages** permission.", ephemeral=True)
         return
-    await interaction.response.defer(ephemeral=True)
+
     channel = interaction.channel
     deleted = 0
     try:
@@ -384,10 +399,10 @@ async def purge_all(interaction: discord.Interaction):
                 break
             await asyncio.sleep(1)
     except discord.Forbidden:
-        await interaction.followup.send("❌ No permission to delete messages here.", ephemeral=True)
+        await _safe_followup(interaction, "❌ No permission to delete messages here.", ephemeral=True)
         return
     except Exception as e:
-        await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
+        await _safe_followup(interaction, f"❌ Error: {e}", ephemeral=True)
         return
     confirm = await channel.send(embed=discord.Embed(
         title="🗑️ Channel Purged",
@@ -397,23 +412,30 @@ async def purge_all(interaction: discord.Interaction):
     await asyncio.sleep(5)
     try: await confirm.delete()
     except Exception: pass
-    await interaction.followup.send(f"✅ Purged **{deleted}** messages from {channel.mention}.", ephemeral=True)
+    await _safe_followup(interaction, f"✅ Purged **{deleted}** messages from {channel.mention}.", ephemeral=True)
 
 
 @purge_group.command(name="amount", description="Delete a specified number of messages (1-1000)")
 @app_commands.describe(count="Number of messages to delete (1-1000)")
 @with_guild_context
 async def purge_amount(interaction: discord.Interaction, count: int):
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except (discord.NotFound, discord.InteractionResponded):
+        pass
+    except Exception as e:
+        print(f"Error deferring purge_amount interaction: {e}")
+
     if not interaction.guild:
-        await interaction.response.send_message("❌ Server only.", ephemeral=True)
+        await _safe_followup(interaction, "❌ Server only.", ephemeral=True)
         return
     if not (interaction.user.guild_permissions.manage_messages or interaction.user.guild_permissions.administrator):
-        await interaction.response.send_message("❌ You need **Manage Messages** permission.", ephemeral=True)
+        await _safe_followup(interaction, "❌ You need **Manage Messages** permission.", ephemeral=True)
         return
     if count < 1 or count > 1000:
-        await interaction.response.send_message("❌ Provide a number between **1** and **1000**.", ephemeral=True)
+        await _safe_followup(interaction, "❌ Provide a number between **1** and **1000**.", ephemeral=True)
         return
-    await interaction.response.defer(ephemeral=True)
+
     channel = interaction.channel
     deleted = 0
     remaining = count
@@ -427,10 +449,10 @@ async def purge_amount(interaction: discord.Interaction, count: int):
                 break
             await asyncio.sleep(1)
     except discord.Forbidden:
-        await interaction.followup.send("❌ No permission to delete messages here.", ephemeral=True)
+        await _safe_followup(interaction, "❌ No permission to delete messages here.", ephemeral=True)
         return
     except Exception as e:
-        await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
+        await _safe_followup(interaction, f"❌ Error: {e}", ephemeral=True)
         return
     confirm = await channel.send(embed=discord.Embed(
         title="🗑️ Messages Purged",
@@ -440,23 +462,30 @@ async def purge_amount(interaction: discord.Interaction, count: int):
     await asyncio.sleep(5)
     try: await confirm.delete()
     except Exception: pass
-    await interaction.followup.send(f"✅ Deleted **{deleted}** message(s) from {channel.mention}.", ephemeral=True)
+    await _safe_followup(interaction, f"✅ Deleted **{deleted}** message(s) from {channel.mention}.", ephemeral=True)
 
 
 @purge_group.command(name="word", description="Delete messages containing a specific word or phrase")
 @app_commands.describe(keyword="Word or phrase to search and delete")
 @with_guild_context
 async def purge_word(interaction: discord.Interaction, keyword: str):
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except (discord.NotFound, discord.InteractionResponded):
+        pass
+    except Exception as e:
+        print(f"Error deferring purge_word interaction: {e}")
+
     if not interaction.guild:
-        await interaction.response.send_message("❌ Server only.", ephemeral=True)
+        await _safe_followup(interaction, "❌ Server only.", ephemeral=True)
         return
     if not (interaction.user.guild_permissions.manage_messages or interaction.user.guild_permissions.administrator):
-        await interaction.response.send_message("❌ You need **Manage Messages** permission.", ephemeral=True)
+        await _safe_followup(interaction, "❌ You need **Manage Messages** permission.", ephemeral=True)
         return
     if not keyword.strip():
-        await interaction.response.send_message("❌ Please provide a keyword.", ephemeral=True)
+        await _safe_followup(interaction, "❌ Please provide a keyword.", ephemeral=True)
         return
-    await interaction.response.defer(ephemeral=True)
+
     channel = interaction.channel
     keyword_lower = keyword.strip().lower()
     deleted = 0
@@ -472,10 +501,10 @@ async def purge_word(interaction: discord.Interaction, keyword: str):
                 break
             await asyncio.sleep(1)
     except discord.Forbidden:
-        await interaction.followup.send("❌ No permission to delete messages here.", ephemeral=True)
+        await _safe_followup(interaction, "❌ No permission to delete messages here.", ephemeral=True)
         return
     except Exception as e:
-        await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
+        await _safe_followup(interaction, f"❌ Error: {e}", ephemeral=True)
         return
     confirm = await channel.send(embed=discord.Embed(
         title="🗑️ Keyword Purge Complete",
@@ -485,7 +514,7 @@ async def purge_word(interaction: discord.Interaction, keyword: str):
     await asyncio.sleep(5)
     try: await confirm.delete()
     except Exception: pass
-    await interaction.followup.send(f"✅ Deleted **{deleted}** message(s) matching `{keyword}` from {channel.mention}.", ephemeral=True)
+    await _safe_followup(interaction, f"✅ Deleted **{deleted}** message(s) matching `{keyword}` from {channel.mention}.", ephemeral=True)
 
 
 recurring_group = app_commands.Group(name="recurring", description="Manage recurring embeds in channels")

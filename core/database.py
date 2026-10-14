@@ -9,9 +9,11 @@ import datetime
 from typing import Optional, Union, Any
 import pytz
 import discord
+from discord import app_commands
 import requests
 from supabase import create_client, Client
 
+from core.emojis import EMOJIS
 from core.config import (
     BASE_DIR, SUPABASE_URL, SUPABASE_KEY, DEFAULT_CHANNEL_IDS, DEFAULT_ROLE_IDS
 )
@@ -279,8 +281,8 @@ def _sync_save_guild_config_to_supabase(guild_id: int, cfg: dict):
         "Challonge_Role_ID": str(roles.get('challonge_role') or ""),
         "Organization_Name": org_name,
         "Tournament_System_Name": sys_name,
-        "organization_name": org_name,
-        "tournament_system_name": sys_name,
+        # BUG 11 FIX: Removed duplicate snake_case entries (organization_name / tournament_system_name)
+        # which caused Supabase to receive two values for the same logical column on every upsert.
         "server_logo_path": logo_path,
         "server_logo_url": logo_url,
         "player_info_link": str(cfg.get('player_info_link', '') or ''),
@@ -992,6 +994,23 @@ def recalculate_guild_staff_stats(guild_id: int) -> dict:
 
 
 # ===========================================================================================
+# SCORE PARSING HELPERS
+# ===========================================================================================
+
+def _safe_score_int(v) -> Optional[int]:
+    """BUG 12 FIX: Robustly convert a score value to int.
+    Handles: plain int, float, '3', '3.0', '3-2' (takes first number), None, 'W', etc.
+    Returns None for non-parseable values instead of crashing or silently returning None.
+    """
+    if v is None:
+        return None
+    try:
+        # Take the first part before '-' (e.g., "3-2" → 3), then parse as float → int
+        return int(float(str(v).split('-')[0].strip()))
+    except (ValueError, TypeError):
+        return None
+
+# ===========================================================================================
 # SCHEDULED EVENTS & DEADLINES PERSISTENCE
 # ===========================================================================================
 
@@ -1368,7 +1387,7 @@ async def save_event_to_supabase(event_id: str, event_data: dict):
 
         if target_table == "Matches":
             round_val = event_data.get('round', '')
-            round_int = int(round_val) if str(round_val).isdigit() else 1
+            round_int = parse_round_to_int(round_val)  # BUG 17 FIX: handles negative losers-bracket rounds (isdigit() fails on negatives)
             w_score = event_data.get('winner_score') if event_data.get('winner_score') is not None else event_data.get('team1_score')
             l_score = event_data.get('loser_score') if event_data.get('loser_score') is not None else event_data.get('team2_score')
 
@@ -1402,17 +1421,21 @@ async def save_event_to_supabase(event_id: str, event_data: dict):
                 "Judge_Name": str(j_name_str or ''),
                 "Recorder_ID": str(r_id) if r_id else None,
                 "Recorder_Name": str(r_name_str or ''),
-                "Team1_Score": int(w_score) if w_score is not None and str(w_score).isdigit() else None,
-                "Team2_Score": int(l_score) if l_score is not None and str(l_score).isdigit() else None,
+                # BUG 12 FIX: isdigit() silently drops scores like "3.0", floats, or "3-2" strings.
+                # _safe_score_int handles int/float/string gracefully.
+                "Team1_Score": _safe_score_int(w_score),
+                "Team2_Score": _safe_score_int(l_score),
                 "Status": str(event_data.get('status', 'scheduled')).lower(),
                 "Channel_ID": str(event_data.get('channel_id', '')),
                 "recording_link": str(event_data.get('recording_link', '')),
                 "recorder_link": str(event_data.get('recorder_link', '')),
                 "judge_link": str(event_data.get('judge_link', '')),
-                "results_message_id": str(event_data.get('results_message_id', '')),
-                "results_channel_id": str(event_data.get('results_channel_id', '')),
-                "match_results_message_id": str(event_data.get('match_results_message_id', '')),
-                "match_results_channel_id": str(event_data.get('match_results_channel_id', '')),
+                # BUG 13+14 FIX: Use None explicitly for missing/falsy IDs instead of
+                # str(None) which produces the string "None" and corrupts integer columns in Supabase.
+                "results_message_id": event_data.get('results_message_id') or None,
+                "results_channel_id": event_data.get('results_channel_id') or None,
+                "match_results_message_id": event_data.get('match_results_message_id') or None,
+                "match_results_channel_id": event_data.get('match_results_channel_id') or None,
                 "Winner_ID": str(event_data.get('winner_id')) if event_data.get('winner_id') else None,
                 "Remarks": str(event_data.get('remarks') or ''),
                 "Disqualified": bool(event_data.get('disqualified') or False),
@@ -1773,7 +1796,7 @@ def save_scheduled_deadline(dl_id: str, dl_data: dict):
                 "Deadline_Time": dt_iso,
                 "Created_At": datetime.datetime.utcnow().isoformat()
             }
-            supabase_safe_upsert("Deadlines", dl_payload)
+            supabase_safe_upsert("Deadlines", dl_payload, on_conflict="Guild_ID,Tournament_ID,Round")  # BUG 9 FIX: added on_conflict to prevent duplicate rows
         except Exception as e:
             print(f"[Supabase] Failed to upsert deadline to Supabase: {e}")
 
@@ -2094,8 +2117,8 @@ def _sync_update_challonge_match(bracket_link: str, api_key: str, match_id: str,
         return False, resp.text
     return True, None
 
-async def update_challonge_match(bracket_link: str, api_key: str, match_id: str, winner_id: str, scores_csv: str):
-    return await asyncio.to_thread(_sync_update_challonge_match, bracket_link, api_key, match_id, winner_id, scores_csv)
+# BUG 1 FIX: Removed duplicate async def update_challonge_match wrapper here.
+# The canonical aiohttp-based version is defined below at the EMBED THUMBNAIL RESOLVER section.
 
 def extract_discord_id_from_text(text: Union[str, int, float, None]) -> Optional[int]:
     """
@@ -2549,10 +2572,14 @@ async def load_all_staff_stats_from_supabase():
             print(f"Error loading all staff stats from Supabase: {e}")
 
 
+# ===========================================================================================
+# AUTOCOMPLETE & EMBED UPDATE HELPERS
+# ===========================================================================================
+
 async def tournament_autocomplete(
     interaction: discord.Interaction,
     current: str
-) -> list[discord.app_commands.Choice[str]]:
+) -> list[app_commands.Choice[str]]:
     if not interaction.guild_id:
         return []
     try:
@@ -2564,32 +2591,10 @@ async def tournament_autocomplete(
             name = t_cfg.get("name") or t_id
             display = name.strip()
             if not current or current.lower() in display.lower() or current.lower() in t_id.lower():
-                choices.append(discord.app_commands.Choice(name=display[:100], value=t_id[:100]))
+                choices.append(app_commands.Choice(name=display[:100], value=t_id))
         return choices[:25]
     except Exception as e:
         print(f"Error in tournament_autocomplete: {e}")
-        return []
-
-async def match_autocomplete(
-    interaction: discord.Interaction,
-    current: str
-) -> list[discord.app_commands.Choice[str]]:
-    if not interaction.guild_id:
-        return []
-    try:
-        choices = []
-        curr_clean = (current or "").strip().lower()
-        for ev_id, ev_data in scheduled_events.items():
-            if ev_data.get('guild_id') and str(ev_data.get('guild_id')) != str(interaction.guild_id):
-                continue
-            m_name = ev_data.get('match_name') or f"{ev_data.get('team1_name', 'Team 1')} vs {ev_data.get('team2_name', 'Team 2')}"
-            t_name = ev_data.get('tournament', '')
-            display = m_name
-            if not curr_clean or curr_clean in display.lower() or curr_clean in ev_id.lower():
-                choices.append(discord.app_commands.Choice(name=display[:100], value=ev_id[:100]))
-        return choices[:25]
-    except Exception as e:
-        print(f"Error in match_autocomplete: {e}")
         return []
 
 def format_links_markdown(raw_val: str, label_prefix: str = "Link") -> str:
@@ -2605,11 +2610,9 @@ def format_links_markdown(raw_val: str, label_prefix: str = "Link") -> str:
 async def update_results_embed_with_links(guild: discord.Guild, ev_data: dict):
     if not guild or not ev_data:
         return
-        
     res_msg_id = ev_data.get('results_message_id')
     res_chan_id = ev_data.get('results_channel_id')
     
-    # 1. Auto-resolve results channel: tournament-specific channel takes priority
     channel = None
     t_id = ev_data.get('tournament') or ev_data.get('tournament_id')
     if t_id:
@@ -2645,7 +2648,6 @@ async def update_results_embed_with_links(guild: discord.Guild, ev_data: dict):
         except Exception:
             msg = None
 
-    # If message not found by ID, search recent results messages for match
     if not msg:
         t1 = str(ev_data.get('team1_name') or '').lower()
         t2 = str(ev_data.get('team2_name') or '').lower()
@@ -2666,12 +2668,7 @@ async def update_results_embed_with_links(guild: discord.Guild, ev_data: dict):
 
     if not msg or not msg.embeds:
         return
-
-    try:
-        from core.emojis import EMOJIS
-    except Exception:
-        EMOJIS = {}
-
+        
     rec_emoji = EMOJIS.get('recorder', '📹')
     jdg_emoji = EMOJIS.get('judge', '⚖️')
 
@@ -2684,14 +2681,10 @@ async def update_results_embed_with_links(guild: discord.Guild, ev_data: dict):
         jdg_link = ev_data.get('judge_link')
         
         link_lines = []
-        if general_link:
-            link_lines.append(f"{rec_emoji} **Recording:** {format_links_markdown(general_link, 'Link')}")
-        if rec_link:
-            link_lines.append(f"{rec_emoji} **Recorder VOD:** {format_links_markdown(rec_link, 'Link')}")
-        if jdg_link:
-            link_lines.append(f"{jdg_emoji} **Judge VOD:** {format_links_markdown(jdg_link, 'Link')}")
+        if general_link: link_lines.append(f"{rec_emoji} **Recording:** {format_links_markdown(general_link, 'Link')}")
+        if rec_link:     link_lines.append(f"{rec_emoji} **Recorder VOD:** {format_links_markdown(rec_link, 'Link')}")
+        if jdg_link:     link_lines.append(f"{jdg_emoji} **Judge VOD:** {format_links_markdown(jdg_link, 'Link')}")
         
-        # Filter out existing recording/VOD fields
         clean_fields = []
         remarks_field = None
         ss_field = None
@@ -2710,7 +2703,6 @@ async def update_results_embed_with_links(guild: discord.Guild, ev_data: dict):
         for f in clean_fields:
             embed.add_field(name=f.name, value=f.value, inline=f.inline)
 
-        # Place VOD links directly before Remarks, or before Screenshots
         if link_lines:
             vod_title = f"{rec_emoji} Recordings / VODs"
             embed.add_field(name=vod_title, value="\n".join(link_lines), inline=False)
@@ -2727,7 +2719,7 @@ async def update_results_embed_with_links(guild: discord.Guild, ev_data: dict):
     except Exception as e:
         print(f"Error updating result embed with links: {e}")
 
-    # Also update ticket channel message if saved
+    # Also update ticket channel embed if available
     ticket_msg_id = ev_data.get('ticket_results_message_id')
     ticket_chan_id = ev_data.get('channel_id')
     if ticket_msg_id and ticket_chan_id:
@@ -2739,6 +2731,7 @@ async def update_results_embed_with_links(guild: discord.Guild, ev_data: dict):
                     await _apply_links_to_message(t_msg)
         except Exception:
             pass
+
 
 
 # ===========================================================================================

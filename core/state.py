@@ -502,6 +502,8 @@ def get_user_permission_level(user_roles, user_id: int = None, guild_id: int = N
         
         if has_role("head_organizer"):
             return "organizer"
+        elif has_role("organizer"):  # BUG 5 FIX: plain organizer role was never checked
+            return "organizer"
         elif has_role("helper_team"):
             return "helper"
         elif has_role("judge"):
@@ -769,74 +771,20 @@ def update_embed_title_with_checkmark(embed: discord.Embed) -> bool:
         print(f"Error updating embed title with checkmark: {e}")
         return False
 
+# BUG 2+3 FIX: load_scheduled_events and save_scheduled_events are defined canonically
+# in core/database.py with full timezone normalization and 7-day completed-event retention.
+# Duplicates here have been removed. Cogs import these from core.state, so we provide
+# lazy-loading shims that delegate to database.py at call time (avoids circular import
+# since database.py already imports from state.py at module level).
 def load_scheduled_events() -> dict:
-    """Load scheduled events from local JSON storage into the shared dictionary, pruning finished events to save memory."""
-    global scheduled_events
-    path = os.path.join(BASE_DIR, 'scheduled_events.json')
-    if os.path.exists(path):
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                import datetime
-                active_events = {}
-                for event_id, event_data in data.items():
-                    if not isinstance(event_data, dict):
-                        continue
-                    if str(event_data.get('status', '')).lower() == 'completed':
-                        continue
-                    if 'datetime' in event_data and isinstance(event_data['datetime'], str):
-                        try:
-                            event_data['datetime'] = datetime.datetime.fromisoformat(event_data['datetime'])
-                        except Exception:
-                            pass
-                    active_events[event_id] = event_data
-                scheduled_events.clear()
-                scheduled_events.update(active_events)
-                print(f"Loaded {len(scheduled_events)} active scheduled events from local fallback")
-        except Exception as e:
-            print(f"Error loading scheduled_events.json: {e}")
-    return scheduled_events
+    """Shim: delegates to core.database.load_scheduled_events (canonical version)."""
+    from core.database import load_scheduled_events as _db_load
+    return _db_load()
 
 def save_scheduled_events(event_id: Optional[str] = None):
-    """Save scheduled events to local JSON and trigger background Supabase synchronization."""
-    import json
-    import os
-    import datetime
-    import asyncio
-    from core.config import BASE_DIR
-    try:
-        data_to_save = {}
-        for ev_id, ev_data in scheduled_events.items():
-            event_copy = ev_data.copy()
-            if 'datetime' in event_copy and isinstance(event_copy['datetime'], datetime.datetime):
-                event_copy['datetime'] = event_copy['datetime'].isoformat()
-            if 'team1_captain' in event_copy and hasattr(event_copy['team1_captain'], 'id'):
-                event_copy['team1_captain'] = event_copy['team1_captain'].id
-            if 'team2_captain' in event_copy and hasattr(event_copy['team2_captain'], 'id'):
-                event_copy['team2_captain'] = event_copy['team2_captain'].id
-            if 'judge' in event_copy and hasattr(event_copy['judge'], 'id'):
-                event_copy['judge'] = event_copy['judge'].id
-            if 'recorder' in event_copy and hasattr(event_copy['recorder'], 'id'):
-                event_copy['recorder'] = event_copy['recorder'].id
-            data_to_save[ev_id] = event_copy
-        path = os.path.join(BASE_DIR, 'scheduled_events.json')
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(data_to_save, f, indent=4, ensure_ascii=False)
-
-        # Trigger Supabase background save if loop is running
-        try:
-            from core.database import save_event_to_supabase, supabase_client
-            if supabase_client:
-                loop = asyncio.get_running_loop()
-                if event_id and event_id in scheduled_events:
-                    loop.create_task(save_event_to_supabase(event_id, scheduled_events[event_id]))
-                elif not event_id and scheduled_events:
-                    latest_id = list(scheduled_events.keys())[-1]
-                    loop.create_task(save_event_to_supabase(latest_id, scheduled_events[latest_id]))
-        except Exception:
-            pass
-    except Exception as e:
-        print(f"Error saving scheduled events: {e}")
+    """Shim: delegates to core.database.save_scheduled_events (canonical version with Supabase sync)."""
+    from core.database import save_scheduled_events as _db_save
+    return _db_save(event_id)
 
 def save_staff_stats():
     from core.database import save_guild_staff_stats, get_guild_staff_stats
@@ -858,11 +806,12 @@ def get_current_rules(guild_id: int = None) -> str:
 
 def set_rules_content(guild_id: int, content: str):
     from core.database import get_guild_rules, save_guild_rules
-    g_id = guild_id or current_guild_id.get()
-    if g_id:
-        rules = get_guild_rules(g_id)
+    # BUG 19 FIX: guild_id is a required int parameter, not Optional.
+    # The old `guild_id or current_guild_id.get()` fallback was dead code.
+    if guild_id:
+        rules = get_guild_rules(guild_id)
         rules['content'] = content
-        save_guild_rules(g_id, rules)
+        save_guild_rules(guild_id, rules)
 
 def is_event_over(event_data: dict, grace_hours: float = 2.0) -> bool:
     """Determine if a scheduled event is already completed, closed, or past its scheduled time window."""

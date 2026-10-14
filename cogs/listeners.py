@@ -49,7 +49,7 @@ class Listeners(commands.Cog):
         # Initialize dynamic emojis using connected bot client
         if init_emojis_from_bot:
             try:
-                init_emojis_from_bot(self.bot)
+                await init_emojis_from_bot(self.bot)
             except Exception as emoji_init_err:
                 print(f"Warning: Failed to init dynamic emojis: {emoji_init_err}")
 

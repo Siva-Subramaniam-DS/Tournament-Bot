@@ -34,7 +34,9 @@ from core.database import (
     supabase_client, load_guild_tournaments, save_guild_tournaments,
     get_guild_config, get_active_tournament_config,
     save_event_to_supabase, log_bot_activity, sheetdb_post,
-    update_staff_stats, get_guild_staff_stats, save_guild_staff_stats
+    update_staff_stats, get_guild_staff_stats, save_guild_staff_stats,
+    resolve_embed_thumbnail, get_thumbnail_url_from_channel,
+    format_links_markdown, update_results_embed_with_links
 )
 
 from core.image_generator import (
@@ -215,182 +217,12 @@ def get_tournament_attendance_channel(guild: discord.Guild, tournament: str = No
     return None
 
 
-async def resolve_embed_thumbnail(guild_id: int, embed: discord.Embed, fallback_to_captain_avatar: Optional[discord.Member] = None) -> tuple[Optional[discord.File], bool]:
-    cfg = get_guild_config(guild_id)
-    logo_filename = cfg.get('server_logo_path')
-    if logo_filename and os.path.exists(logo_filename):
-        try:
-            with open(logo_filename, "rb") as f:
-                logo_data = f.read()
-            embed.set_thumbnail(url="attachment://server_logo.png")
-            file_obj = discord.File(fp=io.BytesIO(logo_data), filename="server_logo.png")
-            return file_obj, True
-        except Exception as e:
-            print(f"Error loading server logo path {logo_filename}: {e}")
+# BUG 7 FIX: resolve_embed_thumbnail is now imported from core.database (above) which has
+# full bot_client support for fetching thumbnails from the configured thumbnail channel.
+# The old events.py-local version lacked bot_client and silently fell back to the default logo.
 
-    t_cfg = get_active_tournament_config(guild_id)
-    if t_cfg:
-        thumb_chan_id = t_cfg.get('thumbnail')
-        if thumb_chan_id:
-            try:
-                thumb_url = await get_thumbnail_url_from_channel(int(thumb_chan_id))
-                if thumb_url:
-                    embed.set_thumbnail(url=thumb_url)
-                    return None, False
-            except Exception as e:
-                print(f"Error resolving thumbnail from channel {thumb_chan_id}: {e}")
-
-    default_logo_path = os.path.join(BASE_DIR, "tournament_bot_logo.png")
-    if os.path.exists(default_logo_path):
-        try:
-            with open(default_logo_path, "rb") as f:
-                logo_data = f.read()
-            embed.set_thumbnail(url="attachment://tournament_bot_logo.png")
-            file_obj = discord.File(fp=io.BytesIO(logo_data), filename="tournament_bot_logo.png")
-            return file_obj, True
-        except Exception as e:
-            print(f"Error loading default logo: {e}")
-
-    if fallback_to_captain_avatar and hasattr(fallback_to_captain_avatar, 'display_avatar'):
-        embed.set_thumbnail(url=fallback_to_captain_avatar.display_avatar.url)
-        return None, False
-
-    return None, False
-
-def format_links_markdown(raw_val: str, label_prefix: str = "Link") -> str:
-    if not raw_val:
-        return ""
-    links = [l.strip() for l in str(raw_val).split(',') if l.strip()]
-    if not links:
-        return ""
-    if len(links) == 1:
-        return f"[Watch Here]({links[0]})"
-    return ", ".join(f"[{label_prefix}{idx}]({url})" for idx, url in enumerate(links, start=1))
-
-async def update_results_embed_with_links(guild: discord.Guild, ev_data: dict):
-    if not guild or not ev_data:
-        return
-    res_msg_id = ev_data.get('results_message_id')
-    res_chan_id = ev_data.get('results_channel_id')
-    
-    channel = None
-    t_id = ev_data.get('tournament') or ev_data.get('tournament_id')
-    if t_id:
-        try:
-            channel = get_tournament_results_channel(guild, t_id)
-        except Exception:
-            channel = None
-
-    if not channel and res_chan_id:
-        try:
-            channel = guild.get_channel(int(res_chan_id)) or await guild.fetch_channel(int(res_chan_id))
-        except Exception:
-            channel = None
-            
-    if not channel:
-        cfg = get_guild_config(guild.id)
-        candidate_chan_id = cfg.get('channel_ids', {}).get('results') or cfg.get('channel_ids', {}).get('result')
-        if candidate_chan_id:
-            try:
-                channel = guild.get_channel(int(candidate_chan_id)) or await guild.fetch_channel(int(candidate_chan_id))
-                if channel:
-                    ev_data['results_channel_id'] = channel.id
-            except Exception:
-                channel = None
-
-    if not channel:
-        return
-
-    msg = None
-    if res_msg_id:
-        try:
-            msg = await channel.fetch_message(int(res_msg_id))
-        except Exception:
-            msg = None
-
-    if not msg:
-        t1 = str(ev_data.get('team1_name') or '').lower()
-        t2 = str(ev_data.get('team2_name') or '').lower()
-        m_name = str(ev_data.get('match_name') or '').lower()
-        try:
-            async for history_msg in channel.history(limit=40):
-                if history_msg.author == guild.me and history_msg.embeds:
-                    em = history_msg.embeds[0]
-                    content_to_check = f"{em.title or ''} {em.description or ''} " + " ".join(f.name + " " + f.value for f in em.fields)
-                    c_lower = content_to_check.lower()
-                    if (t1 and t2 and t1 in c_lower and t2 in c_lower) or (m_name and m_name in c_lower):
-                        msg = history_msg
-                        ev_data['results_message_id'] = msg.id
-                        ev_data['results_channel_id'] = channel.id
-                        break
-        except Exception as search_err:
-            print(f"Error searching results channel for match: {search_err}")
-
-    if not msg or not msg.embeds:
-        return
-        
-    rec_emoji = EMOJIS.get('recorder', '📹')
-    jdg_emoji = EMOJIS.get('judge', '⚖️')
-
-    async def _apply_links_to_message(target_msg: discord.Message):
-        if not target_msg or not target_msg.embeds:
-            return
-        embed = target_msg.embeds[0]
-        general_link = ev_data.get('recording_link')
-        rec_link = ev_data.get('recorder_link')
-        jdg_link = ev_data.get('judge_link')
-        
-        link_lines = []
-        if general_link: link_lines.append(f"{rec_emoji} **Recording:** {format_links_markdown(general_link, 'Link')}")
-        if rec_link:     link_lines.append(f"{rec_emoji} **Recorder VOD:** {format_links_markdown(rec_link, 'Link')}")
-        if jdg_link:     link_lines.append(f"{jdg_emoji} **Judge VOD:** {format_links_markdown(jdg_link, 'Link')}")
-        
-        clean_fields = []
-        remarks_field = None
-        ss_field = None
-        for f in embed.fields:
-            if "Recording" in (f.name or "") or "VOD" in (f.name or "") or "Recordings / VODs" in (f.name or ""):
-                continue
-            if "Remarks" in (f.name or ""):
-                remarks_field = f
-                continue
-            if "Screenshots" in (f.name or "") or "Screenshots of Result" in (f.value or ""):
-                ss_field = f
-                continue
-            clean_fields.append(f)
-
-        embed.clear_fields()
-        for f in clean_fields:
-            embed.add_field(name=f.name, value=f.value, inline=f.inline)
-
-        if link_lines:
-            vod_title = f"{rec_emoji} Recordings / VODs"
-            embed.add_field(name=vod_title, value="\n".join(link_lines), inline=False)
-
-        if remarks_field:
-            embed.add_field(name=remarks_field.name, value=remarks_field.value, inline=remarks_field.inline)
-        if ss_field:
-            embed.add_field(name=ss_field.name, value=ss_field.value, inline=ss_field.inline)
-            
-        await target_msg.edit(embed=embed)
-
-    try:
-        await _apply_links_to_message(msg)
-    except Exception as e:
-        print(f"Error updating result embed with links: {e}")
-
-    # Also update ticket channel embed if available
-    ticket_msg_id = ev_data.get('ticket_results_message_id')
-    ticket_chan_id = ev_data.get('channel_id')
-    if ticket_msg_id and ticket_chan_id:
-        try:
-            t_chan = guild.get_channel(int(ticket_chan_id)) or await guild.fetch_channel(int(ticket_chan_id))
-            if t_chan:
-                t_msg = await t_chan.fetch_message(int(ticket_msg_id))
-                if t_msg:
-                    await _apply_links_to_message(t_msg)
-        except Exception:
-            pass
+# format_links_markdown and update_results_embed_with_links are now canonical in core.database
+# and imported at the top of this module.
 
 async def update_results_message_embed(guild: discord.Guild, ev_data: dict) -> bool:
     res_msg_id = ev_data.get('results_message_id')
@@ -464,9 +296,8 @@ async def update_results_message_embed(guild: discord.Guild, ev_data: dict) -> b
     except Exception as e:
         print(f"Error updating result message embed: {e}")
         return False
-    except Exception as e:
-        print(f"Error updating result message embed: {e}")
-        return False
+
+
 
 async def send_ten_minute_reminder(event_id: str, team1_captain: Any, team2_captain: Any, judge: Optional[Any], event_channel: discord.TextChannel, match_time: datetime.datetime):
     try:
@@ -1123,7 +954,7 @@ class Events(commands.Cog):
                 color=discord.Color.blue(),
                 timestamp=discord.utils.utcnow()
             )
-            thumb_file, is_local_thumb = await resolve_embed_thumbnail(interaction.guild_id, embed, fallback_to_captain_avatar=team_1_captain)
+            thumb_file, is_local_thumb = await resolve_embed_thumbnail(interaction.guild_id, embed, fallback_to_captain_avatar=team_1_captain, bot_client=self.bot)
 
             timestamp = int(event_datetime.replace(tzinfo=datetime.timezone.utc).timestamp())
             event_details = f"**Tournament:** {tournament_display}\n"
@@ -1361,7 +1192,7 @@ class Events(commands.Cog):
             color=discord.Color.gold(),
             timestamp=discord.utils.utcnow()
         )
-        await resolve_embed_thumbnail(interaction.guild.id, embed)
+        await resolve_embed_thumbnail(interaction.guild.id, embed, bot_client=self.bot)
 
         captains_text = f"{EMOJIS.get('captain', '👑')} **Captains**\n- Team1 Captain: {w_display_mention}" + (f" ({winner.name})" if winner else "") + f"\n- Team2 Captain: {l_display_mention}" + (f" ({loser.name})" if loser else "")
         embed.add_field(name="", value=captains_text, inline=False)
@@ -1765,7 +1596,7 @@ class Events(commands.Cog):
                 color=discord.Color.blue(),
                 timestamp=discord.utils.utcnow()
             )
-            thumb_file, is_local_thumb = await resolve_embed_thumbnail(interaction.guild_id, schedule_embed, fallback_to_captain_avatar=t1_cap_member)
+            thumb_file, is_local_thumb = await resolve_embed_thumbnail(interaction.guild_id, schedule_embed, fallback_to_captain_avatar=t1_cap_member, bot_client=self.bot)
             timestamp = int(new_datetime.replace(tzinfo=datetime.timezone.utc).timestamp())
             round_lbl = event_to_edit.get('round', 'R1')
             grp_lbl = event_to_edit.get('group')
